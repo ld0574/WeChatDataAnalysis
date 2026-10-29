@@ -8648,11 +8648,14 @@ def _materialize_voice(
                 return b""
         return text.encode("utf-8", "replace")
 
+    from .voice_transcription import _voice_media_db_paths
     data = b""
-    if media_db_path.exists():
+    for local_media_db in dict.fromkeys([media_db_path, *_voice_media_db_paths(account_dir)]):
+        if not local_media_db.exists():
+            continue
         conn: Optional[sqlite3.Connection] = None
         try:
-            conn = sqlite3.connect(str(media_db_path))
+            conn = sqlite3.connect(str(local_media_db))
             row = conn.execute(
                 "SELECT voice_data FROM VoiceInfo WHERE svr_id = ? ORDER BY create_time DESC LIMIT 1",
                 (int(server_id),),
@@ -8665,6 +8668,9 @@ def _materialize_voice(
             if conn is not None:
                 conn.close()
 
+        if data:
+            break
+
     if not data:
         try:
             realtime = WCDB_REALTIME.ensure_connected(Path(account_dir))
@@ -8673,7 +8679,7 @@ def _materialize_voice(
                 "SELECT voice_data FROM VoiceInfo "
                 f"WHERE svr_id = {int(server_id)} ORDER BY create_time DESC LIMIT 1"
             )
-            for realtime_db_path in sorted(media_dir.glob("media_*.db")):
+            for realtime_db_path in _voice_media_db_paths(media_dir):
                 if not realtime_db_path.is_file():
                     continue
                 try:

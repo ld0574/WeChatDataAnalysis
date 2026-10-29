@@ -26,8 +26,7 @@ def _worker(connection, backend: str, folder: str, threads: int):
         if backend == "qwen-hf":
             from .qwen_gpu_runtime import activate_for_worker
             activate_for_worker()
-        from .asr_backends import audio_chunks, load_backend, read_audio
-        import numpy as np
+        from .asr_backends import audio_chunks, load_backend, read_audio, transcribe_chunk
         while connection.poll(120):
             request = connection.recv()
             try:
@@ -36,9 +35,7 @@ def _worker(connection, backend: str, folder: str, threads: int):
                 audio = read_audio(request["path"])
                 texts = []
                 for chunk in audio_chunks(audio, model.chunk_seconds):
-                    # 跳过纯静音，避免自回归模型无中生有。
-                    if float(np.max(np.abs(chunk))) > 1e-6:
-                        texts.append(model.transcribe(chunk, request["language"]))
+                    texts.extend(transcribe_chunk(model, chunk, request["language"]))
                 separator = " " if request["language"] not in ("zh", "yue", "ja") else ""
                 connection.send(dict(text=separator.join(texts), duration=len(audio) / 16000,
                                      language=request["language"], precision=model.precision))

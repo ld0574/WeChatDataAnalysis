@@ -58,7 +58,7 @@ def local_image_path(config,hit,md5):
 
 def voice_bytes(config, server_id):
     from .live_archive import NativeArchiveReader
-    from .voice_transcription import load_voice_data
+    from .voice_transcription import load_voice_data,_voice_media_db_paths
     # The snapshot remains readable after WeChat exits.
     data=load_voice_data(Path(config['baseline']),server_id)
     if data:
@@ -66,7 +66,7 @@ def voice_bytes(config, server_id):
     reader=NativeArchiveReader(config)
     try:
         errors=[]
-        for path in sorted((reader.source/'message').glob('media_*.db'),key=lambda p:p.stat().st_mtime_ns,reverse=True):
+        for path in sorted(_voice_media_db_paths(reader.source/'message'),key=lambda p:p.stat().st_mtime_ns,reverse=True):
             try:
                 rows=reader.query(path.name,f'SELECT hex(voice_data) AS data FROM VoiceInfo WHERE svr_id={int(server_id)} LIMIT 1')
             except Exception as exc:
@@ -78,7 +78,7 @@ def voice_bytes(config, server_id):
             raise RuntimeError('部分语音分片暂时不可读，将重试：'+errors[0])
     finally:
         reader.close()
-    raise RuntimeError('语音源文件尚未找到，稍后重试')
+    raise RuntimeError('本机语音库缺少该音频；请在微信中下载或恢复备份，归档任务会保留并重试')
 
 
 def image_source(config,store,job,hit):
@@ -167,15 +167,26 @@ def process_job(config,store,job,stop):
         store.save_transcript(job['origin'],transcript)
 
 
+def _next_media_job(store,kind,*,retry_turn=False):
+    # Reserve one in five turns for due retries. Attempts must not put a
+    # failed task behind an entire, continually replenished history backlog.
+    preferred='retry' if retry_turn else 'pending'
+    with store.connect() as c:
+        job=c.execute("SELECT * FROM jobs WHERE kind=? AND status IN ('pending','retry') AND due<=? "
+                      "ORDER BY CASE WHEN status=? THEN 0 ELSE 1 END, priority DESC, due, attempts LIMIT 1",
+                      (kind,time.time(),preferred)).fetchone()
+        return dict(job) if job else None
+
+
 def media_loop(config,store,stop,kind):
+    turns=0
     while not stop.is_set():
         try:
-            with store.connect() as c:
-                job=c.execute("SELECT * FROM jobs WHERE kind=? AND status IN ('pending','retry') AND due<=? ORDER BY priority DESC, attempts, due LIMIT 1",(kind,time.time())).fetchone()
-                job=dict(job) if job else None
+            job=_next_media_job(store,kind,retry_turn=turns%5==0)
             if not job:
                 stop.wait(3)
                 continue
+            turns+=1
             try:
                 process_job(config,store,job,stop)
             except Exception as exc:

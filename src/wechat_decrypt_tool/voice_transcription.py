@@ -1105,6 +1105,11 @@ def _numbered_db_shards(root: Path, prefix: str) -> list[Path]:
     ]
 
 
+def _voice_media_db_paths(root: Path) -> list[Path]:
+    """Ordinary and business messages keep their audio in separate shard families."""
+    return _numbered_db_shards(root, 'media') + _numbered_db_shards(root, 'biz_media')
+
+
 def _convert_silk_to_browser_audio(data: bytes, *, preferred_format: str) -> tuple[bytes, str, str]:
     from .media_helpers import _convert_silk_to_browser_audio as convert
 
@@ -1118,7 +1123,7 @@ def load_voice_data(account_dir: Path, server_id: int) -> bytes:
         return b""
 
     best_local: tuple[int, bytes] = (-1, b"")
-    for media_db_path in _numbered_db_shards(account_path, "media"):
+    for media_db_path in _voice_media_db_paths(account_path):
         conn: Optional[sqlite3.Connection] = None
         try:
             conn = sqlite3.connect(str(media_db_path))
@@ -1150,7 +1155,7 @@ def load_voice_data(account_dir: Path, server_id: int) -> bytes:
         realtime = WCDB_REALTIME.ensure_connected(account_path)
         media_dir = Path(realtime.db_storage_dir) / "message"
         sql = f"SELECT voice_data FROM VoiceInfo WHERE svr_id = {sid} ORDER BY create_time DESC LIMIT 1"
-        for realtime_db_path in sorted(media_dir.glob("media_*.db")):
+        for realtime_db_path in _voice_media_db_paths(media_dir):
             if not realtime_db_path.is_file():
                 continue
             try:
@@ -1184,7 +1189,7 @@ def _list_realtime_voice_server_ids(
 
         realtime = WCDB_REALTIME.ensure_connected(Path(account_dir))
         media_dir = Path(realtime.db_storage_dir) / "message"
-        for realtime_db_path in _numbered_db_shards(media_dir, "media"):
+        for realtime_db_path in _voice_media_db_paths(media_dir):
             if cancel_event is not None and cancel_event.is_set():
                 break
             try:
@@ -1224,7 +1229,7 @@ def list_voice_server_ids(
     ids: set[int] = set()
     local_errors: list[str] = []
     local_successes = 0
-    local_paths = _numbered_db_shards(account_path, "media")
+    local_paths = _voice_media_db_paths(account_path)
     for media_db_path in local_paths:
         if cancel_event is not None and cancel_event.is_set():
             break

@@ -10,6 +10,28 @@ LANGUAGES = {"zh": "Chinese", "en": "English", "yue": "Cantonese", "ja": "Japane
              "ru": "Russian", "pt": "Portuguese", "ar": "Arabic", "it": "Italian"}
 
 
+class AsrOutputLimitError(RuntimeError):
+    """No EOS was generated; the partial text must not enter the archive."""
+
+
+def transcribe_chunk(model, audio, language):
+    """Retry a capped generation on smaller windows, retaining every sample."""
+    import numpy as np
+    if not len(audio) or float(np.max(np.abs(audio))) <= 1e-6:
+        return []
+    try:
+        return [model.transcribe(audio, language)]
+    except AsrOutputLimitError:
+        if len(audio) <= 2 * 16000:
+            raise
+        # Split near a quiet point around the midpoint. Recursion is bounded by
+        # the two-second floor; still-capped audio remains a failed task.
+        candidates = range(int(len(audio) * .4), int(len(audio) * .6), 320)
+        cut = min(candidates, key=lambda p: float(np.mean(audio[p:p + 320] ** 2)))
+        return (transcribe_chunk(model, audio[:cut], language)
+                + transcribe_chunk(model, audio[cut:], language))
+
+
 def language_name(language: str) -> str | None:
     if language in ("", "auto"):
         return None
@@ -143,7 +165,7 @@ class QwenOnnxBackend:
                 input_embeds=np.asarray(self.embeddings[token], dtype=np.float32)[None, None],
                 position_ids=np.array([[len(prompt) + index]], dtype=np.int64), past_keys=keys, past_values=values))
         else:
-            raise RuntimeError("识别输出超过长度限制，请改用其他模型。")
+            raise AsrOutputLimitError("语音分段后识别仍超过长度限制；音频已保留，稍后重试。")
         return self.tokenizer.decode(generated, skip_special_tokens=True).split("<asr_text>")[-1].strip()
 
 
@@ -169,8 +191,10 @@ class QwenGpuBackend:
             inputs = inputs.to(self.model.device, self.model.dtype)
             generated = self.model.generate(**inputs, max_new_tokens=512, do_sample=False)
             tokens = generated[:, inputs["input_ids"].shape[1]:]
-            if tokens.shape[1] >= 512:
-                raise RuntimeError("识别输出超过长度限制，请改用其他模型。")
+            eos = self.model.generation_config.eos_token_id
+            eos = [eos] if isinstance(eos, int) else (eos or [])
+            if tokens.shape[1] >= 512 and int(tokens[0, -1]) not in eos:
+                raise AsrOutputLimitError("语音分段后识别仍超过长度限制；音频已保留，稍后重试。")
             return self.processor.decode(tokens, return_format="transcription_only")[0]
 
 

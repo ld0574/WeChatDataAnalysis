@@ -1,4 +1,4 @@
-param([switch]$WithFrontend)
+﻿param([switch]$WithFrontend)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot

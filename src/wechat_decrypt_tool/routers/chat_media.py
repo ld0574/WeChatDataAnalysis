@@ -4297,28 +4297,9 @@ async def open_chat_media_folder(
         if not server_id:
             raise HTTPException(status_code=400, detail="Missing server_id.")
 
-        media_db_path = account_dir / "media_0.db"
-        if not media_db_path.exists():
-            raise HTTPException(status_code=404, detail="media_0.db not found.")
-
-        conn = sqlite3.connect(str(media_db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            row = conn.execute(
-                "SELECT voice_data FROM VoiceInfo WHERE svr_id = ? ORDER BY create_time DESC LIMIT 1",
-                (int(server_id),),
-            ).fetchone()
-        except Exception:
-            row = None
-        finally:
-            conn.close()
-
-        if not row or row[0] is None:
+        data = await asyncio.to_thread(load_voice_data, account_dir, int(server_id))
+        if not data:
             raise HTTPException(status_code=404, detail="Voice not found.")
-
-        data = bytes(row[0]) if isinstance(row[0], (memoryview, bytearray)) else row[0]
-        if not isinstance(data, (bytes, bytearray)):
-            data = bytes(data)
 
         payload, ext, _media_type = _convert_silk_to_browser_audio(data, preferred_format="mp3")
         if not payload:
