@@ -21,15 +21,75 @@ def transcribe_chunk(model, audio, language):
         return []
     try:
         return [model.transcribe(audio, language)]
-    except AsrOutputLimitError:
-        if len(audio) <= 2 * 16000:
-            raise
-        # Split near a quiet point around the midpoint. Recursion is bounded by
-        # the two-second floor; still-capped audio remains a failed task.
-        candidates = range(int(len(audio) * .4), int(len(audio) * .6), 320)
-        cut = min(candidates, key=lambda p: float(np.mean(audio[p:p + 320] ** 2)))
-        return (transcribe_chunk(model, audio[:cut], language)
-                + transcribe_chunk(model, audio[cut:], language))
+    except AsrOutputLimitError as exc:
+        return _split_capped_chunk(model,audio,language,exc)
+
+
+def _split_capped_chunk(model,audio,language,error):
+    import numpy as np
+    if len(audio)<=2*16000:
+        raise error
+    # Split near a quiet midpoint. The floor bounds recursion; partial text
+    # from the capped generation is never used or generated a second time.
+    candidates=range(int(len(audio)*.4),int(len(audio)*.6),320)
+    cut=min(candidates,key=lambda p:float(np.mean(audio[p:p+320]**2)))
+    return transcribe_chunk(model,audio[:cut],language)+transcribe_chunk(model,audio[cut:],language)
+
+
+def transcribe_audio_batch(model, audios, language, batch_size=2):
+    """Length-bucket chunks; preserve input order and isolate individual failures."""
+    import numpy as np
+    texts=[{} for _ in audios]
+    errors={}
+    chunks=[]
+    for index,audio in enumerate(audios):
+        if isinstance(audio,Exception):
+            errors[index]=str(audio)
+            continue
+        for position,chunk in enumerate(audio_chunks(audio,model.chunk_seconds)):
+            if float(np.max(np.abs(chunk)))>1e-6:
+                chunks.append((index,position,chunk))
+    chunks.sort(key=lambda item:len(item[2]))
+
+    def infer(group):
+        try:
+            if len(group)>1 and hasattr(model,'transcribe_batch'):
+                values=model.transcribe_batch([item[2] for item in group],language)
+                if len(values)!=len(group):
+                    raise RuntimeError('语音批量返回数量不匹配')
+            else:
+                values=[model.transcribe(item[2],language) for item in group]
+        except Exception as exc:
+            if len(group)>1:
+                # Release a failed batch before retrying smaller groups on the
+                # same GPU. Healthy results are never discarded or reindexed.
+                exc.__traceback__=None
+                try:
+                    import torch
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                mid=len(group)//2
+                infer(group[:mid]);infer(group[mid:])
+                return
+            values=[exc]
+        for (index,position,chunk),value in zip(group,values):
+            if isinstance(value,AsrOutputLimitError):
+                try:
+                    value=('' if language in ('zh','yue','ja') else ' ').join(_split_capped_chunk(model,chunk,language,value))
+                except Exception as exc:
+                    value=exc
+            if isinstance(value,Exception):
+                errors[index]=str(value)
+            else:
+                texts[index][position]=str(value)
+
+    for offset in range(0,len(chunks),max(1,batch_size)):
+        infer(chunks[offset:offset+max(1,batch_size)])
+    separator='' if language in ('zh','yue','ja') else ' '
+    return [dict(error=errors[i],code='transcription_failed') if i in errors else
+            dict(text=separator.join(value for _,value in sorted(text.items())),duration=len(audios[i])/16000,
+                 language=language,precision=model.precision) for i,text in enumerate(texts)]
 
 
 def language_name(language: str) -> str | None:
@@ -184,18 +244,37 @@ class QwenGpuBackend:
         self.model = AutoModelForMultimodalLM.from_pretrained(folder, dtype=dtype,
             attn_implementation="sdpa", local_files_only=True).to("cuda").eval()
 
+    def use_full_precision(self):
+        import torch
+        if self.precision!='float32':
+            self.model=self.model.to(dtype=torch.float32)
+            self.precision='float32'
+            torch.cuda.empty_cache()
+
     def transcribe(self, audio, language):
+        value=self.transcribe_batch([audio],language)[0]
+        if isinstance(value,Exception):
+            raise value
+        return value
+
+    def transcribe_batch(self, audios, language):
         import torch
         with torch.inference_mode():
-            inputs = self.processor.apply_transcription_request(audio=audio, language=language_name(language))
+            inputs = self.processor.apply_transcription_request(audio=audios, language=language_name(language))
             inputs = inputs.to(self.model.device, self.model.dtype)
             generated = self.model.generate(**inputs, max_new_tokens=512, do_sample=False)
             tokens = generated[:, inputs["input_ids"].shape[1]:]
             eos = self.model.generation_config.eos_token_id
             eos = [eos] if isinstance(eos, int) else (eos or [])
-            if tokens.shape[1] >= 512 and int(tokens[0, -1]) not in eos:
-                raise AsrOutputLimitError("语音分段后识别仍超过长度限制；音频已保留，稍后重试。")
-            return self.processor.decode(tokens, return_format="transcription_only")[0]
+            rows=tokens.tolist()
+            valid=[i for i,row in enumerate(rows) if len(row)<512 or any(token in eos for token in row)]
+            values=[AsrOutputLimitError("语音分段后识别仍超过长度限制；音频已保留，稍后重试。") for _ in audios]
+            decoded=self.processor.decode(tokens[valid],return_format="transcription_only") if valid else []
+            if len(decoded)!=len(valid):
+                raise RuntimeError('语音批量返回数量不匹配')
+            for index,text in zip(valid,decoded):
+                values[index]=text
+            return values
 
 
 def load_backend(backend: str, folder: str, threads: int):

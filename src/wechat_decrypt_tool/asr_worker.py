@@ -5,6 +5,8 @@ import multiprocessing
 import os
 import threading
 import time
+import sys
+from concurrent.futures import ThreadPoolExecutor
 
 
 class AsrCancelled(RuntimeError):
@@ -15,6 +17,23 @@ class AsrError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def _batch_request(model,paths,language,batch_size):
+    from .asr_backends import read_audio,transcribe_audio_batch
+    def decode(path):
+        try:return read_audio(path)
+        except Exception as exc:return exc
+    # Two CPU decoders run ahead while the GPU consumes the current window.
+    # Requests are capped at 16 files by the parent, bounding prefetched memory.
+    with ThreadPoolExecutor(max_workers=2,thread_name_prefix='asr-decode') as pool:
+        pending=[pool.submit(decode,path) for path in paths]
+        results=[]
+        window=max(1,batch_size)*2
+        for offset in range(0,len(pending),window):
+            audios=[future.result() for future in pending[offset:offset+window]]
+            results.extend(transcribe_audio_batch(model,audios,language,batch_size))
+        return results
 
 
 def _worker(connection, backend: str, folder: str, threads: int):
@@ -32,6 +51,21 @@ def _worker(connection, backend: str, folder: str, threads: int):
             try:
                 if model is None:
                     model = load_backend(backend, folder, threads)
+                if 'paths' in request:
+                    if backend=='qwen-hf' and request.get('gpu_precision')=='float32':
+                        model.use_full_precision()
+                    torch=sys.modules.get('torch') if backend=='qwen-hf' else None
+                    if torch is not None:
+                        torch.cuda.reset_peak_memory_stats()
+                    started=time.perf_counter()
+                    results=_batch_request(model,request['paths'],request['language'],request['batch_size'])
+                    metrics=dict(files=len(results),batchSize=request['batch_size'],elapsedSeconds=time.perf_counter()-started)
+                    if torch is not None:
+                        metrics['peakGpuBytes']=torch.cuda.max_memory_allocated()
+                    connection.send(dict(results=results,precision=model.precision,metrics=metrics))
+                    if results and all('error' in result for result in results):
+                        break
+                    continue
                 audio = read_audio(request["path"])
                 texts = []
                 for chunk in audio_chunks(audio, model.chunk_seconds):
@@ -74,12 +108,24 @@ class ProcessBackend:
             child.close()
 
     def transcribe_audio(self, path: str, language: str, cancel_event=None):
+        return self._request(dict(path=path,language=language),cancel_event)
+
+    def transcribe_audio_batch(self,paths,language,batch_size=2,cancel_event=None,*,gpu_precision='auto'):
+        if not 1<=len(paths)<=16 or batch_size not in (1,2,4):
+            raise ValueError('语音批量范围无效')
+        if gpu_precision not in ('auto','float32'):
+            raise ValueError('GPU 计算精度无效')
+        result=self._request(dict(paths=list(paths),language=language,batch_size=batch_size,gpu_precision=gpu_precision),cancel_event)
+        self.last_batch_metrics=result.get('metrics',{})
+        return result['results']
+
+    def _request(self,request,cancel_event):
         if cancel_event is not None and cancel_event.is_set():
             raise AsrCancelled()
         self._start()
         deadline = time.monotonic() + 900
         try:
-            self.connection.send(dict(path=path, language=language))
+            self.connection.send(request)
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise AsrCancelled()

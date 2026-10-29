@@ -43,7 +43,9 @@ def status():
     result=store.status()
     result.pop('sourceSignatures',None)
     return {'enabled':config.get('enabled',False),'baseline':Path(config['baseline']).name,
-            'voiceModel':config.get('voice_model',''),**result}
+            'voiceModel':config.get('voice_model',''),'voiceBatchSize':config.get('voice_batch_size',1),
+            'voiceGpuPrecision':config.get('voice_gpu_precision','auto'),
+            'voiceAsrPaused':config.get('voice_asr_paused',False),**result}
 
 
 @router.get('/api/archive/search')

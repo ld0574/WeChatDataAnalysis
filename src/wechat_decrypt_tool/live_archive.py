@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -103,11 +104,21 @@ class ArchiveStore:
                     due REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '',
                     transcript TEXT NOT NULL DEFAULT '', PRIMARY KEY(origin,kind));
                 CREATE INDEX IF NOT EXISTS jobs_due ON jobs(status,due);
+                CREATE TABLE IF NOT EXISTS voice_stages(origin TEXT,stage TEXT,status TEXT NOT NULL DEFAULT 'blocked',
+                    attempts INTEGER NOT NULL DEFAULT 0,due REAL NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL DEFAULT '',PRIMARY KEY(origin,stage));
+                CREATE INDEX IF NOT EXISTS voice_stage_due ON voice_stages(stage,status,due);
             ''')
             columns={r[1] for r in c.execute('PRAGMA table_info(cursors)')}
             for col in ('audit_stamp','audit_target'):
                 if col not in columns:
                     c.execute(f"ALTER TABLE cursors ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+            if 'audit_sequence' not in columns:
+                try:
+                    c.execute('ALTER TABLE cursors ADD COLUMN audit_sequence INTEGER NOT NULL DEFAULT 0')
+                except sqlite3.OperationalError as exc:
+                    if 'duplicate column' not in str(exc).lower():
+                        raise
             job_columns={r[1] for r in c.execute('PRAGMA table_info(jobs)')}
             if 'priority' not in job_columns:
                 try:
@@ -143,6 +154,8 @@ class ArchiveStore:
             result['tables'] = c.execute('SELECT COUNT(*) FROM cursors').fetchone()[0]
             result['media'] = [dict(r) for r in c.execute('SELECT kind,status,COUNT(*) AS count FROM jobs GROUP BY kind,status')]
             result['mediaErrors'] = [dict(r) for r in c.execute("SELECT kind,error,COUNT(*) AS count FROM jobs WHERE status='retry' GROUP BY kind,error LIMIT 5")]
+            result['voiceStages']=[dict(r) for r in c.execute('SELECT stage,status,COUNT(*) AS count FROM voice_stages GROUP BY stage,status')]
+        result['storage']={'freeBytes':shutil.disk_usage(self.root).free,'reserveBytes':5*1024**3}
         return result
 
     def cursor(self, db, table, initial, baseline_stamp=''):
@@ -151,18 +164,36 @@ class ArchiveStore:
             return dict(c.execute('SELECT * FROM cursors WHERE db=? AND tab=?', (db,table)).fetchone())
 
     @staticmethod
-    def enqueue(c, key, hit):
+    def enqueue(c, key, hit,priority=0):
         kind = hit.get('renderType')
         if kind in ('image', 'voice'):
             c.execute('INSERT OR IGNORE INTO jobs(origin,kind,payload,due) VALUES(?,?,?,?)',
                       (media_origin(key,hit),kind,json.dumps(hit,ensure_ascii=False),-int(hit.get('createTime') or 0)))
+            if priority:
+                c.execute('UPDATE jobs SET priority=MAX(priority,?) WHERE origin=? AND kind=?',
+                          (priority,media_origin(key,hit),kind))
+            if kind=='voice':
+                c.executemany('INSERT OR IGNORE INTO voice_stages(origin,stage,status,due) VALUES(?,?,?,?)',
+                    [(media_origin(key,hit),stage,'pending' if stage=='capture' else 'blocked',-int(hit.get('createTime') or 0))
+                     for stage in ('capture','playback','transcribe')])
 
-    def commit_page(self, db, table, rows, *, high=None, audit=None, audited_at=None,audit_stamp=None,audit_target=None,include_baseline_media=True):
+    @staticmethod
+    def sync_voice_status(c,key):
+        stages=c.execute('SELECT status,attempts,due,error FROM voice_stages WHERE origin=?',(key,)).fetchall()
+        if not stages:
+            return
+        failures=[s for s in stages if s['status']=='retry']
+        status='ready' if len(stages)==3 and all(s['status']=='ready' for s in stages) else 'retry' if failures else 'pending'
+        c.execute("UPDATE jobs SET status=?,attempts=?,due=?,error=? WHERE origin=? AND kind='voice'",
+            (status,max(s['attempts'] for s in stages),min(s['due'] for s in stages),
+             failures[0]['error'] if failures else '',key))
+
+    def commit_page(self, db, table, rows, *, high=None, audit=None, audited_at=None,audit_stamp=None,audit_target=None,audit_sequence=None,include_baseline_media=True):
         """rows: (origin, rendered hit, raw JSON, equals baseline). No cursor on failure."""
         with self.connect() as c:
             for key, hit, raw, same in rows:
                 if include_baseline_media or not same:
-                    self.enqueue(c,key,hit)
+                    self.enqueue(c,key,hit,priority=2 if not same and raw!='baseline-transcript' else 0)
                 existing = c.execute('SELECT m.* FROM messages m JOIN origins o ON m.id=o.message_id WHERE o.origin=?',(key,)).fetchone()
                 sid = str(hit.get('serverIdStr') or hit.get('serverId') or '0')
                 user = str(hit.get('username') or '')
@@ -203,6 +234,8 @@ class ArchiveStore:
                 c.execute('UPDATE cursors SET audit_stamp=? WHERE db=? AND tab=?',(audit_stamp,db,table))
             if audit_target is not None:
                 c.execute('UPDATE cursors SET audit_target=? WHERE db=? AND tab=?',(audit_target,db,table))
+            if audit_sequence is not None:
+                c.execute('UPDATE cursors SET audit_sequence=? WHERE db=? AND tab=?',(audit_sequence,db,table))
 
     def save_transcript(self, key: str, text: str):
         with self.connect() as c:
@@ -225,6 +258,8 @@ class ArchiveStore:
                 search=_to_char_token_text('\n'.join(str(p.get(k) or '') for k in ('content','title','url','quoteContent'))+'\n'+text)
                 c.execute('UPDATE messages SET transcript=?,payload=?,search_text=? WHERE id=?',(text,json.dumps(p,ensure_ascii=False),search,r['id']))
             c.execute("UPDATE jobs SET transcript=?,status='ready',error='' WHERE origin=? AND kind='voice'",(text,key))
+            c.execute("UPDATE voice_stages SET status='ready',error='' WHERE origin=? AND stage='transcribe'",(key,))
+            self.sync_voice_status(c,key)
 
 
 class NativeArchiveReader:
@@ -351,8 +386,12 @@ class LiveArchiveService:
         from .live_archive_media import media_loop
         store=ArchiveStore(Path(config['storage']))
         # The media worker is independent of source scanning and cannot hold its cursor.
-        for kind in ('voice','image'):
+        for kind in ('image',):
             threading.Thread(target=media_loop,args=(config,store,self.stop_event,kind),daemon=True,name='archive-'+kind).start()
+        from .live_archive_voice import initialize_voice_stages,voice_stage_loop
+        initialize_voice_stages(store)
+        for stage in ('capture','playback','transcribe'):
+            threading.Thread(target=voice_stage_loop,args=(config,store,self.stop_event,stage),daemon=True,name='archive-voice-'+stage).start()
         from .live_archive_media import seed_history_media
         for kind in ('voice','image'):
             threading.Thread(target=seed_history_media,args=(config,store,self.stop_event,kind),daemon=True,name='archive-history-'+kind).start()
@@ -461,7 +500,12 @@ class LiveArchiveService:
                 # Reconcile below the tail watermark too: late imports and old edits
                 # must not be skipped merely because their local_id is smaller.
                 audit_deadline=time.monotonic()+10
-                for db,table,user in inventory:
+                # One page per eligible table, oldest served first. The sequence
+                # commits with the page, so restart and inventory reordering do
+                # not let a large/hot table monopolize the reconciliation budget.
+                audit_sequence=max((c['audit_sequence'] for c in cursor_map.values()),default=0)
+                audit_order=sorted(inventory,key=lambda item:(cursor_map[item[:2]]['audit_sequence'],item[:2]))
+                for db,table,user in audit_order:
                     if self.stop_event.is_set() or time.monotonic()>audit_deadline:
                         break
                     cur=cursor_map[(db,table)]
@@ -473,7 +517,7 @@ class LiveArchiveService:
                         store.commit_page(db,table,[],audit_target=stamp)
                     conn=connections.get(db)
                     myid,selfname=self_ids[db]
-                    while not self.stop_event.is_set() and time.monotonic()<audit_deadline:
+                    if not self.stop_event.is_set() and time.monotonic()<audit_deadline:
                         batch=reader.fetch(db,table,cur['audit'],500)
                         prepared=[]
                         for row in batch:
@@ -489,19 +533,24 @@ class LiveArchiveService:
                             prepared.append((origin(db,table,row['local_id']),hit,json_raw(row),bool(previous and same_source_row(previous,row))))
                         finished=len(batch)<500
                         cur['audit']=0 if finished else int(batch[-1]['local_id'])
+                        audit_sequence+=1
                         store.commit_page(db,table,prepared,audit=cur['audit'],audited_at=started if finished else None,
                                           audit_stamp=cur['audit_target'] if finished else None,
-                                          audit_target='' if finished else None,include_baseline_media=False)
+                                          audit_target='' if finished else None,audit_sequence=audit_sequence,include_baseline_media=False)
                         store.state(heartbeat=time.time(),reconcilingDb=db)
-                        if finished:
-                            break
                 with store.connect() as c:
-                    reconciled=sum(r['audit_stamp']==json.dumps(signatures.get(r['db'],[])) for r in c.execute('SELECT db,audit_stamp FROM cursors'))
+                    active_tables={(db,table) for db,table,_ in inventory}
+                    coverage=[dict(r) for r in c.execute('SELECT db,tab,audit,audit_stamp,audit_sequence FROM cursors')
+                              if (r['db'],r['tab']) in active_tables]
+                    reconciled=sum(r['audit_stamp']==json.dumps(signatures[r['db']]) for r in coverage)
                 for db,stamp in signatures.items():
                     if db not in pending_dbs and reader.signature(db)==stamp:
                         last_signatures[db]=stamp
                 store.state(status='watching',lastPass=time.time(),sourceTables=len(inventory),
                             reconciledTables=reconciled,sourceSignatures=last_signatures,
+                            auditPendingTables=len(inventory)-reconciled,
+                            auditInProgressTables=sum(r['audit']>0 for r in coverage),
+                            auditServedTables=sum(r['audit_sequence']>0 for r in coverage),
                             pendingDatabases=len(pending_dbs),unmappedTables=sum(u.startswith('unmapped:') for _,_,u in inventory),heartbeat=time.time())
                 self.stop_event.wait(max(1,15-(time.time()-started)))
         finally:

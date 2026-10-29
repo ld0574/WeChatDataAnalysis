@@ -1740,6 +1740,76 @@ class VoiceTranscriptionService:
                     except Exception:
                         pass
 
+    def transcribe_voice_batch(self,*,account_dir:Path,items:list[dict],batch_size:int=2,gpu_precision:str='auto',
+                               cancel_event:Optional[threading.Event]=None) -> list[dict]:
+        """Bounded Qwen GPU batches with the same cache identity as single ASR."""
+        if self.config.model!='qwen3-asr-06b-hf' or batch_size not in (1,2,4) or not 1<=len(items)<=16:
+            raise VoiceTranscriptionError('invalid_batch','当前语音批量配置无效。')
+        if not self.config.enabled:
+            raise VoiceTranscriptionError('disabled','语音转文字功能未启用。')
+        self._raise_if_retired()
+        self._raise_if_cancelled(cancel_event)
+        account_path=Path(account_dir)
+        generation=capture_voice_transcript_cache_generation()
+        epoch=_capture_voice_transcript_cache_epoch(account_path)
+        results=[None]*len(items)
+        with voice_model_activity(self.config.model),tempfile.TemporaryDirectory(prefix='wechat_asr_batch_') as temporary:
+            def prepare(pair):
+                index,item=pair
+                self._raise_if_cancelled(cancel_event)
+                sid=int(item.get('server_id') or 0)
+                if sid<=0:
+                    return index,{'error':'语音消息 ID 无效。','code':'invalid_server_id'}
+                data=bytes(item['voice_data'])
+                digest=hashlib.sha256(data).hexdigest()
+                cached=self._read_cache(account_path,sid,digest)
+                if cached is not None:
+                    return index,dict(cached,cached=True)
+                try:
+                    audio,ext,_mime=_convert_silk_to_browser_audio(data,preferred_format='wav')
+                    if not audio or ext=='silk':
+                        raise RuntimeError('语音解码失败，原始音频已保留')
+                    path=Path(temporary)/f'{index}.{ext}'
+                    path.write_bytes(audio)
+                    return index,dict(path=str(path),sid=sid,digest=digest)
+                except Exception as exc:
+                    return index,{'error':str(exc),'code':'voice_decode_failed'}
+            with ThreadPoolExecutor(max_workers=2,thread_name_prefix='asr-prepare') as pool:
+                prepared=list(pool.map(prepare,enumerate(items)))
+            pending=[]
+            for index,value in prepared:
+                if 'path' in value:
+                    pending.append((index,value))
+                else:
+                    results[index]=value
+            if pending:
+                model,_model_generation,device,compute_type=self._acquire_inference_model(cancel_event)
+                try:
+                    try:
+                        inferred=model.transcribe_audio_batch([value['path'] for _,value in pending],self.config.language,
+                                                              batch_size,cancel_event,gpu_precision=gpu_precision)
+                    except AsrCancelled:
+                        raise _VoiceTranscriptionCancelled() from None
+                    except AsrError as exc:
+                        raise VoiceTranscriptionError(exc.code,str(exc)) from None
+                    self._raise_if_cancelled(cancel_event)
+                    if len(inferred)!=len(pending):
+                        raise VoiceTranscriptionError('transcription_failed','语音批量返回数量不匹配。')
+                    for (index,value),result in zip(pending,inferred):
+                        if 'error' in result:
+                            results[index]=result
+                            continue
+                        output=dict(status='success',serverId=value['sid'],text=normalize_transcript_text(result['text']),
+                                    language=result['language'],duration=result['duration'],model=_public_model_name(self.config.model),
+                                    device=device,computeType=result.get('precision',compute_type),cached=False)
+                        self._write_cache(account_path,value['sid'],value['digest'],output,
+                                          expected_epoch=epoch,expected_generation=generation)
+                        results[index]=output
+                finally:
+                    model=None
+                    self._release_inference_model()
+        return results
+
     @staticmethod
     def _raise_if_cancelled(cancel_event: Optional[threading.Event]) -> None:
         if cancel_event is not None and cancel_event.is_set():

@@ -6,9 +6,13 @@
     </div>
     <section class="my-6 rounded-xl border border-gray-200 bg-gray-50 p-4" aria-live="polite">
       <p>{{ statusText }}</p>
-      <p class="mt-2 text-sm">新增或变化记录 {{ info.overlayMessages || 0 }} 条 · 已发现 {{ info.sourceTables || info.tables || 0 }} 张消息表 · 近一天已核对 {{ info.reconciledTables || 0 }} 张</p>
+      <p class="mt-2 text-sm">新增或变化记录 {{ info.overlayMessages || 0 }} 条 · 已发现 {{ info.sourceTables || info.tables || 0 }} 张消息表 · 当前版本已核对 {{ info.reconciledTables || 0 }} 张</p>
+      <p v-if="info.auditPendingTables" class="mt-2 text-sm">待核对 {{ info.auditPendingTables }} 张 · 核对中的大表 {{ info.auditInProgressTables || 0 }} 张，轮转进度会在重启后保留。</p>
       <p class="mt-2 text-sm text-gray-500">最近一轮完成：{{ date(info.lastPass) }}。历史核对会逐步补齐；软件关闭期间无法实时采集。</p>
       <p v-if="info.voiceModel" class="mt-2 text-sm">本地语音模型：{{ info.voiceModel }} · GPU</p>
+      <p v-if="info.voiceAsrPaused" class="mt-2 text-amber-700">文字转写暂时暂停，消息采集、原始音频保存和播放转换继续运行。</p>
+      <p v-if="info.storage" class="mt-2 text-sm" :class="{ 'text-red-700': info.storage.freeBytes < info.storage.reserveBytes }">归档盘剩余 {{ (info.storage.freeBytes / 1073741824).toFixed(1) }} GB · {{ info.storage.freeBytes < info.storage.reserveBytes ? '空间不足，媒体写入暂停，消息采集继续；空间恢复后自动重试。' : '媒体写入正常，预留 5 GB。' }}</p>
+      <p v-for="stage in info.voiceStages || []" :key="stage.stage + stage.status" class="mt-1 text-sm">{{ voiceStageName(stage.stage) }} · {{ stage.status === 'ready' ? '已完成' : stage.status === 'retry' ? '等待重试' : stage.status === 'blocked' ? '等待原始音频' : '排队中' }}：{{ stage.count }}</p>
       <p v-if="info.unmappedTables" class="mt-2 text-amber-700">{{ info.unmappedTables }} 张表的会话名称待解析，记录继续保留。</p>
       <p v-for="job in info.media || []" :key="job.kind + job.status" class="mt-1 text-sm">{{ job.kind === 'image' ? '图片' : '语音' }} · {{ job.status === 'ready' ? '已保存' : job.status === 'retry' ? '等待重试' : '排队中' }}：{{ job.count }}</p>
       <p v-if="info.mediaError" class="mt-2 text-red-700">媒体任务：{{ info.mediaError }}</p>
@@ -29,7 +33,7 @@
         <template v-for="item in hit.archiveMedia || []" :key="item.kind">
           <img v-if="item.kind === 'image' && item.path" :src="mediaUrl(item.path)" class="mt-3 max-h-96 max-w-full rounded-lg" alt="归档图片" loading="lazy">
           <audio v-if="item.kind === 'voice' && item.path" :src="mediaUrl(item.path)" controls class="mt-3" />
-          <p v-if="item.status !== 'ready'" class="mt-2 text-sm text-amber-700">{{ item.kind === 'voice' && item.path ? '音频已保存，文字转写等待重试' : '媒体等待保存或重试' }}</p>
+          <p v-if="item.status !== 'ready'" class="mt-2 text-sm text-amber-700">{{ item.kind === 'voice' && item.path ? (item.status === 'retry' ? '音频已保存，文字转写等待重试' : '音频已保存，文字转写排队中') : '媒体等待保存或重试' }}</p>
           <p v-if="item.status === 'ready' && item.error" class="mt-2 text-sm text-amber-700">{{ item.error }}</p>
         </template>
       </li>
@@ -59,6 +63,7 @@ const statusText = computed(() => {
 })
 const date = value => value ? new Date(Number(value) * 1000).toLocaleString() : '尚未完成首轮'
 const mediaUrl = name => `${api}/archive/media/${encodeURIComponent(name)}`
+const voiceStageName = stage => ({ capture: '语音原始音频', playback: '语音播放副本', transcribe: '语音文字转写' })[stage] || stage
 async function refresh() {
   try {
     info.value = await $fetch(`${api}/archive/status`)

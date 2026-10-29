@@ -61,6 +61,35 @@ def test_reconciliation_captures_old_rows_below_high_watermark(tmp_path):
     assert store.cursor('message_0.db','Msg_test',0)['audit_stamp']==json.dumps(reader.signature('message_0.db'))
 
 
+def test_audit_round_robin_survives_restart_and_inventory_reordering(tmp_path,monkeypatch):
+    import wechat_decrypt_tool.live_archive as module
+    base=tmp_path/'baseline'; seed(base)
+    store=ArchiveStore(tmp_path/'store')
+    for tab in ('Msg_large','Msg_other'):
+        store.cursor('message_0.db',tab,2000)
+    clock=[0.0]
+    monkeypatch.setattr(module.time,'monotonic',lambda:clock[0])
+
+    class BusyReader(Reader):
+        def __init__(self):super().__init__([raw(n) for n in range(1,1001)])
+        def inventory(self):return [('message_0.db',t,'friend') for t in ('Msg_large','Msg_other')]
+        def fetch(self,db,table,after,limit):
+            self.requested.append((table,after))
+            clock[0]+=11  # One slow page consumes this pass's audit budget.
+            return [r for r in self.rows if r['local_id']>after][:limit]
+    reader=BusyReader()
+    for _ in range(3):
+        service=LiveArchiveService();service.stop_event=StopsAfterPasses(1)
+        service.collect({'baseline':str(base)},store,reader)
+        store=ArchiveStore(store.root)  # Resume solely from persisted state.
+        reader.inventory=lambda:[('message_0.db',t,'friend') for t in ('Msg_other','Msg_large')]
+    assert reader.requested==[('Msg_large',0),('Msg_other',0),('Msg_large',500)]
+    assert store.cursor('message_0.db','Msg_other',0)['audit_sequence']==2
+    assert store.cursor('message_0.db','Msg_large',0)['audit']==1000
+    assert store.status()['auditPendingTables']==2
+    assert store.status()['auditServedTables']==2
+
+
 def test_windows_model_publication_falls_back_to_verified_file_copies(tmp_path,monkeypatch):
     import wechat_decrypt_tool.voice_transcription as module
     stage=tmp_path/'stage'; stage.mkdir()

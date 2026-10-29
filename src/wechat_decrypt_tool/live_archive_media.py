@@ -17,7 +17,10 @@ from PIL import Image, ImageOps
 def atomic_bytes(path: Path, data: bytes):
     path.parent.mkdir(parents=True,exist_ok=True)
     temp=path.with_suffix(path.suffix+'.tmp')
-    temp.write_bytes(data)
+    with temp.open('wb') as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
     os.replace(temp,path)
 
 
@@ -57,6 +60,8 @@ def local_image_path(config,hit,md5):
 
 
 def voice_bytes(config, server_id):
+    if int(server_id)<=0:
+        raise RuntimeError('语音服务器 ID 尚未就绪，等待微信补齐后重试')
     from .live_archive import NativeArchiveReader
     from .voice_transcription import load_voice_data,_voice_media_db_paths
     # The snapshot remains readable after WeChat exits.
@@ -121,6 +126,8 @@ def image_source(config,store,job,hit):
 
 
 def process_job(config,store,job,stop):
+    if job['kind']!='image':
+        raise ValueError('语音任务须使用独立的保存、播放和转写阶段')
     hit=json.loads(job['payload'])
     key=hashlib.sha256(job['origin'].encode()).hexdigest()
     media=store.root/'media'
@@ -138,33 +145,6 @@ def process_job(config,store,job,stop):
         with store.connect() as c:
             note='原图未缓存，已保存缩略图' if source.stem.endswith(('_t','_t_W')) else ''
             c.execute("UPDATE jobs SET status='ready',path=?,error=? WHERE origin=? AND kind=?",(path.name,note,job['origin'],'image'))
-    else:
-        from .voice_transcription import get_voice_transcription_service,_convert_silk_to_browser_audio
-        raw_path=media/(key+'.silk')
-        data=raw_path.read_bytes() if raw_path.exists() else voice_bytes(config,int(hit.get('serverIdStr') or hit.get('serverId') or 0))
-        if not raw_path.exists():
-            atomic_bytes(raw_path,data)
-        audio,ext,_mime=_convert_silk_to_browser_audio(data,preferred_format='mp3')
-        path=media/(key+'.'+ext)
-        if audio:
-            atomic_bytes(path,audio)
-        else:
-            path=raw_path
-        # Retain audio even if ASR is unavailable or fails.
-        with store.connect() as c:
-            c.execute("UPDATE jobs SET path=? WHERE origin=? AND kind='voice'",(path.name,job['origin']))
-        transcript=str(hit.get('voiceTranscript') or '')
-        if not transcript:
-            service=get_voice_transcription_service()
-            from .runtime_settings import read_effective_voice_transcription_model
-            if service.config.model != read_effective_voice_transcription_model()[0]:
-                from .voice_transcription import _reset_voice_transcription_service
-                service=_reset_voice_transcription_service()
-            if config.get('voice_model') and service.config.model != config['voice_model']:
-                raise RuntimeError('GPU 转写模型正在准备；音频已保存，稍后自动重试')
-            result=service.transcribe_voice(account_dir=store.root,server_id=int(hit.get('serverIdStr') or hit.get('serverId') or 0),voice_data=data,cancel_event=stop)
-            transcript=str(result.get('text') or '')
-        store.save_transcript(job['origin'],transcript)
 
 
 def _next_media_job(store,kind,*,retry_turn=False):
@@ -227,8 +207,16 @@ def seed_history_media(config,store,stop,kind):
                         after,done=cur['after_id'],cur['done']
                     if done: continue
                     while not stop.is_set():
+                        if shutil.disk_usage(store.root).free<5*1024**3:
+                            stop.wait(10); continue
                         with store.connect() as c:
-                            queued=c.execute("SELECT COUNT(*) FROM jobs WHERE kind=? AND status!='ready'",(kind,)).fetchone()[0]
+                            if kind=='voice':
+                                # Bound acquisition work, not ASR backlog or
+                                # missing-source retries. Neither may prevent
+                                # discovering and retaining later originals.
+                                queued=c.execute("SELECT COUNT(*) FROM voice_stages WHERE stage='capture' AND status='pending'").fetchone()[0]
+                            else:
+                                queued=c.execute("SELECT COUNT(*) FROM jobs WHERE kind=? AND status!='ready'",(kind,)).fetchone()[0]
                         if queued>=5000:
                             stop.wait(10); continue
                         rows=source.execute(f'SELECT m.*,n.user_name AS sender_username FROM {_quote_ident(table)} m '
