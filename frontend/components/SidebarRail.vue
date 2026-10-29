@@ -34,6 +34,10 @@
       </div>
 
       <!-- Chat -->
+      <NuxtLink to="/archive" title="持续归档与搜索" aria-label="持续归档与搜索"
+        class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center">
+        <i class="fa-solid fa-box-archive sidebar-rail-icon" aria-hidden="true"></i>
+      </NuxtLink>
       <div
         class="sidebar-rail-action w-full h-[var(--sidebar-rail-step)] flex items-center justify-center cursor-pointer group"
         title="聊天"

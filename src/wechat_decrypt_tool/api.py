@@ -21,6 +21,8 @@ request_logger = get_logger("wechat_decrypt_tool.request")
 from . import __version__ as APP_VERSION
 from .path_fix import PathFixRoute
 from .chat_realtime_autosync import CHAT_REALTIME_AUTOSYNC
+from .live_archive import LIVE_ARCHIVE
+from .routers.live_archive import router as _live_archive_router
 from .sns_realtime_autosync import SNS_REALTIME_AUTOSYNC
 from .routers.chat import router as _chat_router
 from .routers.chat_realtime_sse import router as _chat_realtime_sse_router
@@ -128,6 +130,7 @@ app.add_middleware(ChatRequestPerfMiddleware, logger=request_logger)
 
 
 app.include_router(_health_router)
+app.include_router(_live_archive_router)
 app.include_router(_admin_router)
 app.include_router(_account_archive_export_router)
 app.include_router(_wechat_detection_router)
@@ -273,6 +276,7 @@ async def _startup_native_core() -> None:
 
 @app.on_event("startup")
 async def _startup_background_jobs() -> None:
+    LIVE_ARCHIVE.start()
     try:
         WCDB_REALTIME.start_background_prime()
     except Exception:
@@ -293,6 +297,7 @@ async def _startup_background_jobs() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown_wcdb_realtime() -> None:
+    LIVE_ARCHIVE.stop()
     try:
         CHAT_REALTIME_AUTOSYNC.stop()
     except Exception:

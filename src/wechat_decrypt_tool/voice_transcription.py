@@ -2530,6 +2530,35 @@ class _VoiceModelDownloadCancelled(RuntimeError):
     pass
 
 
+def _publish_verified_voice_model(stage_dir: Path, model_dir: Path, model_id: str) -> None:
+    """Publish verified files when Windows temporarily refuses a directory rename."""
+    try:
+        os.replace(stage_dir, model_dir)
+        return
+    except PermissionError:
+        # Read-only scanners can hold a directory open on Windows. Each file is
+        # still published atomically; readiness stays false until all are present.
+        if model_dir.exists():
+            raise
+    model_dir.mkdir()
+    for source in stage_dir.rglob('*'):
+        if source.is_symlink():
+            raise ValueError('模型目录包含符号链接')
+        relative=source.relative_to(stage_dir)
+        target=model_dir/relative
+        if source.is_dir():
+            target.mkdir(parents=True,exist_ok=True)
+        elif source.is_file():
+            target.parent.mkdir(parents=True,exist_ok=True)
+            temporary=target.with_name(target.name+'.installing')
+            shutil.copyfile(source,temporary)
+            os.replace(temporary,target)
+    if model_id in ASR_MODEL_SPECS:
+        verify_model_files(model_dir,model_id)
+    elif not _model_directory_is_ready(model_dir,model_id):
+        raise ValueError('模型文件复制后校验失败')
+
+
 class VoiceModelDownloadManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -2794,7 +2823,7 @@ class VoiceModelDownloadManager:
                     model_dir.unlink()
             if cancel_event.is_set():
                 raise _VoiceModelDownloadCancelled()
-            os.replace(stage_dir, model_dir)
+            _publish_verified_voice_model(stage_dir, model_dir, model_id)
             stage_dir = None
             if cancel_event.is_set():
                 raise _VoiceModelDownloadCancelled()

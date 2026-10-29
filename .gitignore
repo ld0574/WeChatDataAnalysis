@@ -10,6 +10,8 @@ wheels/
 # Virtual environments
 .venv
 /output/
+/voice_models/
+/voice_runtimes/
 /.native-core-cache-v1/
 /.native-core-license-v1/
 .playwright-cli/

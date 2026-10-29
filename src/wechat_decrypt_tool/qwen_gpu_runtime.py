@@ -247,7 +247,25 @@ class QwenRuntimeManager:
         if root.exists():
             self.ensure_owned(root)
             shutil.rmtree(root)
-        stage.rename(root)
+        try:
+            stage.rename(root)
+        except PermissionError:
+            # Windows scanners may hold directory handles after verification.
+            # Link verified immutable runtime files without doubling disk usage;
+            # publish the readiness manifest only after every component exists.
+            self.ensure_owned(root)
+            root.mkdir()
+            for source in stage.rglob('*'):
+                relative=source.relative_to(stage)
+                if source.is_symlink():
+                    raise ValueError('GPU 组件临时目录包含符号链接。')
+                target=root/relative
+                if source.is_dir():
+                    target.mkdir(parents=True,exist_ok=True)
+                elif source.is_file() and relative.as_posix()!='installed.json':
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    os.link(source,target)
+            os.link(stage/'installed.json',root/'installed.json')
 
     def ensure_owned(self, path):
         base = get_data_dir().resolve()
