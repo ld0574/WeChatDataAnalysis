@@ -185,3 +185,80 @@ def test_media_response_has_explicit_image_type_even_if_windows_registry_is_wron
     assert response.status_code==200
     assert response.headers['content-type']=='image/webp'
     assert response.headers['x-content-type-options']=='nosniff'
+
+
+def test_image_content_hash_does_not_override_the_packed_file_identifier(tmp_path,monkeypatch):
+    from wechat_decrypt_tool.live_archive_media import image_source
+    import wechat_decrypt_tool.live_archive_media as module
+    store=ArchiveStore(tmp_path/'store')
+    content_hash='a'*32
+    file_hash='b'*32
+    h={**hit(),'renderType':'image','archiveRawText':f'<img md5="{content_hash}" />'}
+    put(store,h,raw=json.dumps({'packed_info_data':f'{file_hash}_t_W.dat'.encode().hex()}))
+    requested=[]
+    def locate(config,hit,digest):
+        requested.append(digest)
+        return tmp_path/(digest+'.dat')
+    monkeypatch.setattr(module,'local_image_path',locate)
+    key=media_origin(origin('message_0.db','Msg_test',1),h)
+    result=image_source({'baseline':str(tmp_path/'baseline')},store,{'origin':key},h)
+    assert result.name==file_hash+'.dat'
+    assert requested==[file_hash]
+
+
+def test_image_xml_identifier_remains_a_fallback_if_packed_file_is_missing(tmp_path,monkeypatch):
+    from wechat_decrypt_tool.live_archive_media import image_source
+    import wechat_decrypt_tool.live_archive_media as module
+    store=ArchiveStore(tmp_path/'store')
+    h={**hit(),'renderType':'image','archiveRawText':'<img md5="'+'a'*32+'" />'}
+    put(store,h,raw=json.dumps({'packed_info_data':('b'*32+'_t_W.dat').encode().hex()}))
+    def locate(config,hit,digest):
+        if digest=='b'*32:raise FileNotFoundError()
+        return tmp_path/(digest+'.dat')
+    monkeypatch.setattr(module,'local_image_path',locate)
+    result=image_source({'baseline':str(tmp_path/'base')},store,
+        {'origin':media_origin(origin('message_0.db','Msg_test',1),h)},h)
+    assert result.name=='a'*32+'.dat'
+
+
+@pytest.mark.parametrize('suffix',['_t_W','_h_W','_W','_t','.h',''])
+def test_packed_image_filename_wins_over_repeated_content_hashes(suffix):
+    from wechat_decrypt_tool.chat_helpers import _extract_md5_from_packed_info
+    blob=('a'*32+' ')*4+'b'*32+suffix+'.dat'
+    assert _extract_md5_from_packed_info(blob.encode())=='b'*32
+
+
+def test_search_promotes_visible_media_without_resetting_retry_backoff(tmp_path):
+    import time
+    h={**hit(),'renderType':'image','content':'[图片]'}
+    b=baseline(tmp_path,[h]);store=ArchiveStore(tmp_path/'store')
+    config={'baseline':str(b),'storage':str(store.root)}
+    page=search(config,'图片')
+    key=page['hits'][0]['archiveMediaKey']
+    assert page['hits'][0]['archiveMedia'][0]['status']=='pending'
+    with store.connect() as c:
+        row=c.execute('SELECT priority FROM jobs WHERE origin=?',(key,)).fetchone()
+        assert row['priority']==1
+        retry_at=time.time()+3600
+        c.execute("UPDATE jobs SET status='retry',due=? WHERE origin=?",(retry_at,key))
+    search(config,'图片')
+    with store.connect() as c:
+        assert c.execute('SELECT due FROM jobs WHERE origin=?',(key,)).fetchone()[0]==retry_at
+
+
+def test_visible_media_status_reports_newly_completed_files(tmp_path,monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from wechat_decrypt_tool.routers import live_archive as router
+    store=ArchiveStore(tmp_path)
+    h={**hit(),'renderType':'image'}
+    key=media_origin(put(store,h),h)
+    monkeypatch.setattr(router,'configured',lambda:({},store))
+    app=FastAPI();app.include_router(router.router)
+    client=TestClient(app)
+    assert client.post('/api/archive/media/status',json={'keys':[key]}).json()['items'][key][0]['status']=='pending'
+    with store.connect() as c:
+        c.execute("UPDATE jobs SET status='ready',path='saved.webp' WHERE origin=?",(key,))
+    item=client.post('/api/archive/media/status',json={'keys':[key]}).json()['items'][key][0]
+    assert item['status']=='ready' and item['path']=='saved.webp'
+    assert client.post('/api/archive/media/status',json={'keys':['x']*101}).status_code==400

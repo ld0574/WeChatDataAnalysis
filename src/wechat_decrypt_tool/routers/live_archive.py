@@ -2,12 +2,32 @@ from pathlib import Path
 import sqlite3
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from starlette.responses import FileResponse
 
 from ..live_archive import ArchiveStore, load_config
 from ..live_archive_search import search
 
 router=APIRouter()
+
+
+class MediaStatusRequest(BaseModel):
+    keys: list[str]
+
+
+@router.post('/api/archive/media/status')
+def media_status(req: MediaStatusRequest):
+    if len(req.keys)>100 or any(len(key)>512 for key in req.keys):
+        raise HTTPException(400,'媒体状态查询超出范围')
+    _config,store=configured()
+    items={key:[] for key in req.keys}
+    if req.keys:
+        with store.connect() as c:
+            placeholders=','.join('?' for _ in req.keys)
+            for row in c.execute(f'SELECT origin,kind,path,status,transcript,error FROM jobs WHERE origin IN ({placeholders})',req.keys):
+                value=dict(row)
+                items[value.pop('origin')].append(value)
+    return {'items':items}
 
 
 def configured():

@@ -108,6 +108,14 @@ class ArchiveStore:
             for col in ('audit_stamp','audit_target'):
                 if col not in columns:
                     c.execute(f"ALTER TABLE cursors ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+            job_columns={r[1] for r in c.execute('PRAGMA table_info(jobs)')}
+            if 'priority' not in job_columns:
+                try:
+                    c.execute('ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
+                except sqlite3.OperationalError as exc:
+                    if 'duplicate column' not in str(exc).lower():
+                        raise
+            c.execute('CREATE INDEX IF NOT EXISTS jobs_priority ON jobs(kind,status,priority DESC,attempts,due)')
             for old in c.execute('SELECT origin,payload FROM jobs WHERE json_array_length(origin)=3').fetchall():
                 c.execute('UPDATE OR IGNORE jobs SET origin=? WHERE origin=?',(media_origin(old['origin'],json.loads(old['payload'])),old['origin']))
 

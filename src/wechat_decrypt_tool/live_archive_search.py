@@ -65,8 +65,13 @@ def search(config,query,offset=0,limit=50):
             if not db.endswith('.db'):
                 db+='.db'
             key=origin(db,hit['table'],hit['localId'])
-            jobs=c.execute('SELECT kind,path,status,transcript,error FROM jobs WHERE origin=?',(media_origin(key,hit),)).fetchall()
+            media_key=media_origin(key,hit)
+            # Search-visible media should not wait behind the historical backlog.
+            store.enqueue(c,key,hit)
+            c.execute("UPDATE jobs SET priority=1,due=CASE WHEN priority=0 THEN MIN(due,0) ELSE due END WHERE origin=? AND status!='ready'",(media_key,))
+            jobs=c.execute('SELECT kind,path,status,transcript,error FROM jobs WHERE origin=?',(media_key,)).fetchall()
             hit['archiveMedia']=[dict(j) for j in jobs]
+            hit['archiveMediaKey']=media_key
             hit['archiveId']=hashlib.sha256(json.dumps(identity(hit)).encode()).hexdigest()
             hit.pop('archiveRawText',None)
     return {'hits':page,'hasMore':len(ordered)>offset+limit}

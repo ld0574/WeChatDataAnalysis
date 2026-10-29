@@ -60,7 +60,18 @@ const statusText = computed(() => {
 const date = value => value ? new Date(Number(value) * 1000).toLocaleString() : '尚未完成首轮'
 const mediaUrl = name => `${api}/archive/media/${encodeURIComponent(name)}`
 async function refresh() {
-  try { info.value = await $fetch(`${api}/archive/status`) }
+  try {
+    info.value = await $fetch(`${api}/archive/status`)
+    const keys = hits.value.filter(hit => hit.archiveMediaKey && hit.archiveMedia?.some(item => item.status !== 'ready')).slice(0, 100).map(hit => hit.archiveMediaKey)
+    if (keys.length) {
+      const data = await $fetch(`${api}/archive/media/status`, { method: 'POST', body: { keys } })
+      hits.value = hits.value.map(hit => {
+        const items = data.items[hit.archiveMediaKey]
+        if (!items) return hit
+        return { ...hit, archiveMedia: items, voiceTranscript: items.find(item => item.kind === 'voice')?.transcript || hit.voiceTranscript }
+      })
+    }
+  }
   catch (e) { error.value = e?.data?.detail || e.message }
 }
 async function runSearch(reset) {

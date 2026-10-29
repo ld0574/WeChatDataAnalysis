@@ -81,6 +81,45 @@ def voice_bytes(config, server_id):
     raise RuntimeError('语音源文件尚未找到，稍后重试')
 
 
+def image_source(config,store,job,hit):
+    """Prefer the on-disk identifier in packed metadata over the XML content hash."""
+    import sqlite3
+    from .chat_helpers import _extract_md5_from_packed_info,_quote_ident
+    db,table,lid=json.loads(job['origin'])[:3]
+    packed=None
+    sid=str(hit.get('serverIdStr') or hit.get('serverId') or '0')
+    with store.connect() as c:
+        # A zero server ID is not unique; use the source location in that case.
+        if sid!='0':
+            saved=c.execute('SELECT raw FROM messages WHERE username=? AND server_id=?',(hit['username'],sid)).fetchone()
+        else:
+            from .live_archive import origin
+            saved=c.execute('SELECT m.raw FROM messages m JOIN origins o ON o.message_id=m.id WHERE o.origin=?',
+                            (origin(db,table,lid),)).fetchone()
+    if saved and saved['raw']!='baseline-transcript':
+        packed=bytes.fromhex(json.loads(saved['raw']).get('packed_info_data') or '')
+    else:
+        path=Path(config['baseline'])/db
+        if path.is_file():
+            conn=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True)
+            try:
+                row=conn.execute(f'SELECT packed_info_data FROM {_quote_ident(table)} WHERE local_id=?',(lid,)).fetchone()
+                packed=row[0] if row else None
+            finally:
+                conn.close()
+    candidates=[_extract_md5_from_packed_info(packed)]
+    candidates.extend(re.findall(r'\bmd5=[\"\']([0-9a-fA-F]{32})',str(hit.get('archiveRawText') or '')))
+    candidates=list(dict.fromkeys(x.lower() for x in candidates if x))
+    if not candidates:
+        raise FileNotFoundError('图片文件标识尚未解析，稍后重试')
+    for md5 in candidates:
+        try:
+            return local_image_path(config,hit,md5)
+        except FileNotFoundError:
+            continue
+    raise FileNotFoundError('本机未缓存该图片，保留任务并稍后重试')
+
+
 def process_job(config,store,job,stop):
     hit=json.loads(job['payload'])
     key=hashlib.sha256(job['origin'].encode()).hexdigest()
@@ -88,31 +127,7 @@ def process_job(config,store,job,stop):
     if shutil.disk_usage(store.root).free<5*1024**3:
         raise RuntimeError('归档盘可用空间不足 5 GB，媒体任务已暂停')
     if job['kind']=='image':
-        raw=str(hit.get('archiveRawText') or '')
-        match=re.search(r'\bmd5=[\"\']([0-9a-fA-F]{32})',raw)
-        md5=match.group(1) if match else ''
-        if not md5:
-            import sqlite3
-            from .chat_helpers import _extract_md5_from_packed_info,_quote_ident
-            packed=None
-            from .live_archive import origin
-            db,table,lid=json.loads(job['origin'])[:3]
-            source_key=origin(db,table,lid)
-            with store.connect() as c:
-                saved=c.execute('SELECT raw FROM messages WHERE username=? AND server_id=?',
-                    (hit['username'],str(hit.get('serverIdStr') or hit.get('serverId') or '0'))).fetchone()
-            if saved and saved['raw']!='baseline-transcript':
-                packed=bytes.fromhex(json.loads(saved['raw']).get('packed_info_data') or '')
-            else:
-                path=Path(config['baseline'])/db
-                if path.is_file():
-                    with sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True) as c:
-                        row=c.execute(f'SELECT packed_info_data FROM {_quote_ident(table)} WHERE local_id=?',(lid,)).fetchone()
-                        packed=row[0] if row else None
-            md5=_extract_md5_from_packed_info(packed)
-        if not md5:
-            raise FileNotFoundError('图片文件标识尚未解析，稍后重试')
-        source=local_image_path(config,hit,md5)
+        source=image_source(config,store,job,hit)
         from .media_helpers import _read_and_maybe_decrypt_media
         from .app_paths import get_output_databases_dir
         data,_mime=_read_and_maybe_decrypt_media(source,account_dir=get_output_databases_dir()/config['source_account'],
@@ -156,7 +171,7 @@ def media_loop(config,store,stop,kind):
     while not stop.is_set():
         try:
             with store.connect() as c:
-                job=c.execute("SELECT * FROM jobs WHERE kind=? AND status IN ('pending','retry') AND due<=? ORDER BY attempts, due LIMIT 1",(kind,time.time())).fetchone()
+                job=c.execute("SELECT * FROM jobs WHERE kind=? AND status IN ('pending','retry') AND due<=? ORDER BY priority DESC, attempts, due LIMIT 1",(kind,time.time())).fetchone()
                 job=dict(job) if job else None
             if not job:
                 stop.wait(3)

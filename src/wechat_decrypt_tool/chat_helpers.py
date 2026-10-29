@@ -504,7 +504,7 @@ def _decode_message_content(compress_value: Any, message_value: Any) -> str:
 
 
 _MD5_HEX_RE = re.compile(rb"(?i)[0-9a-f]{32}")
-_DAT_MD5_RE = re.compile(rb"(?i)([0-9a-f]{32})(?:[._][thbc])?\.dat")
+_DAT_MD5_RE = re.compile(rb"(?i)([0-9a-f]{32})(?:[._][thbcw]){0,2}\.dat")
 _PACKED_INFO_HEX_RE = re.compile(r"(?i)^[0-9a-f]+$")
 
 
