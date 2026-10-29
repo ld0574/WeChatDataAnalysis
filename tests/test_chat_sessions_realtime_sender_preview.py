@@ -25,6 +25,48 @@ class _DummyConn:
 
 
 class TestChatSessionsRealtimeSenderPreview(unittest.TestCase):
+    def test_decrypted_sessions_do_not_wait_for_realtime_names(self):
+        with TemporaryDirectory() as td:
+            account_dir = Path(td) / "acc"
+            account_dir.mkdir(parents=True)
+            conn = sqlite3.connect(str(account_dir / "session.db"))
+            try:
+                conn.execute(
+                    "CREATE TABLE SessionTable (username TEXT, unread_count INTEGER, "
+                    "is_hidden INTEGER, summary TEXT, draft TEXT, last_timestamp INTEGER, "
+                    "sort_timestamp INTEGER, last_msg_type INTEGER, last_msg_sub_type INTEGER)"
+                )
+                conn.execute(
+                    "INSERT INTO SessionTable VALUES (?, 0, 0, ?, '', 100, 100, 1, 0)",
+                    ("example@chatroom", "hello"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with (
+                patch.object(chat_router, "_resolve_account_dir", return_value=account_dir),
+                patch.object(chat_router, "_load_session_last_message_meta", return_value={"example@chatroom": {}}),
+                patch.object(chat_router, "_load_contact_rows", return_value={}),
+                patch.object(chat_router, "load_session_last_messages", return_value={"example@chatroom": "wxid_sender: hello"}),
+                patch.object(chat_router.WCDB_REALTIME, "get_status", return_value={
+                    "dll_present": True, "key_present": True, "session_db_path": "example"
+                }) as status,
+                patch.object(chat_router.WCDB_REALTIME, "ensure_connected", return_value=_DummyConn()) as connect,
+                patch.object(chat_router, "_wcdb_get_display_names", return_value={}) as names,
+            ):
+                resp = chat_router.list_chat_sessions(
+                    _DummyRequest(), account="acc", limit=50,
+                    include_hidden=True, include_official=True,
+                    preview="latest", source="decrypted",
+                )
+
+            self.assertEqual(resp.get("source"), "decrypted")
+            self.assertEqual(len(resp.get("sessions") or []), 1)
+            status.assert_not_called()
+            connect.assert_not_called()
+            names.assert_not_called()
+
     def _run(self, sessions_rows: list[dict]) -> dict:
         with TemporaryDirectory() as td:
             account_dir = Path(td) / "acc"

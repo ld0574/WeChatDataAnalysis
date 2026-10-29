@@ -1,3 +1,4 @@
+import asyncio
 from typing import Optional
 import sys
 import psutil
@@ -18,10 +19,10 @@ async def detect_wechat_detailed(data_root_path: Optional[str] = None):
     try:
         from ..wechat_detection import detect_wechat_installation, detect_current_logged_in_account
 
-        info = detect_wechat_installation(data_root_path=data_root_path)
+        info = await asyncio.to_thread(detect_wechat_installation, data_root_path=data_root_path)
 
         # 检测当前登录账号
-        current_account_info = detect_current_logged_in_account(data_root_path)
+        current_account_info = await asyncio.to_thread(detect_current_logged_in_account, data_root_path)
 
         # 【新增特性】目录匹配校验：处理目录名 wxid_xxxx_yyyy 与真实 wxid_xxxx 的适配
         if current_account_info and current_account_info.get("current_account"):
@@ -71,7 +72,7 @@ async def detect_current_account(data_root_path: Optional[str] = None):
     try:
         from ..wechat_detection import detect_current_logged_in_account
 
-        result = detect_current_logged_in_account(data_root_path)
+        result = await asyncio.to_thread(detect_current_logged_in_account, data_root_path)
 
         logger.info(f"当前账号检测完成: {result.get('message', '无结果')}")
 

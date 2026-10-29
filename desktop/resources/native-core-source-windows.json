@@ -3,14 +3,14 @@
   "platform": "win32",
   "architecture": "x64",
   "publisherRepository": "LifeArchiveProject/WeChatDataAnalysis",
-  "releaseTag": "v2.4.0",
-  "assetName": "WeChatDataAnalysis-2.4.0-Setup.exe",
-  "assetSha256": "c924347408a94947588b54bf26352ced396513d3bef9386595c36a8210c1410a",
-  "buildId": "wcdb-prod-20260907-v240-6",
+  "releaseTag": "v2.10.0",
+  "assetName": "WeChatDataAnalysis-2.10.0-Setup.exe",
+  "assetSha256": "09a63a082503f7b1c194022ac3635885d7de737e7b422f096e1dfbc5e18a2c7d",
+  "buildId": "wcda-39523784335-3-windows-native",
   "nativeFiles": {
-    "wechatdb_client.dll": "59fdf95ba7eae4bc20c971fd28f714f154a54c84ab0b06184af5eb15ad33a06f",
-    "wechatdb_broker.exe": "eae2450c3ac9bc9b1bc82f317cffdb9163bca96ab4d55fd39817f515adc05813",
-    "wechatdb_native_build.json": "27b41c72953587300cad6922176c7288949e9d636bd22be59da930a589c0fb03"
+    "wechatdb_client.dll": "815b274b3fb540def1bd4bf93967f1c7a2f03d1426177af3fbf4edbf0f008299",
+    "wechatdb_broker.exe": "13f0db8adffb692da0d340a93def3ccf360e1729f96931d6e327dbbb33681d42",
+    "wechatdb_native_build.json": "129acf607225bf2de62bba26e5ec139a200b7f73272fee1cf5581d17ab15d4b5"
   },
-  "expiresAtUnix": 1792680288
+  "expiresAtUnix": 1796434039
 }

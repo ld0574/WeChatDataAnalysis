@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -38,6 +39,86 @@ async def _read_sse_events(response) -> list[dict]:
 
 
 class TestMediaDecryptStreamCancel(unittest.TestCase):
+    def test_scanning_is_cancellable_and_does_not_block_event_loop(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            entered = threading.Event()
+            stopped = threading.Event()
+
+            def slow_scan(_path, stop_event):
+                entered.set()
+                stop_event.wait(5)
+                stopped.set()
+                if False:
+                    yield None
+
+            class Request:
+                disconnected = False
+
+                async def is_disconnected(self):
+                    return self.disconnected
+
+            async def run():
+                request = Request()
+                with mock.patch.object(media_router, "_resolve_account_dir", return_value=root / "account"), \
+                     mock.patch.object(media_router, "_resolve_account_wxid_dir", return_value=root), \
+                     mock.patch.object(media_router, "_load_media_keys", return_value={"xor": 0xA5, "aes": ""}), \
+                     mock.patch.object(media_router, "_iter_all_dat_files", side_effect=slow_scan), \
+                     mock.patch.object(media_router, "_get_resource_dir", return_value=root / "resource"):
+                    response = await media_router.decrypt_all_media_stream(request, account="demo")
+                    iterator = response.body_iterator
+                    self.assertIn('"type": "scanning"', await anext(iterator))
+                    self.assertIn('"type": "start"', await anext(iterator))
+                    pending = asyncio.create_task(anext(iterator))
+                    await asyncio.sleep(0.1)
+                    self.assertTrue(entered.is_set())
+                    self.assertFalse(pending.done())
+                    request.disconnected = True
+                    with self.assertRaises(StopAsyncIteration):
+                        await asyncio.wait_for(pending, 2)
+                    self.assertTrue(await asyncio.to_thread(stopped.wait, 2))
+
+            asyncio.run(run())
+
+    def test_decrypt_starts_before_scan_completes(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            dat_path = root / "image.dat"
+            dat_path.write_bytes(b"encrypted")
+            release = threading.Event()
+
+            def slow_scan(_path, stop_event):
+                for _ in range(128):
+                    yield dat_path, "abc123"
+                release.wait(5)
+
+            async def run():
+                request = _FakeDisconnectingRequest(disconnect_after=9999)
+                with mock.patch.object(media_router, "_resolve_account_dir", return_value=root / "account"), \
+                     mock.patch.object(media_router, "_resolve_account_wxid_dir", return_value=root), \
+                     mock.patch.object(media_router, "_load_media_keys", return_value={"xor": 0xA5, "aes": ""}), \
+                     mock.patch.object(media_router, "_iter_all_dat_files", side_effect=slow_scan), \
+                     mock.patch.object(media_router, "_get_resource_dir", return_value=root / "resource"), \
+                     mock.patch.object(media_router, "_is_current_image_resource_source", return_value=False), \
+                     mock.patch.object(media_router, "_decrypt_and_save_resource", return_value=(True, "ok")):
+                    response = await media_router.decrypt_all_media_stream(request, account="demo")
+                    iterator = response.body_iterator
+                    try:
+                        for _ in range(10):
+                            chunk = await asyncio.wait_for(anext(iterator), 3)
+                            event = json.loads(str(chunk).split('data: ', 1)[1])
+                            if event['type'] == 'progress':
+                                self.assertTrue(event['scanning'])
+                                self.assertGreater(event['success_count'], 0)
+                                break
+                        else:
+                            self.fail("No processing progress while the scan was still running")
+                    finally:
+                        release.set()
+                        await iterator.aclose()
+
+            asyncio.run(run())
+
     def test_stream_uses_default_concurrency(self):
         with TemporaryDirectory() as td:
             root = Path(td)
@@ -51,7 +132,7 @@ class TestMediaDecryptStreamCancel(unittest.TestCase):
             with mock.patch.object(media_router, "_resolve_account_dir", return_value=account_dir):
                 with mock.patch.object(media_router, "_resolve_account_wxid_dir", return_value=wxid_dir):
                     with mock.patch.object(media_router, "_load_media_keys", return_value={"xor": 0xA5, "aes": ""}):
-                        with mock.patch.object(media_router, "_collect_all_dat_files", return_value=[(dat_path, "abc123")]):
+                        with mock.patch.object(media_router, "_iter_all_dat_files", return_value=iter([(dat_path, "abc123")])):
                             with mock.patch.object(media_router, "_get_resource_dir", return_value=resource_dir):
                                 with mock.patch.object(media_router, "_try_find_decrypted_resource", return_value=None):
                                     with mock.patch.object(media_router, "_decrypt_and_save_resource", return_value=(True, "ok")):
@@ -63,10 +144,13 @@ class TestMediaDecryptStreamCancel(unittest.TestCase):
                                         )
                                         events = asyncio.run(_read_sse_events(response))
 
-            self.assertEqual([event.get("type") for event in events], ["scanning", "start", "progress", "complete"])
-            self.assertEqual(events[1].get("concurrency"), 10)
-            self.assertEqual(events[2].get("concurrency"), 10)
-            self.assertEqual(events[3].get("concurrency"), 10)
+            self.assertEqual(events[0].get("type"), "scanning")
+            self.assertEqual(events[1].get("type"), "start")
+            self.assertEqual(events[-1].get("type"), "complete")
+            self.assertEqual({event["type"] for event in events}, {"scanning", "start", "scan_complete", "progress", "complete"})
+            for event in events:
+                if event.get("type") in {"start", "progress", "complete"}:
+                    self.assertEqual(event.get("concurrency"), 10)
 
     def test_stream_uses_requested_concurrency(self):
         with TemporaryDirectory() as td:
@@ -81,7 +165,7 @@ class TestMediaDecryptStreamCancel(unittest.TestCase):
             with mock.patch.object(media_router, "_resolve_account_dir", return_value=account_dir):
                 with mock.patch.object(media_router, "_resolve_account_wxid_dir", return_value=wxid_dir):
                     with mock.patch.object(media_router, "_load_media_keys", return_value={"xor": 0xA5, "aes": ""}):
-                        with mock.patch.object(media_router, "_collect_all_dat_files", return_value=[(dat_path, "abc123")]):
+                        with mock.patch.object(media_router, "_iter_all_dat_files", return_value=iter([(dat_path, "abc123")])):
                             with mock.patch.object(media_router, "_get_resource_dir", return_value=resource_dir):
                                 with mock.patch.object(media_router, "_try_find_decrypted_resource", return_value=None):
                                     with mock.patch.object(media_router, "_decrypt_and_save_resource", return_value=(True, "ok")):
@@ -94,9 +178,9 @@ class TestMediaDecryptStreamCancel(unittest.TestCase):
                                         )
                                         events = asyncio.run(_read_sse_events(response))
 
-            self.assertEqual(events[1].get("concurrency"), 7)
-            self.assertEqual(events[2].get("concurrency"), 7)
-            self.assertEqual(events[3].get("concurrency"), 7)
+            for event in events:
+                if event.get("type") in {"start", "progress", "complete"}:
+                    self.assertEqual(event.get("concurrency"), 7)
 
     def test_stream_stops_processing_when_client_disconnects(self):
         with TemporaryDirectory() as td:
@@ -114,7 +198,7 @@ class TestMediaDecryptStreamCancel(unittest.TestCase):
             with mock.patch.object(media_router, "_resolve_account_dir", return_value=account_dir):
                 with mock.patch.object(media_router, "_resolve_account_wxid_dir", return_value=wxid_dir):
                     with mock.patch.object(media_router, "_load_media_keys", return_value={"xor": 0xA5, "aes": ""}):
-                        with mock.patch.object(media_router, "_collect_all_dat_files", return_value=[(dat_path, "abc123")]):
+                        with mock.patch.object(media_router, "_iter_all_dat_files", return_value=iter([(dat_path, "abc123")])):
                             with mock.patch.object(media_router, "_get_resource_dir", return_value=resource_dir):
                                     with mock.patch.object(media_router, "_try_find_decrypted_resource", return_value=None):
                                         with mock.patch.object(media_router, "_decrypt_and_save_resource", decrypt_mock):

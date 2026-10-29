@@ -137,6 +137,10 @@
         </div>
       </div>
 
+      <div v-if="isLocalSnapshotAccount" class="px-6 py-2 border-b border-emerald-200 bg-emerald-50 text-xs text-emerald-900" role="status">
+        当前显示已解密的本地数据，新消息不会自动同步。
+      </div>
+
       <div v-if="searchContext.active" class="chat-context-banner px-6 py-2 border-b border-emerald-200 bg-emerald-50 flex items-center gap-3">
         <div class="chat-context-banner-title text-sm text-emerald-900">
           {{ searchContextBannerText }}

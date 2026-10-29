@@ -415,7 +415,7 @@ const pickDataDirectory = async () => {
       path = res.path
     } catch (e) {
       console.error('通过API唤起系统目录选择器失败:', e)
-      path = window.prompt(withErrorLogGuidance('无法直接唤起窗口，请输入微信数据目录的绝对路径:'))
+      path = window.prompt(withErrorLogGuidance(`${e.message || '无法直接唤起窗口'}。请手动输入微信数据目录的绝对路径:`))
       if (!path) return
     }
   }
@@ -458,7 +458,7 @@ const performPickWechatInstallDirectory = async () => {
         path = res.path
       } catch (e) {
         console.error('通过API唤起微信安装目录选择器失败:', e)
-        path = window.prompt(withErrorLogGuidance('无法直接唤起窗口，请输入微信安装目录或 Weixin.exe / WeChat.exe 的绝对路径:'))
+        path = window.prompt(withErrorLogGuidance(`${e.message || '无法直接唤起窗口'}。请手动输入微信安装目录或 Weixin.exe / WeChat.exe 的绝对路径:`))
         if (!path) return
       }
     }

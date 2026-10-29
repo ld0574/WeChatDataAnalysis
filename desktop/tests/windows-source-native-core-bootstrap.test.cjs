@@ -259,11 +259,11 @@ test("tracked Windows source pin selects the exact immutable public Release asse
   assert.equal(
     publicReleaseUrl(trackedPin),
     "https://github.com/LifeArchiveProject/WeChatDataAnalysis/releases/download/" +
-      "v2.4.0/WeChatDataAnalysis-2.4.0-Setup.exe"
+      "v2.10.0/WeChatDataAnalysis-2.10.0-Setup.exe"
   );
-  assert.equal(trackedPin.assetSha256, "c924347408a94947588b54bf26352ced396513d3bef9386595c36a8210c1410a");
-  assert.equal(trackedPin.nativeFiles["wechatdb_native_build.json"], "27b41c72953587300cad6922176c7288949e9d636bd22be59da930a589c0fb03");
-  assert.equal(trackedPin.expiresAtUnix, 1792680288);
+  assert.equal(trackedPin.assetSha256, "09a63a082503f7b1c194022ac3635885d7de737e7b422f096e1dfbc5e18a2c7d");
+  assert.equal(trackedPin.nativeFiles["wechatdb_native_build.json"], "129acf607225bf2de62bba26e5ec139a200b7f73272fee1cf5581d17ab15d4b5");
+  assert.equal(trackedPin.expiresAtUnix, 1796434039);
 });
 
 test("安装包组件缓存逐文件校验，并保持源码只读策略", () => withTempRoot(root => {

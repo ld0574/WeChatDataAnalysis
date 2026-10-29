@@ -2,6 +2,7 @@ import asyncio
 import concurrent.futures
 import hashlib
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,7 @@ from ..logging_config import get_logger
 from ..media_helpers import (
     _collect_emoticon_download_catalog,
     _collect_all_dat_files,
+    _iter_all_dat_files,
     _decrypt_and_save_resource,
     _get_decrypted_resource_path,
     _detect_image_extension,
@@ -469,45 +471,17 @@ async def decrypt_all_media_stream(
             yield sse({"type": "scanning", "message": "正在扫描图片文件..."})
             await asyncio.sleep(0)
 
-            dat_files = _collect_all_dat_files(wxid_dir)
-            total_files = len(dat_files)
-            scan_elapsed_ms = round((time.perf_counter() - scan_started_at) * 1000, 1)
-            logger.info(
-                "[media] decrypt_all_stream scan_done: account=%s total=%s elapsed_ms=%s",
-                account_dir.name,
-                total_files,
-                scan_elapsed_ms,
-            )
-
-            if await is_client_disconnected():
-                logger.info("[SSE] 扫描完成后客户端已断开，停止图片解密任务")
-                return
-
             resource_dir = _get_resource_dir(account_dir)
             resource_dir.mkdir(parents=True, exist_ok=True)
-
-            if total_files == 0:
-                yield sse(
-                    {
-                        "type": "complete",
-                        "message": "未发现需要解密的图片文件",
-                        "total": 0,
-                        "concurrency": worker_count,
-                        "success_count": 0,
-                        "skip_count": 0,
-                        "fail_count": 0,
-                        "output_dir": str(resource_dir),
-                    }
-                )
-                return
-
+            total_files = 0
             yield sse(
                 {
                     "type": "start",
-                    "total": total_files,
+                    "total": 0,
+                    "scanning": True,
                     "concurrency": worker_count,
                     "requested_concurrency": concurrency,
-                    "message": f"开始解密 {total_files} 个图片文件（并发 {worker_count}）",
+                    "message": "正在扫描并解密图片，图片总数尚未确定",
                 }
             )
             await asyncio.sleep(0)
@@ -531,12 +505,39 @@ async def decrypt_all_media_stream(
             last_summary_at = time.perf_counter()
 
             stop_event = asyncio.Event()
-            work_queue: asyncio.Queue = asyncio.Queue()
-            result_queue: asyncio.Queue = asyncio.Queue()
-            for item_index, item in enumerate(dat_files, start=1):
-                work_queue.put_nowait((item_index, item[0], item[1]))
-            for _ in range(worker_count):
-                work_queue.put_nowait(None)
+            scan_stop = threading.Event()
+            work_queue: asyncio.Queue = asyncio.Queue(maxsize=max(worker_count * 4, 32))
+            result_queue: asyncio.Queue = asyncio.Queue(maxsize=max(worker_count * 4, 32))
+            scan_iterator = iter(_iter_all_dat_files(wxid_dir, scan_stop))
+            scan_finished = False
+
+            def next_scan_batch():
+                batch = []
+                while len(batch) < 128 and not scan_stop.is_set():
+                    try:
+                        batch.append(next(scan_iterator))
+                    except StopIteration:
+                        break
+                return batch
+
+            async def produce_files():
+                nonlocal total_files
+                try:
+                    while not scan_stop.is_set():
+                        batch = await asyncio.to_thread(next_scan_batch)
+                        if not batch:
+                            break
+                        for dat_path, md5 in batch:
+                            if scan_stop.is_set():
+                                return
+                            await work_queue.put((total_files + 1, dat_path, md5))
+                            total_files += 1
+                    if not scan_stop.is_set():
+                        await result_queue.put({"type": "scan_complete", "total": total_files})
+                        for _ in range(worker_count):
+                            await work_queue.put(None)
+                except Exception as exc:
+                    await result_queue.put({"type": "scan_error", "message": str(exc)})
 
             loop = asyncio.get_running_loop()
             executor = concurrent.futures.ThreadPoolExecutor(
@@ -609,6 +610,7 @@ async def decrypt_all_media_stream(
                         work_queue.task_done()
 
             worker_tasks = [asyncio.create_task(worker(i + 1)) for i in range(worker_count)]
+            producer_task = asyncio.create_task(produce_files())
             logger.info(
                 "[media] decrypt_all_stream workers_started: account=%s total=%s concurrency=%s",
                 account_dir.name,
@@ -617,7 +619,8 @@ async def decrypt_all_media_stream(
             )
 
             try:
-                while processed_count < total_files:
+                last_scan_update_at = 0.0
+                while not scan_finished or processed_count < total_files:
                     if await is_client_disconnected():
                         stop_event.set()
                         logger.info(
@@ -636,6 +639,27 @@ async def decrypt_all_media_stream(
                     try:
                         result = await asyncio.wait_for(result_queue.get(), timeout=0.5)
                     except asyncio.TimeoutError:
+                        if await is_client_disconnected():
+                            return
+                        now = time.perf_counter()
+                        if not scan_finished and now - last_scan_update_at >= 1:
+                            yield sse({"type": "scanning", "total": total_files, "current": processed_count,
+                                       "success_count": success_count, "skip_count": skip_count,
+                                       "fail_count": fail_count, "concurrency": worker_count,
+                                       "message": f"正在扫描并解密，已发现 {total_files} 个图片文件"})
+                            last_scan_update_at = now
+                        continue
+
+                    if result.get("type") == "scan_error":
+                        result_queue.task_done()
+                        raise RuntimeError(result.get("message") or "扫描图片文件失败")
+                    if result.get("type") == "scan_complete":
+                        scan_finished = True
+                        result_queue.task_done()
+                        logger.info("[media] decrypt_all_stream scan_done: account=%s total=%s elapsed_ms=%s",
+                                    account_dir.name, total_files, round((time.perf_counter() - scan_started_at) * 1000, 1))
+                        yield sse({"type": "scan_complete", "total": total_files, "current": processed_count,
+                                   "message": f"扫描完成，共发现 {total_files} 个图片文件"})
                         continue
 
                     processed_count += 1
@@ -719,6 +743,7 @@ async def decrypt_all_media_stream(
                             "type": "progress",
                             "current": processed_count,
                             "total": total_files,
+                            "scanning": not scan_finished,
                             "concurrency": worker_count,
                             "success_count": success_count,
                             "skip_count": skip_count,
@@ -738,8 +763,11 @@ async def decrypt_all_media_stream(
                         await asyncio.sleep(0)
             finally:
                 stop_event.set()
+                scan_stop.set()
+                producer_task.cancel()
                 for task in worker_tasks:
                     task.cancel()
+                await asyncio.gather(producer_task, return_exceptions=True)
                 if worker_tasks:
                     await asyncio.gather(*worker_tasks, return_exceptions=True)
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -782,7 +810,7 @@ async def decrypt_all_media_stream(
                         "slow_decrypt_count": slow_decrypt_count,
                     },
                     "failed_files": failed_files[:20],
-                    "message": f"解密完成: 成功 {success_count}, 跳过 {skip_count}, 失败 {fail_count}（并发 {worker_count}）",
+                    "message": f"解密完成: 成功 {success_count}, 跳过 {skip_count}, 失败 {fail_count}（并发 {worker_count}）" if total_files else "未发现需要解密的图片文件",
                 }
             )
 

@@ -4944,7 +4944,7 @@ def list_chat_sessions(
                 need_display.append(u)
 
         need_display = list(dict.fromkeys(need_display))
-        if need_display and not account_prefers_decrypted_snapshot(account_dir):
+        if need_display and source_norm == "realtime" and not account_prefers_decrypted_snapshot(account_dir):
             wcdb_conn = rt_conn
             if wcdb_conn is None:
                 status = WCDB_REALTIME.get_status(account_dir)
@@ -5040,7 +5040,7 @@ def list_chat_sessions(
         if sender_username and sender_username not in group_sender_display_names:
             unresolved.append(sender_username)
     unresolved = list(dict.fromkeys(unresolved))
-    if unresolved and not account_prefers_decrypted_snapshot(account_dir):
+    if unresolved and source_norm == "realtime" and not account_prefers_decrypted_snapshot(account_dir):
         try:
             wcdb_conn = rt_conn or WCDB_REALTIME.ensure_connected(account_dir)
             with wcdb_conn.lock:
@@ -7652,7 +7652,7 @@ def _should_use_single_char_recent_probe(conn: sqlite3.Connection, token: str) -
     return doc_count >= _single_char_recent_probe_min_docs()
 
 
-async def _search_chat_messages_via_fts(
+def _search_chat_messages_via_fts(
     request: Request,
     *,
     q: str,
@@ -8324,7 +8324,8 @@ async def search_chat_messages(
 ):
     source_requested = _normalize_chat_source(source)
 
-    response = await _search_chat_messages_via_fts(
+    response = await asyncio.to_thread(
+        _search_chat_messages_via_fts,
         request,
         q=q,
         account=account,

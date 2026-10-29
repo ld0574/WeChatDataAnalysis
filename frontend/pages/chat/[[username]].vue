@@ -160,6 +160,13 @@ const { privacyMode } = storeToRefs(privacyStore)
 
 const chatAccounts = useChatAccountsStore()
 const { selectedAccount } = storeToRefs(chatAccounts)
+const isLocalSnapshotAccount = computed(() => {
+  const account = String(selectedAccount.value || '').trim()
+  return (chatAccounts.accountInfos || []).some((item) => (
+    String(item?.account || item?.name || '').trim() === account
+    && item?.mode === 'decrypted'
+  ))
+})
 
 const realtimeStore = useChatRealtimeStore()
 const {
@@ -1225,6 +1232,7 @@ const chatState = {
   openAiPage,
   chatAccounts,
   selectedAccount,
+  isLocalSnapshotAccount,
   availableAccounts,
   contacts,
   selectedContact,

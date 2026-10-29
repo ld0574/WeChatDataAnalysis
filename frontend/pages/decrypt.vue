@@ -401,7 +401,7 @@
             <div class="mb-3">
               <div class="flex justify-between text-xs text-[#7F7F7F] mb-1">
                 <span>{{ decryptProgress.message || '解密进度' }}</span>
-                <span>{{ progressPercent }}%</span>
+                <span>{{ decryptProgress.scanning ? '扫描中' : `${progressPercent}%` }}</span>
               </div>
               <div class="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
                 <div 
@@ -434,7 +434,7 @@
             <div class="grid grid-cols-5 gap-3 text-center bg-gray-50 rounded-lg p-3">
               <div>
                 <div class="text-xl font-bold text-[#10AEEF]">{{ decryptProgress.total }}</div>
-                <div class="text-xs text-[#7F7F7F]">总图片</div>
+                <div class="text-xs text-[#7F7F7F]">{{ decryptProgress.scanning ? '已发现图片' : '总图片' }}</div>
               </div>
               <div>
                 <div class="text-xl font-bold text-[#07C160]">{{ decryptProgress.concurrency || getMediaDecryptConcurrency() }}</div>
@@ -2494,6 +2494,7 @@ const dbProgressPercent = computed(() => {
 const decryptProgress = reactive({
   current: 0,
   total: 0,
+  scanning: false,
   concurrency: 0,
   success_count: 0,
   skip_count: 0,
@@ -2506,7 +2507,7 @@ const decryptProgress = reactive({
 
 // 进度百分比
 const progressPercent = computed(() => {
-  if (decryptProgress.total === 0) return 0
+  if (decryptProgress.scanning || decryptProgress.total === 0) return 0
   return Math.round((decryptProgress.current / decryptProgress.total) * 100)
 })
 
@@ -2646,6 +2647,7 @@ const resetDbDecryptProgress = () => {
 const resetMediaDecryptProgress = () => {
   decryptProgress.current = 0
   decryptProgress.total = 0
+  decryptProgress.scanning = false
   decryptProgress.concurrency = 0
   decryptProgress.success_count = 0
   decryptProgress.skip_count = 0
@@ -2894,15 +2896,28 @@ const decryptAllImages = async () => {
         const data = JSON.parse(event.data)
         
         if (data.type === 'scanning') {
+          decryptProgress.scanning = true
+          decryptProgress.total = data.total ?? decryptProgress.total
+          decryptProgress.current = data.current ?? decryptProgress.current
+          decryptProgress.success_count = data.success_count ?? decryptProgress.success_count
+          decryptProgress.skip_count = data.skip_count ?? decryptProgress.skip_count
+          decryptProgress.fail_count = data.fail_count ?? decryptProgress.fail_count
+          decryptProgress.concurrency = data.concurrency ?? decryptProgress.concurrency
           decryptProgress.current_file = '正在扫描文件...'
           decryptProgress.message = data.message || '正在扫描图片文件...'
         } else if (data.type === 'start') {
           decryptProgress.total = data.total || 0
+          decryptProgress.scanning = !!data.scanning
           decryptProgress.concurrency = data.concurrency || configuredConcurrency
           decryptProgress.message = data.message || ''
+        } else if (data.type === 'scan_complete') {
+          decryptProgress.scanning = false
+          decryptProgress.total = data.total || 0
+          decryptProgress.message = data.message || '扫描完成'
         } else if (data.type === 'progress') {
           decryptProgress.current = data.current || 0
           decryptProgress.total = data.total || 0
+          decryptProgress.scanning = !!data.scanning
           decryptProgress.concurrency = data.concurrency || configuredConcurrency
           decryptProgress.success_count = data.success_count || 0
           decryptProgress.skip_count = data.skip_count || 0
@@ -2912,6 +2927,7 @@ const decryptAllImages = async () => {
           decryptProgress.message = data.message || ''
         } else if (data.type === 'complete') {
           decryptProgress.status = 'complete'
+          decryptProgress.scanning = false
           decryptProgress.current = data.total || 0
           decryptProgress.total = data.total || 0
           decryptProgress.concurrency = data.concurrency || configuredConcurrency
@@ -2966,6 +2982,7 @@ const cancelMediaDecrypt = () => {
   if (!mediaDecrypting.value) return
 
   decryptProgress.status = 'cancelled'
+  decryptProgress.scanning = false
   decryptProgress.message = '已停止图片解密'
   mediaDecrypting.value = false
   warning.value = '已停止图片解密，已完成的图片会保留。'

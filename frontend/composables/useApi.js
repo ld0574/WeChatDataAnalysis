@@ -121,8 +121,18 @@ export const useApi = () => {
     }
   }
   
+  // 目录选择和检测依赖本地后端，代理不可用时先给出明确提示。
+  const ensureDetectionBackendAvailable = async () => {
+    try {
+      await $fetch('/health', { baseURL, timeout: 3000, retry: 0 })
+    } catch {
+      throw new Error('本地后端服务未启动或无法连接，请先启动后端服务。')
+    }
+  }
+
   // 微信检测API
   const detectWechat = async (params = {}) => {
+    await ensureDetectionBackendAvailable()
     const query = new URLSearchParams()
     if (params && params.data_root_path) {
       query.set('data_root_path', params.data_root_path)
@@ -1124,6 +1134,7 @@ export const useApi = () => {
   }
 
   const pickSystemDirectory = async (params = {}) => {
+    await ensureDetectionBackendAvailable()
     const query = new URLSearchParams()
     if (params && params.title) query.set('title', params.title)
     if (params && params.initial_dir) query.set('initial_dir', params.initial_dir)

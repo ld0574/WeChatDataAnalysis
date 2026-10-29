@@ -2,6 +2,7 @@ import asyncio
 import io
 import os
 import sys
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,6 +14,47 @@ sys.path.insert(0, str(ROOT / "src"))
 
 
 class TestWechatDetectionAutoDetect(unittest.TestCase):
+    def test_slow_detection_does_not_block_other_requests(self):
+        import httpx
+        from fastapi import FastAPI
+        from wechat_decrypt_tool import wechat_detection as wd
+        from wechat_decrypt_tool.routers import wechat_detection as detection_router
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_detection(data_root_path=None):
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("test did not release the scan")
+            return {"accounts": [], "databases": [], "user_accounts": [],
+                    "message_dirs": [], "wechat_install_path": None}
+
+        async def run():
+            app = FastAPI()
+            app.include_router(detection_router.router)
+
+            @app.get('/health')
+            async def health():
+                return {"status": "ok"}
+
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url='http://test') as client:
+                task = asyncio.create_task(client.get('/api/wechat-detection'))
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                    response = await asyncio.wait_for(client.get('/health'), timeout=1)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertFalse(task.done())
+                finally:
+                    release.set()
+                response = await asyncio.wait_for(task, timeout=2)
+                self.assertEqual(response.json()['status'], 'success')
+
+        with patch.object(wd, 'detect_wechat_installation', side_effect=slow_detection), \
+             patch.object(wd, 'detect_current_logged_in_account', return_value=None):
+            asyncio.run(run())
+
     def test_detection_route_succeeds_when_backend_stdout_uses_cp950(self):
         from wechat_decrypt_tool import wechat_detection as wd
         from wechat_decrypt_tool.routers import wechat_detection as detection_router

@@ -1,12 +1,15 @@
 <template>
   <div ref="messageContainerRef" class="message-list flex-1 overflow-y-auto p-4 min-h-0" @scroll="onMessageScroll">
     <div v-if="selectedContact && hasMoreMessages" class="flex justify-center mb-4">
-      <div
+      <button
+        type="button"
         class="message-list-load-more text-xs px-3 py-1 select-none"
         :class="{ 'opacity-60': isLoadingMessages }"
+        :disabled="isLoadingMessages"
+        @click="loadMoreMessages"
       >
-        {{ isLoadingMessages ? '加载中...' : '继续上滑加载更多' }}
-      </div>
+        {{ isLoadingMessages ? '加载中...' : '点击或继续上滑加载更早消息' }}
+      </button>
     </div>
 
     <div v-if="isLoadingMessages && messages.length === 0" class="message-list-status text-center text-sm py-6">

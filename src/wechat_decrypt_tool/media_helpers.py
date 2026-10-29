@@ -4009,11 +4009,10 @@ def _ensure_decrypted_resource_for_md5(
     return output_path
 
 
-def _collect_all_dat_files(wxid_dir: Path) -> list[tuple[Path, str]]:
-    """收集所有需要解密的.dat文件，返回 (文件路径, md5) 列表"""
-    results: list[tuple[Path, str]] = []
+def _iter_all_dat_files(wxid_dir: Path, stop_event: Optional[threading.Event] = None):
+    """逐个发现图片文件；调用方可在扫描期间取消。"""
     if not wxid_dir or not wxid_dir.exists():
-        return results
+        return
 
     # 搜索目录
     search_dirs = [
@@ -4024,24 +4023,36 @@ def _collect_all_dat_files(wxid_dir: Path) -> list[tuple[Path, str]]:
     for search_dir in search_dirs:
         if not search_dir.exists():
             continue
-        try:
-            for dat_file in search_dir.rglob("*.dat"):
-                if not dat_file.is_file():
-                    continue
-                # 从文件名提取MD5
-                stem = dat_file.stem
-                # 文件名格式可能是: md5.dat, md5_t.dat, md5_h.dat 等
-                md5 = _normalize_variant_basename(stem)
-                if not _EMOTICON_MD5_RE.fullmatch(md5):
-                    # 保留旧版对 MD5_序号/其他后缀的支持，同时识别新增的点号变体。
-                    md5 = stem.split("_", 1)[0]
-                # 验证是否是有效的MD5（32位十六进制）
-                if len(md5) == 32 and all(c in "0123456789abcdefABCDEF" for c in md5):
-                    results.append((dat_file, md5.lower()))
-        except Exception as e:
-            logger.warning(f"扫描目录失败 {search_dir}: {e}")
+        pending = [search_dir]
+        while pending and not (stop_event and stop_event.is_set()):
+            directory = pending.pop()
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if stop_event and stop_event.is_set():
+                            return
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                pending.append(Path(entry.path))
+                                continue
+                            if not entry.name.lower().endswith('.dat') or not entry.is_file():
+                                continue
+                        except OSError:
+                            continue
+                        dat_file = Path(entry.path)
+                        stem = dat_file.stem
+                        md5 = _normalize_variant_basename(stem)
+                        if not _EMOTICON_MD5_RE.fullmatch(md5):
+                            md5 = stem.split("_", 1)[0]
+                        if len(md5) == 32 and all(c in "0123456789abcdefABCDEF" for c in md5):
+                            yield dat_file, md5.lower()
+            except OSError as e:
+                logger.warning("扫描目录失败 %s: %s", directory, e)
 
-    return results
+
+def _collect_all_dat_files(wxid_dir: Path) -> list[tuple[Path, str]]:
+    """收集所有需要解密的.dat文件，返回 (文件路径, md5) 列表"""
+    return list(_iter_all_dat_files(wxid_dir))
 
 
 def _decrypt_and_save_resource(
