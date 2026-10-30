@@ -93,6 +93,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
             metadata = json.loads(raw)
             if metadata.get("image"):
                 add(metadata["image"], metadata["image_digest"])
+            if metadata.get("media"):
+                add(metadata["media"], metadata["media_digest"])
         counts = {
             t: db.execute("SELECT count(*) FROM " + t).fetchone()[0] for t in TABLES
         }
@@ -233,6 +235,8 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
             metadata = json.loads(raw)
             if metadata.get("image") and metadata["image"] not in available:
                 raise RuntimeError("Snapshot is missing referenced document image")
+            if metadata.get("media") and metadata["media"] not in available:
+                raise RuntimeError("Snapshot is missing referenced document media")
     return {
         "database_integrity": integrity,
         "counts": counts,

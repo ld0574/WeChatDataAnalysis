@@ -396,3 +396,78 @@ def test_only_validated_partial_media_survives_inventory_refresh(tmp_path, monke
         "changed" in result["videos"][0]["error"]
         and "sha256" not in result["videos"][0]
     )
+
+
+def test_run_releases_gpu_between_asr_and_cpu_capture(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from wechat_decrypt_tool import course_knowledge as module
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"synthetic")
+    store = KnowledgeStore(tmp_path / "kb")
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "videos": [
+                    {"path": str(source), "duration_seconds": 25, "audio_streams": [{}]}
+                ]
+            }
+        )
+    )
+    phases = []
+
+    def transcribe(*args):
+        with pytest.raises(module.GpuBusyError):
+            with module.gpu_lease(store):
+                pass
+        phases.append("asr")
+
+    def capture(*args):
+        with module.gpu_lease(store):
+            pass
+        phases.append("cpu_capture")
+
+    def enrich(*args, cooperative):
+        assert cooperative
+        with module.gpu_lease(store):
+            pass
+        phases.append("cooperative_enrichment")
+
+    monkeypatch.setattr(module, "transcribe", transcribe)
+    monkeypatch.setattr(module, "capture_frames", capture)
+    monkeypatch.setattr(module, "enrich", enrich)
+    monkeypatch.setattr(module, "unload_model", lambda _: None)
+    module.run_courses(
+        store,
+        SimpleNamespace(
+            inventory=inventory,
+            deduplicate=False,
+            video=None,
+            model="local",
+            asr_model=tmp_path / "model",
+            enrich=True,
+            limit=0,
+        ),
+    )
+    assert phases == ["asr", "cpu_capture", "cooperative_enrichment"]
+
+
+def test_remote_model_rejected_before_any_course_chat_request(monkeypatch):
+    from wechat_decrypt_tool import course_knowledge as module
+
+    def reject(_):
+        raise RuntimeError("Cloud model forbidden for course OCR")
+
+    monkeypatch.setattr("wechat_decrypt_tool.course_pdf_ocr.local_model_digest", reject)
+    monkeypatch.setattr(
+        "httpx.Client",
+        lambda *args, **kwargs: pytest.fail(
+            "Course chat sent before local model validation"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="Cloud model forbidden"):
+        module.local_chat(
+            "remote", [{"role": "user", "content": "synthetic confidential marker"}]
+        )
