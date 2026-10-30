@@ -138,3 +138,23 @@ def test_changed_pdf_invalidates_old_ocr_but_keeps_old_evidence(tmp_path):
             c.execute("SELECT text FROM documents WHERE text='ocr_old'").fetchone()[0]
             == "ocr_old"
         )
+
+
+def test_page_gpu_waits_without_losing_pause_control(tmp_path, monkeypatch):
+    from wechat_decrypt_tool.course_knowledge import gpu_lease
+
+    store = KnowledgeStore(tmp_path / "kb")
+    holder = gpu_lease(store)
+    holder.__enter__()
+    stages = []
+    monkeypatch.setattr(
+        module.time, "sleep", lambda _: holder.__exit__(None, None, None)
+    )
+    with module.page_gpu_lease(store, gpu_lease, stages.append, True):
+        assert stages == ["waiting_gpu"]
+    with gpu_lease(store):
+        pass
+    (store.root / "pause.flag").write_text("pause")
+    with pytest.raises(InterruptedError):
+        with module.page_gpu_lease(store, gpu_lease, stages.append, True):
+            pass

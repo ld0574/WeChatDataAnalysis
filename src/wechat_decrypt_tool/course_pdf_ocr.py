@@ -127,7 +127,28 @@ def local_model_digest(model):
         return record["digest"]
 
 
-def run_pdf_ocr(store, reports, source, model, chat, lease, *, limit=0, poppler=None):
+@contextmanager
+def page_gpu_lease(store, lease, progress, wait):
+    while True:
+        store.checkpoint()
+        manager = lease(store)
+        try:
+            manager.__enter__()
+            break
+        except RuntimeError as exc:
+            if type(exc).__name__ != "GpuBusyError" or not wait:
+                raise
+            progress("waiting_gpu")
+            time.sleep(0.5)
+    try:
+        yield
+    finally:
+        manager.__exit__(None, None, None)
+
+
+def run_pdf_ocr(
+    store, reports, source, model, chat, lease, *, limit=0, poppler=None, wait=False
+):
     poppler = Path(poppler or shutil.which("pdftoppm") or "")
     if not poppler.is_file():
         raise RuntimeError("Local pdftoppm is required")
@@ -215,7 +236,7 @@ def run_pdf_ocr(store, reports, source, model, chat, lease, *, limit=0, poppler=
                             content = value["text"]
                         else:
                             try:
-                                with lease(store):
+                                with page_gpu_lease(store, lease, progress, wait):
                                     progress(
                                         "gpu_ocr", current={**target, "page": page}
                                     )
@@ -237,6 +258,8 @@ def run_pdf_ocr(store, reports, source, model, chat, lease, *, limit=0, poppler=
                                             },
                                         ],
                                     )
+                                if wait:
+                                    time.sleep(0.35)
                             except RuntimeError as exc:
                                 if type(exc).__name__ == "GpuBusyError":
                                     deferred = True
