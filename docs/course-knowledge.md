@@ -62,6 +62,14 @@ $env:PYTHONPATH = 'D:\Project\WeChatDataAnalysis\src'
 
 补处理结果另存 `courseware-supplement-report.json`，不会覆盖完整来源报告；之后再次执行 Resources 可将整个讲义库迁移到新提取版本。
 
+PDF 图像页使用本地 Poppler 渲染，再交给本地 GPU 模型转录和描述图示。原图保存在 `document-visuals`，页面编号、原始 PDF 哈希、渲染器和模型摘要一并记录；来源证据页面可直接查看原图。模型输出仍是待复核草稿。文字因 PDF 更新失效时，对应旧 OCR 会退出当前搜索，历史原图和引用继续保留。相同页面的缓存按提取版本与模型摘要复用，处理时与视频任务共用 GPU 锁，GPU 忙则留待续跑。
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge pdf-ocr --source 'D:\迁移\知乎 AI 大模型应用开发' --report output/course-knowledge/courseware-index-report.json --report output/course-knowledge/courseware-supplement-report.json
+```
+
+`pdf-ocr-report.json` 记录成功、失败、范围限制和 GPU 延后状态。空白页和带图示页面应对照渲染结果核对；PDF 解析出现省略警告时也需补查。该命令不渲染 PPTX，课件图示页仍需另行处理，不能据此认定所有视觉资料已覆盖。
+
 ## 归档文件
 
 | 文件 | 作用 |

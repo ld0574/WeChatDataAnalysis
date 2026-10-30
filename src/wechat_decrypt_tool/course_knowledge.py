@@ -164,6 +164,8 @@ class KnowledgeStore:
               CREATE INDEX IF NOT EXISTS document_source ON documents(path,source_key,active);
               CREATE TABLE IF NOT EXISTS resource_revisions(path TEXT,source_key TEXT,raw_digest TEXT,
                 extractor TEXT,revision TEXT,metadata TEXT,completed REAL,PRIMARY KEY(path,source_key));
+              CREATE TABLE IF NOT EXISTS document_version_metadata(path TEXT,source_key TEXT,revision TEXT,
+                metadata TEXT,PRIMARY KEY(path,source_key,revision));
               CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(search_text,
                 content='documents',content_rowid='id');
               CREATE TRIGGER IF NOT EXISTS document_insert AFTER INSERT ON documents BEGIN
@@ -402,6 +404,14 @@ class KnowledgeStore:
                 "SELECT * FROM resource_revisions WHERE path=? AND source_key=? AND raw_digest=? AND extractor=?",
                 (str(path), source_key, raw_digest, extractor),
             ).fetchone()
+            if (
+                row
+                and c.execute(
+                    "SELECT 1 FROM documents WHERE path=? AND source_key=? AND digest=? AND active=0 LIMIT 1",
+                    (str(path), source_key, row["revision"]),
+                ).fetchone()
+            ):
+                return None
             return json.loads(row["metadata"]) if row else None
 
     def save_document_versions(self, versions):
@@ -412,6 +422,19 @@ class KnowledgeStore:
                 key = version["source_key"]
                 extractor = version["extractor"]
                 raw = version["raw_digest"]
+                parent = version["metadata"].get("parent_source_key")
+                if parent is not None:
+                    current = c.execute(
+                        "SELECT raw_digest FROM resource_revisions WHERE path=? AND source_key=?",
+                        (path, parent),
+                    ).fetchone()
+                    if (
+                        current
+                        and current[0] != version["metadata"]["parent_raw_digest"]
+                    ):
+                        raise RuntimeError(
+                            "OCR source revision changed; re-render current source"
+                        )
                 revision = hashlib.sha256(
                     (raw + "\0" + extractor + "\0" + key).encode()
                 ).hexdigest()
@@ -445,6 +468,12 @@ class KnowledgeStore:
                     "UPDATE documents SET active=0 WHERE path=? AND source_key=? AND digest!=? AND active=1",
                     (path, key, revision),
                 )
+                c.execute(
+                    """UPDATE documents SET active=0 WHERE path=? AND source_key IN
+                  (SELECT source_key FROM resource_revisions WHERE path=? AND
+                   json_extract(metadata,'$.parent_source_key')=? AND json_extract(metadata,'$.parent_raw_digest')!=?)""",
+                    (path, path, key, raw),
+                )
                 for location, text in chunks:
                     if location in existing:
                         c.execute(
@@ -466,6 +495,15 @@ class KnowledgeStore:
                                 raw,
                             ),
                         )
+                c.execute(
+                    "INSERT OR IGNORE INTO document_version_metadata VALUES(?,?,?,?)",
+                    (
+                        path,
+                        key,
+                        revision,
+                        json.dumps(version["metadata"], ensure_ascii=False),
+                    ),
+                )
                 c.execute(
                     """INSERT INTO resource_revisions VALUES(?,?,?,?,?,?,?) ON CONFLICT(path,source_key)
                              DO UPDATE SET raw_digest=excluded.raw_digest,extractor=excluded.extractor,
@@ -1613,6 +1651,18 @@ def create_app(store, model):
                 ).fetchone()
             if not r:
                 raise HTTPException(404)
+            with store.connect() as c:
+                visual = c.execute(
+                    "SELECT metadata FROM document_version_metadata WHERE path=? AND source_key=? AND revision=?",
+                    (r["path"], r["source_key"], r["digest"]),
+                ).fetchone()
+            image_html = (
+                '<p>页面原图（模型解读待复核）</p><img style="max-width:100%" src="/document-visual/'
+                + str(r["id"])
+                + '">'
+                if visual and json.loads(visual["metadata"]).get("image")
+                else ""
+            )
             return HTMLResponse(
                 '<meta charset="utf-8"><a href="/">返回知识库</a><h2>'
                 + html.escape(r["path"])
@@ -1626,6 +1676,7 @@ def create_app(store, model):
                 + '</p><pre style="white-space:pre-wrap">'
                 + html.escape(r["text"])
                 + "</pre>"
+                + image_html
             )
         table = "frames" if evidence_id < 0 else "segments"
         with store.connect() as c:
@@ -1636,6 +1687,27 @@ def create_app(store, model):
             raise HTTPException(404)
         anchor = ("f" if evidence_id < 0 else "s") + str(abs(evidence_id))
         return RedirectResponse("/lesson/" + r["video"] + "#" + anchor)
+
+    @app.get("/document-visual/{document_id}")
+    def document_visual(document_id: int):
+        with store.connect() as c:
+            row = c.execute(
+                """SELECT m.metadata FROM documents d JOIN document_version_metadata m
+              ON m.path=d.path AND m.source_key=d.source_key AND m.revision=d.digest WHERE d.id=?""",
+                (document_id,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(404)
+        relative = json.loads(row["metadata"]).get("image")
+        if not relative:
+            raise HTTPException(404)
+        path = (store.root / relative).resolve()
+        if (
+            not path.is_relative_to((store.root / "document-visuals").resolve())
+            or not path.is_file()
+        ):
+            raise HTTPException(404)
+        return FileResponse(path, media_type="image/png")
 
     @app.get("/frame/{frame_id}")
     def frame(frame_id: int):
@@ -1681,6 +1753,10 @@ def main():
     sub.add_parser("resume")
     courseware = sub.add_parser("courseware")
     courseware.add_argument("source", type=Path)
+    ocr = sub.add_parser("pdf-ocr")
+    ocr.add_argument("--source", required=True, type=Path)
+    ocr.add_argument("--report", action="append", required=True, type=Path)
+    ocr.add_argument("--limit", type=int, default=0)
     courseware.add_argument(
         "--only-report",
         type=Path,
@@ -1697,6 +1773,28 @@ def main():
     store = KnowledgeStore(args.root)
     if args.command == "status":
         print(json.dumps(store.status(), ensure_ascii=False, indent=2))
+        return
+    if args.command == "pdf-ocr":
+        from .course_pdf_ocr import run_pdf_ocr
+
+        value = run_pdf_ocr(
+            store,
+            args.report,
+            args.source,
+            args.model,
+            local_chat,
+            gpu_lease,
+            limit=args.limit,
+        )
+        print(
+            json.dumps(
+                {
+                    "processed": value["processed"],
+                    "errors": len(value["errors"]),
+                    "deferred_gpu": value["deferred_gpu"],
+                }
+            )
+        )
         return
     if args.command == "review":
         print(export_review(store, args.video_id))
