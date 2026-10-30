@@ -49,6 +49,19 @@
 
 媒体标签中的旧编码使用替换字符读取，课程音视频仍按正常解码规则处理。标签编码异常不代表视频已损坏；不要仅凭 UTF-8 元数据错误排除课程。修复清单后需要重新运行 Prepare，以便补回之前排除的路径；已完成且大小、修改时间一致的完整哈希会复用。首尾解码只证明媒体可读，整段覆盖仍由后续转写和校验确认。
 
+讲义按原始内容哈希、提取器版本和归档内路径保存不可变的提取版本。修正字体解码或升级提取器后，搜索切换到新版本，旧证据编号和文字仍可追溯；较短的新提取结果不会残留旧版本尾部。完成的同版本资源重跑时会跳过解析。库结构迁移使用独立文件锁串行执行，避免多个命令同时迁移。
+
+PDF 使用文件流读取（上限 128 MiB）；PPTX/DOCX 直接读取容器内 XML（上限 512 MiB），不把全部内嵌图片加载进内存。普通文本仍限制 16 MiB。ZIP 中因单文件或累计预算跳过的资源会逐项记录，原文件保留；空白 PDF 页面和课件视觉页会列入待 OCR 清单。这些限制不代表素材已经完整归档。
+
+仅补处理之前跳过的来源：
+
+```powershell
+$env:PYTHONPATH = 'D:\Project\WeChatDataAnalysis\src'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge courseware 'D:\迁移\知乎 AI 大模型应用开发' --only-report output/course-knowledge/courseware-index-report.json
+```
+
+补处理结果另存 `courseware-supplement-report.json`，不会覆盖完整来源报告；之后再次执行 Resources 可将整个讲义库迁移到新提取版本。
+
 ## 归档文件
 
 | 文件 | 作用 |

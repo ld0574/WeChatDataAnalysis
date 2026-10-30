@@ -12,7 +12,6 @@ import sqlite3
 import tempfile
 import time
 import wave
-import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -22,6 +21,39 @@ DOCUMENT_ID_OFFSET = 1_000_000_000
 
 class GpuBusyError(RuntimeError):
     pass
+
+
+@contextmanager
+def schema_lease(path, timeout=300):
+    """Serialize schema migrations without consuming the GPU processing lease."""
+    handle = Path(path).open("a+b")
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            handle.seek(0)
+            try:
+                if __import__("os").name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Another course archive schema migration is still active"
+                    ) from None
+                time.sleep(0.1)
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        yield
+    finally:
+        handle.close()
 
 
 def tokens(value):
@@ -68,9 +100,16 @@ class KnowledgeStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "knowledge.sqlite3"
+        with schema_lease(self.root / "schema.lock"):
+            self._initialize_schema()
+
+    def _initialize_schema(self):
         with self.connect() as c:
             had_visual_index = c.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='visual_fts'"
+            ).fetchone()
+            had_document_index = c.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='document_fts'"
             ).fetchone()
             if c.execute("SELECT 1 FROM sqlite_master WHERE name='frames'").fetchone():
                 if "search_text" not in {
@@ -83,6 +122,20 @@ class KnowledgeStore:
                     r[1] for r in c.execute("PRAGMA table_info(frames)")
                 }:
                     c.execute("ALTER TABLE frames ADD COLUMN model TEXT DEFAULT ''")
+            if c.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='documents'"
+            ).fetchone():
+                fields = {r[1] for r in c.execute("PRAGMA table_info(documents)")}
+                for name, definition in {
+                    "active": "INTEGER NOT NULL DEFAULT 1",
+                    "source_key": "TEXT NOT NULL DEFAULT ''",
+                    "extractor": "TEXT NOT NULL DEFAULT 'legacy-v1'",
+                    "raw_digest": "TEXT NOT NULL DEFAULT ''",
+                }.items():
+                    if name not in fields:
+                        c.execute(
+                            f"ALTER TABLE documents ADD COLUMN {name} {definition}"
+                        )
             c.executescript("""
               PRAGMA journal_mode=WAL;
               CREATE TABLE IF NOT EXISTS videos(
@@ -105,7 +158,12 @@ class KnowledgeStore:
               CREATE TABLE IF NOT EXISTS events(time REAL,kind TEXT,data TEXT);
               CREATE TABLE IF NOT EXISTS aliases(path TEXT PRIMARY KEY,video TEXT,size INTEGER,mtime_ns INTEGER,digest TEXT);
               CREATE TABLE IF NOT EXISTS documents(id INTEGER PRIMARY KEY,path TEXT,locator TEXT,
-                digest TEXT,text TEXT,search_text TEXT,UNIQUE(path,locator,digest));
+                digest TEXT,text TEXT,search_text TEXT,active INTEGER NOT NULL DEFAULT 1,
+                source_key TEXT NOT NULL DEFAULT '',extractor TEXT NOT NULL DEFAULT 'legacy-v1',
+                raw_digest TEXT NOT NULL DEFAULT '',UNIQUE(path,locator,digest));
+              CREATE INDEX IF NOT EXISTS document_source ON documents(path,source_key,active);
+              CREATE TABLE IF NOT EXISTS resource_revisions(path TEXT,source_key TEXT,raw_digest TEXT,
+                extractor TEXT,revision TEXT,metadata TEXT,completed REAL,PRIMARY KEY(path,source_key));
               CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(search_text,
                 content='documents',content_rowid='id');
               CREATE TRIGGER IF NOT EXISTS document_insert AFTER INSERT ON documents BEGIN
@@ -120,6 +178,8 @@ class KnowledgeStore:
             """)
             if not had_visual_index:
                 c.execute("INSERT INTO visual_fts(visual_fts) VALUES('rebuild')")
+            if not had_document_index:
+                c.execute("INSERT INTO document_fts(document_fts) VALUES('rebuild')")
 
     @contextmanager
     def connect(self):
@@ -247,7 +307,7 @@ class KnowledgeStore:
                     for r in c.execute(
                         """SELECT -s.id-1000000000 id,'' video,0 start,0 end,
                 s.text,s.path||' · '||s.locator title,'document' kind,bm25(document_fts) rank
-                FROM document_fts f JOIN documents s ON s.id=f.rowid WHERE document_fts MATCH ?
+                FROM document_fts f JOIN documents s ON s.id=f.rowid WHERE document_fts MATCH ? AND s.active=1
                 ORDER BY bm25(document_fts) LIMIT ?""",
                         (match, limit),
                     )
@@ -280,7 +340,10 @@ class KnowledgeStore:
                     "SELECT COUNT(*) FROM notes WHERE status='ready'"
                 ).fetchone()[0],
                 "document_chunks": c.execute(
-                    "SELECT COUNT(*) FROM documents"
+                    "SELECT COUNT(*) FROM documents WHERE active=1"
+                ).fetchone()[0],
+                "historical_document_chunks": c.execute(
+                    "SELECT COUNT(*) FROM documents WHERE active=0"
                 ).fetchone()[0],
                 "verified_duplicate_video_paths": c.execute(
                     "SELECT COUNT(*) FROM aliases"
@@ -329,6 +392,94 @@ class KnowledgeStore:
             raise InterruptedError("批处理已暂停，已提交进度会保留")
         if __import__("shutil").disk_usage(self.root).free < 8 * 1024**3:
             raise InterruptedError("归档盘可用空间低于 8 GiB，已暂停以保留恢复空间")
+
+    def write_json(self, name, value):
+        atomic_json(self.root / name, value)
+
+    def document_revision(self, path, source_key, raw_digest, extractor):
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT * FROM resource_revisions WHERE path=? AND source_key=? AND raw_digest=? AND extractor=?",
+                (str(path), source_key, raw_digest, extractor),
+            ).fetchone()
+            return json.loads(row["metadata"]) if row else None
+
+    def save_document_versions(self, versions):
+        """Atomically activate complete derived versions; preserve historical evidence IDs."""
+        with self.connect() as c:
+            for version in versions:
+                path = str(version["path"])
+                key = version["source_key"]
+                extractor = version["extractor"]
+                raw = version["raw_digest"]
+                revision = hashlib.sha256(
+                    (raw + "\0" + extractor + "\0" + key).encode()
+                ).hexdigest()
+                chunks = version["chunks"]
+                existing = {
+                    r["locator"]: r
+                    for r in c.execute(
+                        "SELECT * FROM documents WHERE path=? AND digest=?",
+                        (path, revision),
+                    )
+                }
+                committed = c.execute(
+                    "SELECT 1 FROM resource_revisions WHERE path=? AND source_key=? AND revision=?",
+                    (path, key, revision),
+                ).fetchone()
+                if (existing or committed) and (
+                    {location: text for location, text in chunks}
+                    != {location: r["text"] for location, r in existing.items()}
+                ):
+                    raise RuntimeError(
+                        "Committed document revision differs; increment extractor version"
+                    )
+                # Legacy locators start with the exact archive member plus a space,
+                # or a leading space for direct files. This excludes adjacent names.
+                prefix = key + " "
+                c.execute(
+                    "UPDATE documents SET active=0 WHERE path=? AND extractor='legacy-v1' AND locator>=? AND locator<?",
+                    (path, prefix, prefix + "\U0010ffff"),
+                )
+                c.execute(
+                    "UPDATE documents SET active=0 WHERE path=? AND source_key=? AND digest!=? AND active=1",
+                    (path, key, revision),
+                )
+                for location, text in chunks:
+                    if location in existing:
+                        c.execute(
+                            "UPDATE documents SET active=1 WHERE id=?",
+                            (existing[location]["id"],),
+                        )
+                    else:
+                        c.execute(
+                            """INSERT INTO documents(path,locator,digest,text,search_text,active,source_key,extractor,raw_digest)
+                                   VALUES(?,?,?,?,?,1,?,?,?)""",
+                            (
+                                path,
+                                location,
+                                revision,
+                                text,
+                                " ".join(tokens(Path(path).name + " " + text)),
+                                key,
+                                extractor,
+                                raw,
+                            ),
+                        )
+                c.execute(
+                    """INSERT INTO resource_revisions VALUES(?,?,?,?,?,?,?) ON CONFLICT(path,source_key)
+                             DO UPDATE SET raw_digest=excluded.raw_digest,extractor=excluded.extractor,
+                             revision=excluded.revision,metadata=excluded.metadata,completed=excluded.completed""",
+                    (
+                        path,
+                        key,
+                        raw,
+                        extractor,
+                        revision,
+                        json.dumps(version["metadata"], ensure_ascii=False),
+                        time.time(),
+                    ),
+                )
 
     def export(self, key):
         folder = self.root / "lessons" / key
@@ -525,254 +676,10 @@ def export_review(store, key):
     return path
 
 
-def index_courseware(store, source):
-    """Index retained originals without copying gigabytes or executing course code."""
-    from io import BytesIO
-    from pypdf import PdfReader
+def index_courseware(store, source, **options):
+    from .course_documents import index_courseware as extract_resources
 
-    source = Path(source).resolve()
-    text_extensions = {
-        ".py",
-        ".md",
-        ".txt",
-        ".json",
-        ".yaml",
-        ".yml",
-        ".ts",
-        ".js",
-        ".sql",
-        ".html",
-        ".css",
-        ".ipynb",
-        ".csv",
-    }
-    errors = []
-    files = 0
-    skipped = []
-    ocr_needed = []
-    pdf_warnings = []
-    pdf_source = {}
-    import logging
-
-    class PdfWarnings(logging.Handler):
-        def emit(self, record):
-            pdf_warnings.append({**pdf_source, "warning": record.getMessage()[:1000]})
-
-    warning_handler = PdfWarnings(level=logging.WARNING)
-    logging.getLogger("pypdf").addHandler(warning_handler)
-
-    def pages(data, suffix):
-        if suffix in (".pptx", ".docx"):
-            from xml.etree import ElementTree
-
-            with zipfile.ZipFile(BytesIO(data)) as archive:
-                names = (
-                    [
-                        n
-                        for n in archive.namelist()
-                        if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)
-                    ]
-                    if suffix == ".pptx"
-                    else ["word/document.xml"]
-                )
-                names.sort(
-                    key=lambda n: (
-                        int(re.search(r"(\d+)\.xml$", n)[1]) if suffix == ".pptx" else 0
-                    )
-                )
-                for n, name in enumerate(names):
-                    node = ElementTree.fromstring(archive.read(name))
-                    yield (
-                        "slide " + str(n + 1) if suffix == ".pptx" else "document",
-                        "\n".join(
-                            x.text or ""
-                            for x in node.iter()
-                            if x.tag.rsplit("}", 1)[-1] == "t"
-                        ),
-                    )
-        elif suffix == ".pdf":
-            reader = PdfReader(BytesIO(data))
-            for n, page in enumerate(reader.pages):
-                if n >= 2000:
-                    raise ValueError("PDF exceeds the page safety limit")
-                text = page.extract_text() or ""
-                yield "page " + str(n + 1), text
-        elif suffix == ".ipynb":
-            notebook = json.loads(data.decode("utf-8-sig"))
-            for n, cell in enumerate(notebook.get("cells", [])):
-                value = cell.get("source", [])
-                yield (
-                    "cell " + str(n + 1),
-                    "".join(value) if isinstance(value, list) else str(value),
-                )
-        else:
-            yield "text", data.decode("utf-8-sig", errors="replace")
-
-    def flush_documents(pending):
-        if not pending:
-            return
-        with store.connect() as c:
-            c.executemany(
-                "INSERT OR IGNORE INTO documents(path,locator,digest,text,search_text) VALUES(?,?,?,?,?)",
-                pending,
-            )
-        pending.clear()
-
-    def save(path, location, data, suffix, deferred=None):
-        pdf_source.update(path=str(path), location=location)
-        digest = hashlib.sha256(data).hexdigest()
-        pending = []
-        for page, text in pages(data, suffix):
-            if suffix == ".pdf" and not text.strip():
-                ocr_needed.append(
-                    {"path": str(path), "location": location + " " + page}
-                )
-            # This removes common accidental credentials, not a complete secret scan.
-            text = re.sub(
-                r"(?i)((?:api_key|password|secret|access_token)\s*[:=]\s*)[\"\'][^\"\'\n]{8,}[\"\']",
-                r'\1"[REDACTED]"',
-                text,
-            )
-            for start in range(0, len(text), 3000):
-                chunk = text[start : start + 3000]
-                locator = location + " " + page + " chars " + str(start)
-                pending.append(
-                    (
-                        str(path),
-                        locator,
-                        digest,
-                        chunk,
-                        " ".join(tokens(path.name + " " + chunk)),
-                    )
-                )
-        # Batch tiny ZIP members too; one fsync per member can stall HDDs for hours.
-        if deferred is None:
-            flush_documents(pending)
-        else:
-            deferred.extend(pending)
-            if len(deferred) >= 500:
-                flush_documents(deferred)
-
-    for path in source.rglob("*"):
-        if (
-            not path.is_file()
-            or path.is_symlink()
-            or not path.resolve().is_relative_to(source)
-        ):
-            continue
-        suffix = path.suffix.lower()
-        if suffix not in text_extensions | {".pdf", ".pptx", ".docx", ".zip"}:
-            continue
-        atomic_json(
-            store.root / "courseware-index-progress.json",
-            {
-                "stage": "reading",
-                "updated": time.time(),
-                "pid": __import__("os").getpid(),
-                "files": files,
-                "errors": len(errors),
-                "current": str(path),
-            },
-        )
-        try:
-            if (
-                suffix in text_extensions | {".pdf", ".pptx", ".docx"}
-                and path.stat().st_size <= 16 * 1024**2
-            ):
-                save(path, "", path.read_bytes(), suffix)
-                files += 1
-            elif suffix in text_extensions | {".pdf", ".pptx", ".docx"}:
-                skipped.append(
-                    {
-                        "path": str(path),
-                        "reason": "file exceeds text extraction safety limit; original retained",
-                    }
-                )
-            elif suffix == ".zip":
-                used = 0
-                deferred = []
-                with zipfile.ZipFile(path) as archive:
-                    for member in archive.infolist():
-                        name = Path(member.filename.replace("\\", "/"))
-                        if name.is_absolute() or ".." in name.parts:
-                            continue
-                        if "__MACOSX" in name.parts or name.name.startswith("._"):
-                            continue
-                        if any(
-                            part
-                            in {
-                                "node_modules",
-                                "site-packages",
-                                ".git",
-                                "__pycache__",
-                                "venv",
-                            }
-                            for part in name.parts
-                        ):
-                            continue
-                        if name.suffix.lower() not in text_extensions | {".pdf"}:
-                            continue
-                        if (
-                            member.file_size > 8 * 1024**2
-                            or used + member.file_size > 64 * 1024**2
-                        ):
-                            continue
-                        used += member.file_size
-                        try:
-                            save(
-                                path,
-                                "archive " + member.filename,
-                                archive.read(member),
-                                name.suffix.lower(),
-                                deferred,
-                            )
-                        except Exception as exc:
-                            errors.append(
-                                {
-                                    "path": str(path),
-                                    "member": member.filename,
-                                    "error": type(exc).__name__ + ": " + str(exc),
-                                }
-                            )
-                flush_documents(deferred)
-                files += 1
-        except Exception as exc:
-            errors.append(
-                {"path": str(path), "error": type(exc).__name__ + ": " + str(exc)}
-            )
-        atomic_json(store.root / "courseware-index-errors.json", errors)
-        atomic_json(store.root / "courseware-index-warnings.json", pdf_warnings)
-        atomic_json(
-            store.root / "courseware-index-progress.json",
-            {
-                "stage": "indexing",
-                "updated": time.time(),
-                "files": files,
-                "errors": len(errors),
-                "current": str(path),
-            },
-        )
-    report = {
-        "source": str(source),
-        "indexed_resource_files": files,
-        "errors": errors,
-        "skipped": skipped,
-        "pdf_pages_needing_ocr": ocr_needed,
-        "pdf_warnings": pdf_warnings,
-        "originals_retained": True,
-    }
-    logging.getLogger("pypdf").removeHandler(warning_handler)
-    atomic_json(store.root / "courseware-index-report.json", report)
-    atomic_json(
-        store.root / "courseware-index-progress.json",
-        {
-            "stage": "done",
-            "updated": time.time(),
-            "files": files,
-            "errors": len(errors),
-        },
-    )
-    return report
+    return extract_resources(store, source, **options)
 
 
 def prepare_inventory(store, inventory_path):
@@ -1711,6 +1618,11 @@ def create_app(store, model):
                 + html.escape(r["path"])
                 + "</h2><p>"
                 + html.escape(r["locator"])
+                + (
+                    " · 当前提取版本"
+                    if r["active"]
+                    else " · 历史提取版本，当前检索已更新"
+                )
                 + '</p><pre style="white-space:pre-wrap">'
                 + html.escape(r["text"])
                 + "</pre>"
@@ -1769,6 +1681,11 @@ def main():
     sub.add_parser("resume")
     courseware = sub.add_parser("courseware")
     courseware.add_argument("source", type=Path)
+    courseware.add_argument(
+        "--only-report",
+        type=Path,
+        help="Retry source paths recorded in a previous skipped-resource report",
+    )
     scan = sub.add_parser("inventory")
     scan.add_argument("source", type=Path)
     prepare = sub.add_parser("prepare")
@@ -1813,7 +1730,14 @@ def main():
             )
         return
     if args.command == "courseware":
-        value = index_courseware(store, args.source)
+        options = {}
+        if args.only_report:
+            report = json.loads(args.only_report.read_text(encoding="utf-8"))
+            options = {
+                "only_paths": [r["path"] for r in report.get("skipped", [])],
+                "report_name": "courseware-supplement-report.json",
+            }
+        value = index_courseware(store, args.source, **options)
         print(
             json.dumps(
                 {
