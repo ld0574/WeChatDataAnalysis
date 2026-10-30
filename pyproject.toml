@@ -52,6 +52,7 @@ voice-transcription-gpu = [
 ]
 course-knowledge = [
     "av>=16.0.1",
+    "fonttools>=4.68.0",
     "numpy>=1.26",
     "pypdf>=6.21.4",
 ]
