@@ -264,3 +264,41 @@ def test_question_words_do_not_hide_an_explicit_technical_anchor(tmp_path, monke
         store, "本课是否给出了 Mac 安装的具体操作步骤？", "local", key
     )
     assert len(calls) == 1 and value["citations"] == [1]
+
+
+def test_legacy_metadata_encoding_does_not_exclude_readable_video(tmp_path):
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    from wechat_decrypt_tool.course_knowledge import inspect_video, capture_frames
+
+    source = tmp_path / "legacy.mp4"
+    marker = b"legacy-comment-marker"
+    with av.open(str(source), "w") as media:
+        media.metadata["comment"] = marker.decode()
+        stream = media.add_stream("mpeg4", rate=1)
+        stream.width = 32
+        stream.height = 32
+        stream.pix_fmt = "yuv420p"
+        for n in range(2):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((32, 32, 3), n * 100, dtype="uint8"), format="rgb24"
+            )
+            for packet in stream.encode(frame):
+                media.mux(packet)
+        for packet in stream.encode():
+            media.mux(packet)
+    data = source.read_bytes()
+    assert marker in data
+    source.write_bytes(data.replace(marker, b"\xff" + marker[1:]))
+    with pytest.raises(UnicodeDecodeError):
+        av.open(str(source))
+    item = inspect_video(source, tmp_path)
+    assert "error" not in item and item["video_streams"][0]["width"] == 32
+    store = KnowledgeStore(tmp_path / "kb")
+    key = store.register(item)
+    capture_frames(store, key, step=1)
+    with store.connect() as c:
+        assert (
+            c.execute("SELECT COUNT(*) FROM frames WHERE video=?", (key,)).fetchone()[0]
+            == 2
+        )

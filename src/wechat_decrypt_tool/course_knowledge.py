@@ -900,57 +900,64 @@ def _prepare_inventory(store, inventory_path):
     return result
 
 
-def inventory_videos(store, source):
+def inspect_video(path, source):
+    """Decode legacy metadata tolerantly; media decoding errors remain errors."""
     import av
 
+    path = Path(path).resolve()
+    source = Path(source).resolve()
+    stat = path.stat()
+    row = {
+        "path": str(path),
+        "relative_path": str(path.relative_to(source)),
+        "title": path.stem,
+        "bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "audio_streams": [],
+        "video_streams": [],
+    }
+    try:
+        with av.open(str(path), metadata_errors="replace") as media:
+            row["duration_seconds"] = (
+                media.duration / av.time_base
+                if media.duration
+                else max(
+                    (
+                        float(x.duration * x.time_base)
+                        for x in media.streams
+                        if x.duration is not None
+                    ),
+                    default=0,
+                )
+            )
+            row["audio_streams"] = [
+                {
+                    "codec": x.codec_context.name,
+                    "sample_rate": x.codec_context.sample_rate,
+                }
+                for x in media.streams.audio
+            ]
+            row["video_streams"] = [
+                {
+                    "codec": x.codec_context.name,
+                    "width": x.codec_context.width,
+                    "height": x.codec_context.height,
+                }
+                for x in media.streams.video
+            ]
+            row["embedded_subtitles"] = len(media.streams.subtitles)
+    except Exception as exc:
+        row["error"] = type(exc).__name__ + ": " + str(exc)
+    return row
+
+
+def inventory_videos(store, source):
     source = Path(source).resolve()
     rows = []
     for path in sorted(source.rglob("*.mp4")):
         if path.is_symlink() or not path.resolve().is_relative_to(source):
             continue
-        s = path.stat()
-        row = {
-            "path": str(path),
-            "relative_path": str(path.relative_to(source)),
-            "title": path.stem,
-            "bytes": s.st_size,
-            "mtime_ns": s.st_mtime_ns,
-            "audio_streams": [],
-            "video_streams": [],
-        }
-        try:
-            with av.open(str(path)) as media:
-                row["duration_seconds"] = (
-                    media.duration / av.time_base
-                    if media.duration
-                    else max(
-                        (
-                            float(x.duration * x.time_base)
-                            for x in media.streams
-                            if x.duration is not None
-                        ),
-                        default=0,
-                    )
-                )
-                row["audio_streams"] = [
-                    {
-                        "codec": x.codec_context.name,
-                        "sample_rate": x.codec_context.sample_rate,
-                    }
-                    for x in media.streams.audio
-                ]
-                row["video_streams"] = [
-                    {
-                        "codec": x.codec_context.name,
-                        "width": x.codec_context.width,
-                        "height": x.codec_context.height,
-                    }
-                    for x in media.streams.video
-                ]
-                row["embedded_subtitles"] = len(media.streams.subtitles)
-        except Exception as exc:
-            row["error"] = type(exc).__name__ + ": " + str(exc)
-        rows.append(row)
+        rows.append(inspect_video(path, source))
         store.progress("inventory", files=len(rows), current=str(path))
     result = {
         "source": str(source),
@@ -1014,7 +1021,7 @@ def audio_windows(path, seconds=SEGMENT_SECONDS):
 
     count = int(seconds * 16000)
     pending = np.zeros(0, dtype=np.float32)
-    with av.open(str(path)) as container:
+    with av.open(str(path), metadata_errors="replace") as container:
         if not container.streams.audio:
             raise RuntimeError("Video has no audio stream")
         stream = container.streams.audio[0]
@@ -1059,7 +1066,7 @@ def transcribe(store, key, model_folder):
     batch = []
     decoded_end = 0
     try:
-        with av.open(video["path"]) as source:
+        with av.open(video["path"], metadata_errors="replace") as source:
             audio = source.streams.audio[0]
             expected_end = (
                 float((audio.start_time or 0) * audio.time_base)
@@ -1194,7 +1201,7 @@ def capture_frames(store, key, step=30):
     folder = store.root / "lessons" / key / "frames"
     folder.mkdir(parents=True, exist_ok=True)
     previous = None
-    with av.open(video["path"]) as container:
+    with av.open(video["path"], metadata_errors="replace") as container:
         stream = container.streams.video[0]
         for second in range(0, math.ceil(video["duration"]), step):
             store.checkpoint()
