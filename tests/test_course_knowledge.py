@@ -361,3 +361,38 @@ def test_waiting_gpu_is_resumable_and_releases_after_exception(tmp_path, monkeyp
     with pytest.raises(InterruptedError):
         with module.wait_gpu_lease(store):
             pass
+
+
+def test_only_validated_partial_media_survives_inventory_refresh(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    from wechat_decrypt_tool import course_knowledge as module
+
+    source = tmp_path / "source"
+    source.mkdir()
+    path = source / "lesson.mp4.downloading"
+    path.write_bytes(b"synthetic-media")
+    (source / "unverified.mp4.downloading").write_bytes(b"partial")
+    store = KnowledgeStore(tmp_path / "kb")
+    proof = {
+        "path": str(path),
+        "bytes": path.stat().st_size,
+        "mtime_ns": path.stat().st_mtime_ns,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "continuous_declared_audio": True,
+        "source_unchanged": True,
+    }
+    (store.root / "recovered-media.json").write_text(json.dumps([proof]))
+    monkeypatch.setattr(
+        module, "inspect_video", lambda p, _: {"path": str(p), "audio_streams": [{}]}
+    )
+    result = module.inventory_videos(store, source)
+    assert (
+        len(result["videos"]) == 1 and result["videos"][0]["sha256"] == proof["sha256"]
+    )
+    path.write_bytes(b"changed")
+    result = module.inventory_videos(store, source)
+    assert (
+        "changed" in result["videos"][0]["error"]
+        and "sha256" not in result["videos"][0]
+    )

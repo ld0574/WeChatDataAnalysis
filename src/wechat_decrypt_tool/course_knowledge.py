@@ -973,6 +973,30 @@ def inventory_videos(store, source):
             continue
         rows.append(inspect_video(path, source))
         store.progress("inventory", files=len(rows), current=str(path))
+    recovery = store.root / "recovered-media.json"
+    if recovery.exists():
+        seen = {row["path"] for row in rows}
+        for proof in json.loads(recovery.read_text(encoding="utf-8")):
+            path = Path(proof["path"])
+            if path.is_symlink() or not path.resolve().is_relative_to(source):
+                raise ValueError("Recovered media outside course root")
+            path = path.resolve()
+            if str(path) in seen:
+                continue
+            if not proof.get("continuous_declared_audio") or not proof.get(
+                "source_unchanged"
+            ):
+                raise ValueError("Recovered media requires full continuous audio proof")
+            stat = path.stat()
+            row = inspect_video(path, source)
+            row["recovered_container"] = True
+            row["recovery_proof"] = "partial-download-full-validation.json"
+            if (stat.st_size, stat.st_mtime_ns) != (proof["bytes"], proof["mtime_ns"]):
+                row["error"] = "Recovered source changed since full validation"
+            else:
+                row["sha256"] = proof["sha256"]
+            rows.append(row)
+            seen.add(str(path))
     result = {
         "source": str(source),
         "videos": rows,
@@ -2127,6 +2151,7 @@ def run_courses(store, args):
                 paused = True
                 break
             with wait_gpu_lease(store):
+                store.progress("starting_lesson", video=key)
                 if state != "transcribed":
                     unload_model(args.model)
                     transcribe(store, key, args.asr_model)
