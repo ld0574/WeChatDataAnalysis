@@ -36,11 +36,26 @@ def compress_image(data: bytes) -> tuple[bytes,str]:
         return output.getvalue(),'.webp'
 
 
+def media_account_dir(config):
+    """Keep media identity/cache independent of retired decrypted databases.
+
+    The directory basename must stay equal to source_account: media helpers use
+    it to look up the existing account's verified keys.
+    """
+    configured=config.get('media_account_dir')
+    if configured:
+        path=Path(configured)
+        if path.name!=config['source_account']:
+            raise ValueError('媒体账号目录名称必须与 source_account 一致')
+        return path
+    from .app_paths import get_output_databases_dir
+    return get_output_databases_dir()/config['source_account']
+
+
 def local_image_path(config,hit,md5):
     """Bounded direct probes; never walk the complete attachment tree."""
     from .media_helpers import _try_find_decrypted_resource
-    from .app_paths import get_output_databases_dir
-    for account in (Path(config['baseline']),get_output_databases_dir()/config['source_account']):
+    for account in (Path(config['baseline']),media_account_dir(config)):
         cached=_try_find_decrypted_resource(account,md5)
         if cached:
             return cached
@@ -136,8 +151,7 @@ def process_job(config,store,job,stop):
     if job['kind']=='image':
         source=image_source(config,store,job,hit)
         from .media_helpers import _read_and_maybe_decrypt_media
-        from .app_paths import get_output_databases_dir
-        data,_mime=_read_and_maybe_decrypt_media(source,account_dir=get_output_databases_dir()/config['source_account'],
+        data,_mime=_read_and_maybe_decrypt_media(source,account_dir=media_account_dir(config),
                                                weixin_root=Path(config['source']).parent)
         payload,ext=compress_image(data)
         path=media/(key+ext)
