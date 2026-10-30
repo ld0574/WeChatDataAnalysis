@@ -356,6 +356,9 @@ class KnowledgeStore:
             "job-progress",
             "preparation-progress",
             "courseware-index-progress",
+            "audio-archive-progress",
+            "slides-render-progress",
+            "pdf-ocr-progress",
         ):
             path = self.root / (name + ".json")
             if path.exists():
@@ -572,6 +575,9 @@ class KnowledgeStore:
             "deletion_ready": False,
             "timestamp_accuracy": "Audio chunk boundaries; not word-level alignment.",
         }
+        from .course_audio_archive import verified_audio
+
+        payload["audio"] = verified_audio(self, key)
         atomic_json(folder / "evidence.json", payload)
         lines = [
             "# " + video["title"],
@@ -665,6 +671,10 @@ def export_review(store, key):
         "<p>模型摘要为待核对草稿，原视频仍保留。截图为抽样，短暂画面可能遗漏；尚不可据此删除视频。</p>",
         '<input id="q" placeholder="搜索本课语音和画面文字"><h2>学习图谱</h2>',
     ]
+    if payload.get("audio"):
+        parts.append(
+            '<h2>原始音轨</h2><audio id="recording" controls preload="metadata" src="audio.m4a"></audio>'
+        )
 
     def links(ids):
         return " · ".join(
@@ -1642,12 +1652,23 @@ def create_app(store, model):
             + html.escape(video["title"])
             + "</h1>"
         )
+        from .course_audio_archive import verified_audio
+
+        audio = verified_audio(store, key)
+        if audio:
+            text += (
+                '<h2>原始音轨</h2><audio id="recording" controls preload="metadata" src="/audio/'
+                + key
+                + '"></audio>'
+            )
         for s in segments:
             text += (
                 f'<article id="s{s["id"]}"><h3>{timestamp(s["start"])}–{timestamp(s["end"])} · 证据 {s["id"]}</h3><p>'
                 + html.escape(s["text"])
                 + "</p></article>"
             )
+            if audio:
+                text += f'''<button data-time="{float(s["start"]):.6f}" onclick="const a=document.getElementById('recording');a.currentTime=Number(this.dataset.time);a.play()">播放对应原声</button>'''
         for f in frames:
             text += (
                 f'<h3 id="f{f["id"]}">画面 {timestamp(f["time"])}</h3><img loading="lazy" src="/frame/{f["id"]}"><pre>'
@@ -1728,6 +1749,17 @@ def create_app(store, model):
             raise HTTPException(404)
         return FileResponse(path, media_type="image/png")
 
+    @app.get("/audio/{key}")
+    def audio(key: str):
+        from .course_audio_archive import verified_audio
+
+        if not verified_audio(store, key):
+            raise HTTPException(404)
+        path = (store.root / "lessons" / key / "audio.m4a").resolve()
+        if not path.is_relative_to((store.root / "lessons").resolve()):
+            raise HTTPException(404)
+        return FileResponse(path, media_type="audio/mp4")
+
     @app.get("/frame/{frame_id}")
     def frame(frame_id: int):
         with store.connect() as c:
@@ -1780,6 +1812,10 @@ def main():
     slides.add_argument("--source", required=True, type=Path)
     slides.add_argument("--report", action="append", required=True, type=Path)
     slides.add_argument("--limit", type=int, default=0)
+    audio = sub.add_parser("audio-archive")
+    audio.add_argument("--inventory", type=Path, required=True)
+    audio.add_argument("--limit", type=int, default=0)
+    audio.add_argument("--budget-gib", type=float, default=48)
     courseware.add_argument(
         "--only-report",
         type=Path,
@@ -1827,6 +1863,19 @@ def main():
         print(
             json.dumps(
                 {"rendered": len(result["completed"]), "errors": len(result["errors"])}
+            )
+        )
+        return
+    if args.command == "audio-archive":
+        from .course_audio_archive import archive_audio
+
+        with schema_lease(store.root / "audio-archive.lock", timeout=0):
+            value = archive_audio(
+                store, args.inventory, limit=args.limit, budget_gib=args.budget_gib
+            )
+        print(
+            json.dumps(
+                {"completed": len(value["completed"]), "errors": len(value["errors"])}
             )
         )
         return
