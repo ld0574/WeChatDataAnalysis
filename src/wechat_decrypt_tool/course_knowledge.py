@@ -118,15 +118,19 @@ def wait_gpu_lease(store):
 def visual_worker_waiting(store):
     import psutil
 
-    path = store.root / "slides-ocr-progress.json"
-    try:
-        row = json.loads(path.read_text(encoding="utf-8"))
-        if row.get("stage") != "waiting_gpu":
-            return False
-        process = psutil.Process(row["pid"])
-        return process.is_running() and "slides-ocr" in process.cmdline()
-    except (OSError, ValueError, KeyError, psutil.Error):
-        return False
+    for command in ("slides-ocr", "pdf-ocr"):
+        try:
+            row = json.loads(
+                (store.root / (command + "-progress.json")).read_text(encoding="utf-8")
+            )
+            if row.get("stage") != "waiting_gpu":
+                continue
+            process = psutil.Process(row["pid"])
+            if process.is_running() and command in process.cmdline():
+                return True
+        except (OSError, ValueError, KeyError, psutil.Error):
+            pass
+    return False
 
 
 class KnowledgeStore:
@@ -391,6 +395,7 @@ class KnowledgeStore:
             "preparation-progress",
             "courseware-index-progress",
             "audio-archive-progress",
+            "resources-progress",
             "slides-render-progress",
             "slides-ocr-progress",
             "pdf-ocr-progress",
@@ -1886,6 +1891,8 @@ def main():
     ocr.add_argument("--source", required=True, type=Path)
     ocr.add_argument("--report", action="append", required=True, type=Path)
     ocr.add_argument("--limit", type=int, default=0)
+    ocr.add_argument("--wait", action="store_true")
+    ocr.add_argument("--poppler", type=Path)
     slides = sub.add_parser("slides-render")
     slides.add_argument("--source", required=True, type=Path)
     slides.add_argument("--report", action="append", required=True, type=Path)
@@ -1898,6 +1905,10 @@ def main():
     audio.add_argument("--inventory", type=Path, required=True)
     audio.add_argument("--limit", type=int, default=0)
     audio.add_argument("--budget-gib", type=float, default=48)
+    resources = sub.add_parser("resources-archive")
+    resources.add_argument("--source", required=True, type=Path)
+    resources.add_argument("--inventory", required=True, type=Path)
+    resources.add_argument("--budget-gib", type=float, default=16)
     courseware.add_argument(
         "--only-report",
         type=Path,
@@ -1918,15 +1929,18 @@ def main():
     if args.command == "pdf-ocr":
         from .course_pdf_ocr import run_pdf_ocr
 
-        value = run_pdf_ocr(
-            store,
-            args.report,
-            args.source,
-            args.model,
-            local_chat,
-            gpu_lease,
-            limit=args.limit,
-        )
+        with schema_lease(store.root / "pdf-ocr.lock", timeout=0):
+            value = run_pdf_ocr(
+                store,
+                args.report,
+                args.source,
+                args.model,
+                local_chat,
+                gpu_lease,
+                limit=args.limit,
+                poppler=args.poppler,
+                wait=args.wait,
+            )
         print(
             json.dumps(
                 {
@@ -1980,6 +1994,23 @@ def main():
                     "processed": len(value["completed"]),
                     "errors": len(value["errors"]),
                     "deferred_gpu": value["deferred_gpu"],
+                }
+            )
+        )
+        return
+    if args.command == "resources-archive":
+        from .course_resource_archive import archive_resources
+
+        with schema_lease(store.root / "resources-archive.lock", timeout=0):
+            value = archive_resources(
+                store, args.source, args.inventory, budget_gib=args.budget_gib
+            )
+        print(
+            json.dumps(
+                {
+                    "completed": len(value["completed"]),
+                    "errors": len(value["errors"]),
+                    "pending": len(value["pending"]),
                 }
             )
         )

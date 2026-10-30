@@ -119,7 +119,13 @@ PDF 图像页使用本地 Poppler 渲染，再交给本地 GPU 模型转录和�
 | `lessons/<编号>/graph.json` | 本课概念和关系，附来源证据编号 |
 | `lessons/<编号>/review.html` | 无服务器也能打开的课程复核页，含搜索和图谱关系 |
 
-数据库使用 WAL；运行中备份请使用 SQLite backup API，不能只复制主文件而忽略正在写入的 WAL。PDF、代码和 ZIP 原文件保留在课程目录，不复制数 GB 的附件，也不会执行课程代码。
+数据库使用 WAL；运行中备份请使用 SQLite backup API，不能只复制主文件而忽略正在写入的 WAL。原始附件可另外生成可迁移副本，整个过程不执行课程代码：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge resources-archive --source 'D:\迁移\知乎 AI 大模型应用开发' --inventory output/course-knowledge/inventory-unique.json
+```
+
+该命令冻结附件清单，按完整 SHA-256 保存到 `resources/objects`，在 `resources-manifest.json` 记录原路径与对象位置；相同字节只保存一份，输出重新读回验证。包含课件、代码、数据集和清单中的无声演示原片，默认预算 16 GiB、保留 32 GiB 磁盘余量。原文件改变、对象损坏或空间不足会明确报错，原文件不会删除。`.downloading` 文件另列待恢复媒体，不能算成已完整保存的课程。附件副本尚不等于整个知识库已完成备份。
 
 ## 视频删除前的验收
 
