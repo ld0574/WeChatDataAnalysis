@@ -1,0 +1,75 @@
+# 本地课程知识库
+
+独立于微信归档运行，默认数据在 `output/course-knowledge`。课程音视频、文字、截图和问题不提交到云服务。首次安装依赖和下载 Ollama 模型需要联网，下载完成后课程处理使用本地文件和 `127.0.0.1:11434`。
+
+## 当前模型
+
+- 转写：本机 GPU 上的 Qwen3-ASR-0.6B，FP32。沿用隔离的 GPU 工作进程，不回退到 CPU 小模型。
+- 截图文字、课程摘要、概念关系和问答：本机 Ollama 的 `qwen3.5:9b`。
+- 搜索：SQLite FTS5，中英文关键词检索；无向量模型。问答在零命中时会先改写检索词，生成内容必须引用已存在的证据。
+
+引用存在检查不能证明模型的每一句解释都正确。摘要和图谱是待核对草稿；历史课程中的 API、模型价格和版本不能直接作为当前事实。
+
+## 操作
+
+在项目根目录用 PowerShell 执行：
+
+```powershell
+# 完整流程：讲义入库 → 内容去重 → 全部课程处理（可重跑续接）
+.\tools\course-knowledge.ps1 -Mode Build
+
+# 更换课程来源或原视频改变时，先重新生成媒体清单
+.\tools\course-knowledge.ps1 -Mode Inventory
+
+# 查看持久化进度
+.\tools\course-knowledge.ps1 -Mode Status
+
+# 对已生成的 inventory.json 做完整 SHA-256 去重；相同标题不会合并
+.\tools\course-knowledge.ps1 -Mode Prepare
+
+# 提取保留在原位置的 PDF、课件、代码、笔记和 ZIP 内文本
+.\tools\course-knowledge.ps1 -Mode Resources
+
+# 处理全部去重课程：GPU 转写 → 抽样画面 → OCR → 摘要与关系
+.\tools\course-knowledge.ps1 -Mode Run
+
+# 本地浏览器页面，监听 127.0.0.1:3002
+.\tools\course-knowledge.ps1 -Mode Serve
+
+.\tools\course-knowledge.ps1 -Mode Search -Query '环境变量'
+.\tools\course-knowledge.ps1 -Mode Ask -Query '漏选 PATH 怎么办？' -VideoId '课程编号'
+
+# 当前窗口提交后暂停；已提交片段不会重复写入
+.\tools\course-knowledge.ps1 -Mode Pause
+.\tools\course-knowledge.ps1 -Mode Resume
+# Resume 只解除暂停标志；再次 Run 才会继续处理
+```
+
+处理和模型问答共用 GPU 锁，处理时仍能进行普通搜索。要进行交互问答，先暂停批处理并等待当前请求结束，避免同时装载两套模型。停止处理后锁会自动释放。失败时保存错误与已提交的片段，再次运行会继续；恢复时仍需从头解码音频，但不会重复转写已提交窗口。
+
+## 归档文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `inventory.json` | 原视频路径、大小、修改时间、媒体流和读取错误 |
+| `inventory-unique.json` | 内容去重后的处理清单、重复路径、排除的异常文件 |
+| `video-hashes.json` | 与大小和修改时间绑定的完整哈希缓存 |
+| `knowledge.sqlite3` | 逐段转写、OCR、摘要、关系、检索索引和事件记录 |
+| `job-progress.json` | 当前阶段、进程号、更新时间与视频进度 |
+| `preparation-progress.json` | 去重进度 |
+| `courseware-index-report.json` | 讲义处理结果、错误路径、PDF 提取警告、大小限制和需要 OCR 的页面 |
+| `courseware-index-errors.json` | 讲义处理中已发生的错误 |
+| `lessons/<编号>/evidence.json` | 逐段时间范围、原始识别、截图、模型信息与摘要 |
+| `lessons/<编号>/transcript.md` | 可直接阅读、迁移的逐字稿和摘要 |
+| `lessons/<编号>/graph.json` | 本课概念和关系，附来源证据编号 |
+| `lessons/<编号>/review.html` | 无服务器也能打开的课程复核页，含搜索和图谱关系 |
+
+数据库使用 WAL；运行中备份请使用 SQLite backup API，不能只复制主文件而忽略正在写入的 WAL。PDF、代码和 ZIP 原文件保留在课程目录，不复制数 GB 的附件，也不会执行课程代码。
+
+## 视频删除前的验收
+
+程序**没有删除原视频的命令**，`deletion_ready` 始终为 false。语音按 25 秒提交，时间是分段边界，并非逐字对齐；画面每 30 秒抽样并抑制近似静态画面，无法保证保留短暂出现的代码或演示动作。原声不保存在知识库中。仅凭当前抽样版本无法无损替代视频。
+
+删除前需要：所有可读课程处理完成；逐项处置不可读视频和索引错误；复核专业名词、摘要和引用；对关键代码/操作密集课程补充视觉资料；确认有可恢复的知识库备份。需要保留再转写能力时，应另外保留压缩音频。PDF 提取超限或扫描页面不会被当成完整文本。
+
+可用空间低于 8 GiB 时暂停。全量耗时应依据本机课程样本和去重后的时长估算，不能用短微信语音的测速推算长课。未通过验收前，保留原视频和原位置的所有非视频资料。

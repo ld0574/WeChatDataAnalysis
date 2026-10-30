@@ -50,6 +50,11 @@ voice-transcription-gpu = [
     "torch==2.9.1",
     "transformers==5.17.0",
 ]
+course-knowledge = [
+    "av>=16.0.1",
+    "numpy>=1.26",
+    "pypdf>=6.21.4",
+]
 
 [dependency-groups]
 dev = [
