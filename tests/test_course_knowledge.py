@@ -245,3 +245,22 @@ def test_note_retries_invalid_relationship_without_inventing_nodes(monkeypatch):
         len(requests) == 2
         and "Graph edge has no concept node" in requests[-1][-1]["content"]
     )
+
+
+def test_question_words_do_not_hide_an_explicit_technical_anchor(tmp_path, monkeypatch):
+    from wechat_decrypt_tool import course_knowledge as module
+
+    store = KnowledgeStore(tmp_path / "kb")
+    key = register(store, tmp_path)
+    store.save_segment(key, 0, 0, 25, "下一节讲 Mac OS 环境搭建。")
+    calls = []
+
+    def chat(model, messages, **kwargs):
+        calls.append(messages)
+        return "本节未提供 Mac 的具体步骤，讲师预告下一节介绍。[证据 S1]"
+
+    monkeypatch.setattr(module, "local_chat", chat)
+    value = module.answer(
+        store, "本课是否给出了 Mac 安装的具体操作步骤？", "local", key
+    )
+    assert len(calls) == 1 and value["citations"] == [1]

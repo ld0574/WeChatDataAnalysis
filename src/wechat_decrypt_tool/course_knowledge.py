@@ -1465,6 +1465,16 @@ ANSWER_REFERENCE = re.compile(r"\[(?:证据\s*)?(S\d+(?:\s*[,，、;；]\s*S\d+)
 
 def answer(store, question, model, video_id=None):
     hits = store.search(question, video_id=video_id)
+    # Question wording such as “具体操作步骤” is often absent from a transcript.
+    # Preserve explicit technical anchors before asking the model to rewrite it.
+    if not hits:
+        found = {}
+        for anchor in dict.fromkeys(
+            re.findall(r"[A-Za-z][A-Za-z0-9_+.-]{1,39}", question)
+        ):
+            for hit in store.search(anchor, video_id=video_id):
+                found[hit["id"]] = hit
+        hits = list(found.values())[:16]
     if not hits:
         terms = json.loads(
             local_chat(
