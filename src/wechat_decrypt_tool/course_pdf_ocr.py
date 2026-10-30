@@ -266,6 +266,7 @@ def run_pdf_ocr(store, reports, source, model, chat, lease, *, limit=0, poppler=
                         text = (
                             "页面转录与图示解读（模型草稿，需对照页面复核）\n" + content
                         )
+                        progress("saving", current={**target, "page": page})
                         store.save_document_versions(
                             [
                                 {
@@ -293,6 +294,7 @@ def run_pdf_ocr(store, reports, source, model, chat, lease, *, limit=0, poppler=
             raise
         except Exception as exc:
             errors.append({**target, "error": type(exc).__name__ + ": " + str(exc)})
+            store.write_json("pdf-ocr-errors.json", errors)
         if limit and processed >= limit:
             break
     value = {

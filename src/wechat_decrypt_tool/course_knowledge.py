@@ -415,8 +415,27 @@ class KnowledgeStore:
             return json.loads(row["metadata"]) if row else None
 
     def save_document_versions(self, versions):
+        for attempt in range(8):
+            self.checkpoint()
+            try:
+                return self._save_document_versions(versions)
+            except sqlite3.OperationalError as exc:
+                code = getattr(exc, "sqlite_errorcode", None)
+                busy = (
+                    code is not None
+                    and code & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                ) or str(exc).lower() in (
+                    "database is locked",
+                    "database table is locked",
+                )
+                if not busy or attempt == 7:
+                    raise
+                time.sleep(min(0.25 * (attempt + 1), 2))
+
+    def _save_document_versions(self, versions):
         """Atomically activate complete derived versions; preserve historical evidence IDs."""
         with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
             for version in versions:
                 path = str(version["path"])
                 key = version["source_key"]
@@ -1757,6 +1776,10 @@ def main():
     ocr.add_argument("--source", required=True, type=Path)
     ocr.add_argument("--report", action="append", required=True, type=Path)
     ocr.add_argument("--limit", type=int, default=0)
+    slides = sub.add_parser("slides-render")
+    slides.add_argument("--source", required=True, type=Path)
+    slides.add_argument("--report", action="append", required=True, type=Path)
+    slides.add_argument("--limit", type=int, default=0)
     courseware.add_argument(
         "--only-report",
         type=Path,
@@ -1793,6 +1816,17 @@ def main():
                     "errors": len(value["errors"]),
                     "deferred_gpu": value["deferred_gpu"],
                 }
+            )
+        )
+        return
+    if args.command == "slides-render":
+        from .course_slide_render import render_slides
+
+        with schema_lease(store.root / "slides-render.lock", timeout=0):
+            result = render_slides(store, args.report, args.source, limit=args.limit)
+        print(
+            json.dumps(
+                {"rendered": len(result["completed"]), "errors": len(result["errors"])}
             )
         )
         return

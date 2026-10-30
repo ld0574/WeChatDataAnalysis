@@ -70,6 +70,14 @@ PDF 图像页使用本地 Poppler 渲染，再交给本地 GPU 模型转录和�
 
 `pdf-ocr-report.json` 记录成功、失败、范围限制和 GPU 延后状态。空白页和带图示页面应对照渲染结果核对；PDF 解析出现省略警告时也需补查。该命令不渲染 PPTX，课件图示页仍需另行处理，不能据此认定所有视觉资料已覆盖。
 
+安装了本机 PowerPoint 时，可只读、隐藏窗口打开课件，禁用宏，按课件原有比例将选中的视觉页导出 PNG。带有宏或外部数据链接的输入会单独报错；原课件不保存修改，导出后再次核对原始哈希。已有校验过的图片可续用，图片被改动时会停止复用并报错。
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge slides-render --source 'D:\迁移\知乎 AI 大模型应用开发' --report output/course-knowledge/courseware-supplement-report.json
+```
+
+`slides-render-report.json` 保存来源、页码、原始哈希和图片哈希。渲染完成表示图示已保留，后续仍须进行本地视觉识别和复核，不能等同于图示已进入文字搜索。文档入库使用写事务并对 SQLite 忙状态重试；PDF 识别结果先缓存，入库失败时重跑可复用推理结果。
+
 ## 归档文件
 
 | 文件 | 作用 |
