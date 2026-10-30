@@ -104,3 +104,22 @@ def test_document_busy_retry_does_not_hide_other_sql_errors(tmp_path, monkeypatc
     monkeypatch.setattr(store, "_save_document_versions", bad)
     with pytest.raises(sqlite3.OperationalError, match="no such table"):
         store.save_document_versions([])
+
+
+def test_native_renderer_uses_one_session_for_whole_batch(tmp_path, monkeypatch):
+    sessions = []
+
+    @contextmanager
+    def session():
+        sessions.append("open")
+        try:
+            yield lambda path: None
+        finally:
+            sessions.append("close")
+
+    monkeypatch.setattr(module, "native_session", session)
+    store = KnowledgeStore(tmp_path / "kb")
+    report = tmp_path / "empty.json"
+    report.write_text("{}", encoding="utf-8")
+    result = module.render_slides(store, [report], tmp_path)
+    assert result["errors"] == [] and sessions == ["open", "close"]

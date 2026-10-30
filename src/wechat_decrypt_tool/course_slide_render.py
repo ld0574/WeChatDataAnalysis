@@ -93,7 +93,8 @@ def slide_source(source, target, temporary):
 
 
 @contextmanager
-def native_powerpoint(deck):
+def native_session():
+    import gc
     import pythoncom
     import win32com.client
     import psutil
@@ -105,24 +106,31 @@ def native_powerpoint(deck):
     }
     pythoncom.CoInitialize()
     app = None
-    presentation = None
     security = None
     alerts = None
+
+    @contextmanager
+    def open_deck(deck):
+        presentation = None
+        try:
+            presentation = app.Presentations.Open(str(deck), -1, 0, 0)
+            if not presentation.ReadOnly:
+                raise RuntimeError("Native renderer did not open read-only")
+            yield app, presentation
+        finally:
+            if presentation is not None:
+                presentation.Close()
+            presentation = None
+
     try:
         app = win32com.client.DispatchEx("PowerPoint.Application")
         security = app.AutomationSecurity
         alerts = app.DisplayAlerts
         app.AutomationSecurity = 3
         app.DisplayAlerts = 1
-        presentation = app.Presentations.Open(str(deck), -1, 0, 0)
-        if not presentation.ReadOnly:
-            raise RuntimeError("Native renderer did not open read-only")
-        yield app, presentation
+        yield open_deck
     finally:
         try:
-            if presentation is not None:
-                presentation.Close()
-        finally:
             if app is not None:
                 if security is not None:
                     app.AutomationSecurity = security
@@ -130,10 +138,24 @@ def native_powerpoint(deck):
                     app.DisplayAlerts = alerts
                 if not before and app.Presentations.Count == 0:
                     app.Quit()
+        finally:
+            app = None
+            gc.collect()
             pythoncom.CoUninitialize()
 
 
+@contextmanager
+def native_powerpoint(deck):
+    with native_session() as open_deck:
+        with open_deck(deck) as pair:
+            yield pair
+
+
 def render_slides(store, reports, source, *, limit=0, open_deck=native_powerpoint):
+    if open_deck is native_powerpoint:
+        with native_session() as opener:
+            return render_slides(store, reports, source, limit=limit, open_deck=opener)
+
     targets = slide_targets(
         [json.loads(Path(p).read_text(encoding="utf-8")) for p in reports]
     )
