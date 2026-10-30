@@ -60,7 +60,24 @@ def create_snapshot(store, destination, *, reserve_gib=64):
 
     progress("sqlite_backup")
     with store.connect() as src, sqlite3.connect(database) as dst:
-        src.backup(dst, pages=512, progress=lambda *_: store.checkpoint(), sleep=0.01)
+        # Hold a WAL read transaction so concurrent ASR commits cannot restart
+        # every incremental backup step and indefinitely starve a large snapshot.
+        src.execute("BEGIN")
+        src.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        last_update = 0.0
+
+        def copied(status, remaining, total):
+            nonlocal last_update
+            store.checkpoint()
+            now = time.monotonic()
+            if now - last_update >= 1 or remaining == 0:
+                progress("sqlite_backup", remaining_pages=remaining, total_pages=total)
+                last_update = now
+
+        try:
+            src.backup(dst, pages=512, progress=copied, sleep=0.01)
+        finally:
+            src.rollback()
     assets = {}
 
     def add(relative, expected=None):

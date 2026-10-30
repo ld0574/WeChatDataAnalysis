@@ -37,8 +37,18 @@ def test_live_wal_snapshot_restores_search_and_visual_evidence_without_source(tm
             }
         ]
     )
+    checkpoint = store.checkpoint
+    writes = []
+
+    def write_during_backup():
+        if not writes:
+            writes.append(1)
+            store.save_segment(key, 1, 25, 50, "later_change_marker")
+        checkpoint()
+
+    store.checkpoint = write_during_backup
     backup = create_snapshot(store, tmp_path / "backup", reserve_gib=0)
-    store.save_segment(key, 1, 25, 50, "later_change_marker")
+    assert writes and store.status()["segments"] == 2
     verify = verify_snapshot(backup["snapshot"])
     assert verify["counts"]["segments"] == 1 and verify["asset_paths"] == 1
     video.unlink()
