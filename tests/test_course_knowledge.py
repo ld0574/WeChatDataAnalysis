@@ -302,3 +302,62 @@ def test_legacy_metadata_encoding_does_not_exclude_readable_video(tmp_path):
             c.execute("SELECT COUNT(*) FROM frames WHERE video=?", (key,)).fetchone()[0]
             == 2
         )
+
+
+def test_graph_repair_limits_endpoints_and_preserves_claims(monkeypatch):
+    import json
+    from wechat_decrypt_tool import course_knowledge as module
+
+    note = {
+        "summary": "synthetic",
+        "concepts": [
+            {"name": "A", "explanation": "synthetic A", "evidence": [7]},
+            {"name": "B", "explanation": "synthetic B", "evidence": [7]},
+        ],
+        "relations": [
+            {"from": "alias A", "to": "B", "relation": "synthetic", "evidence": [7]}
+        ],
+        "questions": [],
+    }
+    calls = []
+
+    def chat(model, messages, schema):
+        calls.append(schema)
+        if len(calls) == 1:
+            return json.dumps(note)
+        props = schema["properties"]["relations"]["items"]["properties"]
+        assert props["from"]["enum"] == ["A", "B"] == props["to"]["enum"]
+        assert props["evidence"]["items"]["enum"] == [7]
+        return json.dumps({"relations": [{**note["relations"][0], "from": "A"}]})
+
+    monkeypatch.setattr(module, "local_chat", chat)
+    result = module.generate_note("local", [], [], {7})
+    assert (
+        result["concepts"] == note["concepts"] and result["relations"][0]["from"] == "A"
+    )
+    assert len(calls) == 2
+
+
+def test_waiting_gpu_is_resumable_and_releases_after_exception(tmp_path, monkeypatch):
+    from wechat_decrypt_tool import course_knowledge as module
+
+    store = KnowledgeStore(tmp_path / "kb")
+    holder = module.gpu_lease(store)
+    holder.__enter__()
+    sleeps = []
+
+    def release_once(_):
+        sleeps.append(1)
+        holder.__exit__(None, None, None)
+
+    monkeypatch.setattr(module.time, "sleep", release_once)
+    with pytest.raises(ValueError, match="synthetic"):
+        with module.wait_gpu_lease(store):
+            raise ValueError("synthetic")
+    assert len(sleeps) == 1
+    with module.gpu_lease(store):
+        pass
+    (store.root / "pause.flag").write_text("test")
+    with pytest.raises(InterruptedError):
+        with module.wait_gpu_lease(store):
+            pass

@@ -80,6 +80,16 @@ PDF 图像页使用本地 Poppler 渲染，再交给本地 GPU 模型转录和�
 
 批量渲染共用一个 PowerPoint COM 会话，逐份关闭本任务打开的只读课件，整批结束后再释放应用引用和 COM 初始化。这样避免在多份课件之间反复初始化、销毁 COM 会话。已有用户演示文稿不会被关闭；渲染中断后可按图片清单核对哈希并复用已完成页面。
 
+将校验过的课件图片加入搜索：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge slides-ocr --render-report output/course-knowledge/slides-render-report.json --wait
+```
+
+`slides-ocr-progress.json` 与 `slides-ocr-report.json` 分别记录 GPU 等待、识别、入库和失败数量。相同图片、提取版本、模型摘要和参考原文复用本地缓存，图片哈希改变时拒绝复用；推理先缓存，数据库写入失败可续跑。视觉补充保存独立来源证据和原图，仍须复核。`--wait` 等待其他任务释放 GPU；新版本 Run 在课程边界给等待的识别任务让出 GPU，识别也在页面之间给转写留出调度机会。旧版运行进程需先在检查点暂停再重启，才会使用新调度代码。
+
+图谱生成先校验真实引用和概念名称；名称不一致的关系单独用固定概念枚举重试，不能通过添加无证据概念来凑关系。Run 使用独立进程锁防止重复启动，等待 GPU 时继续响应暂停请求。
+
 ## 原声证据
 
 当前课程清单中的有声视频均为单条 AAC 音轨。`audio-archive` 将其复制到每课的 `audio.m4a`，不重新编码，不再次降低音质。验证覆盖压缩包边界和完整哈希、编解码参数、全部解码 PCM 哈希、样本数及起止时间，并记录原视频完整哈希；不一致时保留原视频并报错。已验证的音轨重跑时校验文件哈希后复用，不覆盖被改动的音轨。

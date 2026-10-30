@@ -70,10 +70,6 @@ def gpu_lease(store):
     """Processing and interactive answers must not load competing GPU models."""
     handle = (store.root / "gpu.lock").open("a+b")
     # Reading byte 0 itself fails when another Windows process owns its lock.
-    handle.seek(0, 2)
-    if handle.tell() == 0:
-        handle.write(b"0")
-        handle.flush()
     handle.seek(0)
     try:
         if __import__("os").name == "nt":
@@ -90,9 +86,47 @@ def gpu_lease(store):
             "GPU 正在处理课程；可以继续搜索逐字稿，暂停批处理后再进行模型问答"
         ) from None
     try:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
         yield
     finally:
         handle.close()
+
+
+@contextmanager
+def wait_gpu_lease(store):
+    waiting = False
+    while True:
+        store.checkpoint()
+        manager = gpu_lease(store)
+        try:
+            manager.__enter__()
+            break
+        except GpuBusyError:
+            if not waiting:
+                store.progress("waiting_gpu")
+                waiting = True
+            time.sleep(0.25)
+    try:
+        yield
+    finally:
+        manager.__exit__(None, None, None)
+
+
+def visual_worker_waiting(store):
+    import psutil
+
+    path = store.root / "slides-ocr-progress.json"
+    try:
+        row = json.loads(path.read_text(encoding="utf-8"))
+        if row.get("stage") != "waiting_gpu":
+            return False
+        process = psutil.Process(row["pid"])
+        return process.is_running() and "slides-ocr" in process.cmdline()
+    except (OSError, ValueError, KeyError, psutil.Error):
+        return False
 
 
 class KnowledgeStore:
@@ -358,6 +392,7 @@ class KnowledgeStore:
             "courseware-index-progress",
             "audio-archive-progress",
             "slides-render-progress",
+            "slides-ocr-progress",
             "pdf-ocr-progress",
         ):
             path = self.root / (name + ".json")
@@ -1324,6 +1359,18 @@ def enrich(store, key, model):
 
 
 def generate_note(model, evidence, visuals, ids):
+    import copy
+
+    schema = copy.deepcopy(NOTE_SCHEMA)
+    schema["properties"]["concepts"]["maxItems"] = 6
+    schema["properties"]["concepts"]["items"]["properties"]["evidence"].update(
+        minItems=1, maxItems=4, items={"type": "integer", "enum": sorted(ids)}
+    )
+    schema["properties"]["relations"]["maxItems"] = 5
+    schema["properties"]["relations"]["items"]["properties"]["evidence"].update(
+        minItems=1, maxItems=4, items={"type": "integer", "enum": sorted(ids)}
+    )
+    schema["properties"]["questions"]["maxItems"] = 5
     messages = [
         {
             "role": "system",
@@ -1340,13 +1387,44 @@ def generate_note(model, evidence, visuals, ids):
         },
     ]
     for attempt in range(3):
-        content = local_chat(model, messages, schema=NOTE_SCHEMA)
+        content = local_chat(model, messages, schema=schema)
         try:
-            return validate_note(json.loads(content), ids)
+            note = json.loads(content)
+            try:
+                return validate_note(note, ids)
+            except ValueError as edge_error:
+                if str(edge_error) != "Graph edge has no concept node":
+                    raise
+                validate_note({**note, "relations": []}, ids)
+                names = sorted({item["name"] for item in note["concepts"]})
+                if not names:
+                    return {**note, "relations": []}
+                relations = copy.deepcopy(schema["properties"]["relations"])
+                relations["items"]["properties"]["from"]["enum"] = names
+                relations["items"]["properties"]["to"]["enum"] = names
+                repair = local_chat(
+                    model,
+                    messages
+                    + [
+                        {
+                            "role": "user",
+                            "content": "校验失败：Graph edge has no concept node。固定概念列表如下，只生成这些名称之间有证据的关系，不增删概念。"
+                            + json.dumps(note["concepts"], ensure_ascii=False),
+                        }
+                    ],
+                    schema={
+                        "type": "object",
+                        "properties": {"relations": relations},
+                        "required": ["relations"],
+                    },
+                )
+                return validate_note(
+                    {**note, "relations": json.loads(repair)["relations"]}, ids
+                )
         except (ValueError, KeyError, TypeError) as exc:
             if attempt == 2:
                 raise
-            messages.extend(
+            messages = messages[:2] + (
                 [
                     {"role": "assistant", "content": content},
                     {
@@ -1812,6 +1890,10 @@ def main():
     slides.add_argument("--source", required=True, type=Path)
     slides.add_argument("--report", action="append", required=True, type=Path)
     slides.add_argument("--limit", type=int, default=0)
+    slide_ocr = sub.add_parser("slides-ocr")
+    slide_ocr.add_argument("--render-report", type=Path, required=True)
+    slide_ocr.add_argument("--limit", type=int, default=0)
+    slide_ocr.add_argument("--wait", action="store_true")
     audio = sub.add_parser("audio-archive")
     audio.add_argument("--inventory", type=Path, required=True)
     audio.add_argument("--limit", type=int, default=0)
@@ -1876,6 +1958,29 @@ def main():
         print(
             json.dumps(
                 {"completed": len(value["completed"]), "errors": len(value["errors"])}
+            )
+        )
+        return
+    if args.command == "slides-ocr":
+        from .course_slide_ocr import run_slide_ocr
+
+        with schema_lease(store.root / "slides-ocr.lock", timeout=0):
+            value = run_slide_ocr(
+                store,
+                args.render_report,
+                args.model,
+                local_chat,
+                gpu_lease,
+                limit=args.limit,
+                wait=args.wait,
+            )
+        print(
+            json.dumps(
+                {
+                    "processed": len(value["completed"]),
+                    "errors": len(value["errors"]),
+                    "deferred_gpu": value["deferred_gpu"],
+                }
             )
         )
         return
@@ -1957,6 +2062,11 @@ def main():
 
         uvicorn.run(create_app(store, args.model), host="127.0.0.1", port=args.port)
         return
+    with schema_lease(store.root / "run.lock", timeout=0):
+        run_courses(store, args)
+
+
+def run_courses(store, args):
     inventory = (
         prepare_inventory(store, args.inventory)
         if args.deduplicate
@@ -1985,7 +2095,7 @@ def main():
             if (store.root / "pause.flag").exists():
                 paused = True
                 break
-            with gpu_lease(store):
+            with wait_gpu_lease(store):
                 if state != "transcribed":
                     unload_model(args.model)
                     transcribe(store, key, args.asr_model)
@@ -2019,6 +2129,8 @@ def main():
             )
             if args.video:
                 raise
+        if visual_worker_waiting(store):
+            time.sleep(2)
         processed += 1
         if args.limit and processed >= args.limit:
             break
