@@ -131,6 +131,18 @@ PDF 图像页使用本地 Poppler 渲染，再交给本地 GPU 模型转录和�
 
 该命令冻结附件清单，按完整 SHA-256 保存到 `resources/objects`，在 `resources-manifest.json` 记录原路径与对象位置；相同字节只保存一份，输出重新读回验证。包含课件、代码、数据集和清单中的无声演示原片，默认预算 16 GiB、保留 32 GiB 磁盘余量。原文件改变、对象损坏或空间不足会明确报错，原文件不会删除。`.downloading` 文件另列待恢复媒体，不能算成已完整保存的课程。附件副本尚不等于整个知识库已完成备份。
 
+创建独立快照并验证恢复：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge backup --destination 'C:\Users\Administrator\Documents\CourseKnowledgeBackups'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge backup-verify --snapshot '备份根目录\snapshots\快照编号'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge backup-restore --snapshot '备份根目录\snapshots\快照编号' --destination '一个空的恢复目录'
+```
+
+快照通过 SQLite backup API 捕获一致的数据库，再保存其引用的截图、文档原图、附件对象和已验证音轨；每份文件重新核对 SHA-256。备份根目录下的 `objects` 在快照间复用相同字节，迁移时必须同时携带 `objects` 和 `snapshots`，不能只复制快照子文件夹。默认另留 64 GiB 目标盘空间。验证包括数据库完整性、外键、行数、所有证据对象哈希及图片引用完整性；已提交对象被改动时停止使用，恢复命令不覆盖非空目录。
+
+运行期间的快照保留当前已完成数据，清单明确标记整个课程归档尚未验收；不能据此删除未完成课程。尚未提交的媒体不进入快照。离线复核页可在恢复后从数据库用 Review 重新生成，模型权重和 Python 运行环境需另行保留或安装，本命令不复制它们。
+
 ## 视频删除前的验收
 
 程序**没有删除原视频的命令**，`deletion_ready` 始终为 false。语音按 25 秒提交，时间是分段边界，并非逐字对齐；画面每 30 秒抽样并抑制近似静态画面，无法保证保留短暂出现的代码或演示动作。原声是否已保留须检查 `audio-archive-report.json` 和每课的验证清单，不能根据少量样本推断全量完成。仅凭当前抽样版本无法无损替代视频。

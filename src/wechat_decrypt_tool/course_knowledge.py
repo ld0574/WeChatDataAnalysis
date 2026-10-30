@@ -396,6 +396,7 @@ class KnowledgeStore:
             "courseware-index-progress",
             "audio-archive-progress",
             "resources-progress",
+            "backup-progress",
             "slides-render-progress",
             "slides-ocr-progress",
             "pdf-ocr-progress",
@@ -1933,6 +1934,14 @@ def main():
     resources.add_argument("--source", required=True, type=Path)
     resources.add_argument("--inventory", required=True, type=Path)
     resources.add_argument("--budget-gib", type=float, default=16)
+    backup = sub.add_parser("backup")
+    backup.add_argument("--destination", type=Path, required=True)
+    backup.add_argument("--reserve-gib", type=float, default=64)
+    verify = sub.add_parser("backup-verify")
+    verify.add_argument("--snapshot", type=Path, required=True)
+    restore = sub.add_parser("backup-restore")
+    restore.add_argument("--snapshot", type=Path, required=True)
+    restore.add_argument("--destination", type=Path, required=True)
     courseware.add_argument(
         "--only-report",
         type=Path,
@@ -1949,6 +1958,36 @@ def main():
     store = KnowledgeStore(args.root)
     if args.command == "status":
         print(json.dumps(store.status(), ensure_ascii=False, indent=2))
+        return
+    if args.command == "backup":
+        from .course_backup import create_snapshot
+
+        with schema_lease(store.root / "backup.lock", timeout=0):
+            try:
+                value = create_snapshot(
+                    store, args.destination, reserve_gib=args.reserve_gib
+                )
+            except Exception as exc:
+                store.write_json(
+                    "backup-progress.json",
+                    {
+                        "stage": "failed",
+                        "error": type(exc).__name__ + ": " + str(exc),
+                        "updated": time.time(),
+                    },
+                )
+                raise
+        print(json.dumps(value))
+        return
+    if args.command == "backup-verify":
+        from .course_backup import verify_snapshot
+
+        print(json.dumps(verify_snapshot(args.snapshot, checkpoint=store.checkpoint)))
+        return
+    if args.command == "backup-restore":
+        from .course_backup import restore_snapshot
+
+        print(restore_snapshot(args.snapshot, args.destination))
         return
     if args.command == "pdf-ocr":
         from .course_pdf_ocr import run_pdf_ocr
