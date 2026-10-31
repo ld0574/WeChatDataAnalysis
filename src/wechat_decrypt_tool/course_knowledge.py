@@ -241,7 +241,6 @@ class KnowledgeStore:
                 source_key TEXT NOT NULL DEFAULT '',extractor TEXT NOT NULL DEFAULT 'legacy-v1',
                 raw_digest TEXT NOT NULL DEFAULT '',UNIQUE(path,locator,digest));
               CREATE INDEX IF NOT EXISTS document_source ON documents(path,source_key,active);
-              CREATE INDEX IF NOT EXISTS document_revision_rows ON documents(path,digest);
               CREATE TABLE IF NOT EXISTS resource_revisions(path TEXT,source_key TEXT,raw_digest TEXT,
                 extractor TEXT,revision TEXT,metadata TEXT,completed REAL,PRIMARY KEY(path,source_key));
               CREATE INDEX IF NOT EXISTS resource_parent_revision ON resource_revisions(
@@ -569,8 +568,8 @@ class KnowledgeStore:
                 existing = {
                     r["locator"]: r
                     for r in c.execute(
-                        "SELECT * FROM documents WHERE path=? AND digest=?",
-                        (path, revision),
+                        "SELECT * FROM documents WHERE path=? AND source_key=? AND digest=?",
+                        (path, key, revision),
                     )
                 }
                 committed = c.execute(

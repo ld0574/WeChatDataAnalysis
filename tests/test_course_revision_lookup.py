@@ -7,9 +7,16 @@ def test_revision_lookup_does_not_scan_all_other_members_of_large_course_zip(tmp
     store = KnowledgeStore(tmp_path)
     with store.write() as db:
         db.executemany(
-            "INSERT INTO documents(path,locator,digest,text,search_text) VALUES(?,?,?,?,?)",
+            "INSERT INTO documents(path,locator,digest,text,search_text,source_key) VALUES(?,?,?,?,?,?)",
             [
-                ("course.zip", f"member-{n}.txt", f"revision-{n}", "fixture", "")
+                (
+                    "course.zip",
+                    f"member-{n}.txt",
+                    f"revision-{n}",
+                    "fixture",
+                    "",
+                    f"archive member-{n}.txt",
+                )
                 for n in range(3000)
             ],
         )
@@ -24,8 +31,8 @@ def test_revision_lookup_does_not_scan_all_other_members_of_large_course_zip(tmp
 
         db.set_progress_handler(budget, 100)
         rows = db.execute(
-            "SELECT * FROM documents WHERE path=? AND digest=?",
-            ("course.zip", "revision-2999"),
+            "SELECT * FROM documents WHERE path=? AND source_key=? AND digest=?",
+            ("course.zip", "archive member-2999.txt", "revision-2999"),
         ).fetchall()
         assert len(rows) == 1 and rows[0]["locator"] == "member-2999.txt"
 
