@@ -1828,6 +1828,8 @@ ANSWER_REFERENCE = re.compile(r"\[(?:证据\s*)?(S\d+(?:\s*[,，、;；]\s*S\d+)
 
 
 def answer(store, question, model, video_id=None):
+    from .course_answer_validation import has_sentence_citation_coverage
+
     hits = store.search(question, video_id=video_id)
     # Question wording such as “具体操作步骤” is often absent from a transcript.
     # Preserve explicit technical anchors before asking the model to rewrite it.
@@ -1905,7 +1907,7 @@ def answer(store, question, model, video_id=None):
         )
         if attempt:
             instruction += (
-                " 上次输出不完整；请先组织好完整回答，避免半句话或未闭合括号。"
+                " 上次输出未通过完整性或引用检查；每个完整句子必须在句尾引用对应证据，不得在引用后追加未引用的结论，避免半句话或未闭合括号。"
             )
         content = local_chat(
             model,
@@ -1942,8 +1944,7 @@ def answer(store, question, model, video_id=None):
         }
         if any(gap_warnings.values()):
             value["audio_coverage_notice"] = NOTICE
-        cleaned = ANSWER_REFERENCE.sub("", content).strip()
-        if re.search(r'[。！？.!?][”"\']?$', cleaned):
+        if has_sentence_citation_coverage(content, ANSWER_REFERENCE):
             break
     else:
         with store.write() as c:

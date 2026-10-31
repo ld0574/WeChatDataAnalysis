@@ -184,6 +184,52 @@ def test_answer_validates_combined_citations_and_rejects_nonexistent_ones(
         module.answer(store, "Python", "unused", key)
 
 
+@pytest.mark.parametrize('response', [
+    'Python 需要配置。[证据 S1]另外需要购买不存在的许可证。',
+    'Python 需要配置。另一个无根据结论。[证据 S1]',
+    '[证据 S1]Python 需要配置。',
+    'Python 需要配置[证据 S1]，另外需要购买不存在的许可证。',
+])
+def test_answer_rejects_uncited_sentences_and_uncited_tails(tmp_path, monkeypatch, response):
+    from wechat_decrypt_tool import course_knowledge as module
+
+    store = KnowledgeStore(tmp_path / 'kb')
+    key = register(store, tmp_path)
+    store.save_segment(key, 0, 0, 25, 'Python 配置 PATH。')
+    calls = []
+
+    def chat(*args, **kwargs):
+        calls.append(1)
+        return response
+
+    monkeypatch.setattr(module, 'local_chat', chat)
+    with pytest.raises(RuntimeError, match='引用检查'):
+        module.answer(store, 'Python', 'unused', key)
+    assert len(calls) == 2
+
+
+def test_answer_retries_uncited_claim_then_returns_only_cited_correction(tmp_path, monkeypatch):
+    from wechat_decrypt_tool import course_knowledge as module
+
+    store = KnowledgeStore(tmp_path / 'kb')
+    key = register(store, tmp_path)
+    store.save_segment(key, 0, 0, 25, 'Python 配置 PATH。')
+    responses = iter(('Python 需要配置。[证据 S1]还需要购买许可证。',
+                      'Python 需要配置。[证据 S1]'))
+    requests = []
+
+    def chat(model, messages, **kwargs):
+        requests.append(messages)
+        return next(responses)
+
+    monkeypatch.setattr(module, 'local_chat', chat)
+    value = module.answer(store, 'Python', 'unused', key)
+    assert value['citations'] == [1]
+    assert '许可证' not in value['answer']
+    assert len(requests) == 2
+    assert '每个完整句子' in requests[1][0]['content']
+
+
 def test_exclusive_gpu_lease_is_released_after_exception(tmp_path):
     from wechat_decrypt_tool.course_knowledge import gpu_lease
 

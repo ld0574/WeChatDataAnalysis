@@ -203,6 +203,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "current-integrity-validation.json",
         "current-integrity-notes-frames-validation.json",
         "ready-note-production-validation.json",
+        "answer-citation-only-deployment-validation.json",
+        "qa-citation-validation.json",
         "resources-plan.json",
         "goal-audit.json",
         "teaching-image-audit.json",
