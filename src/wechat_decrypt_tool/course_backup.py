@@ -278,6 +278,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "primary-static-image-validation.json",
         "static-image-full-partition-validation.json",
         "static-image-completion-validation.json",
+        "lesson-export-validation.json",
+        "lesson-export-subset-validation.json",
         "pdf-full-scope-validation.json",
         "slides-ocr-full-validation.json",
         "silent-demo-validation.json",

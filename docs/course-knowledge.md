@@ -327,6 +327,17 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 
 ## 视频删除前的验收
 
+逐课检查数据库中的完整摘要窗口、窗口内引用、`evidence.json` 和 `graph.json` 是否一致：
+
+```powershell
+$env:PYTHONPATH = Join-Path $PWD 'src'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_lesson_exports --root output/course-knowledge
+```
+
+默认按 `inventory-unique.json` 中全部可处理的规范音频来源核对，尚未注册、转写未完成、画面识别未完成、摘要窗口缺失的课程均计入失败，不能仅凭已完成的数据库行宣称全量通过。部分检查可重复传入 `--video <课程编号>`；子集回执明确记录范围，始终不能代表全量验收。损坏音轨的摘要按恢复片段边界重新分组，并核对窗口计划与冻结清单绑定。失败返回码为 2，回执只包含编号、错误代码、数量及哈希，不输出课程内容。
+
+该工具对每课分别使用短暂只读 WAL 快照，检查前后数据库行与导出文件是否改变；不锁定全部课程的同一全局时刻，不调用模型、不读取原视频、不写入生产数据库。课程仍在处理或校验期间发生变化时拒绝通过，可在完成后重跑。全量和子集回执分别写入 `lesson-export-validation.json`、`lesson-export-subset-validation.json`，随后续备份保留。该项只证明结构与导出一致，不验证音频覆盖、截图像素、模型语义或删除条件。
+
 静态教学图片主批次结束后，可以只读核对全部成功来源，不重新运行模型：
 
 ```powershell

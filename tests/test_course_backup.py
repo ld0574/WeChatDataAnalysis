@@ -308,3 +308,25 @@ def test_snapshot_validates_every_alias_metadata_even_when_object_hash_is_reused
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(RuntimeError, match="evidence object hash changed"):
         verify_snapshot(result["snapshot"])
+
+
+def test_lesson_export_scope_receipts_survive_independent_restore(tmp_path):
+    store = KnowledgeStore(tmp_path / "working")
+    receipts = {
+        "lesson-export-validation.json": {
+            "scope": "full_canonical_audio_inventory",
+            "accepted": False,
+        },
+        "lesson-export-subset-validation.json": {
+            "scope": "explicit_lesson_subset",
+            "accepted": True,
+        },
+    }
+    for name, value in receipts.items():
+        store.write_json(name, value)
+    snapshot = create_snapshot(store, tmp_path / "backup", reserve_gib=0)
+    restored = restore_snapshot(
+        snapshot["snapshot"], tmp_path / "restored", reserve_gib=0
+    )
+    for name in receipts:
+        assert (restored / name).read_bytes() == (store.root / name).read_bytes()
