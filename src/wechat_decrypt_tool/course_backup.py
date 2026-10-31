@@ -125,6 +125,15 @@ def create_snapshot(store, destination, *, reserve_gib=64):
                 add(f"lessons/{key}/{name}", asset["sha256"])
             if (manifest.parent / "asr-audio-source.json").exists():
                 add(f"lessons/{key}/asr-audio-source.json")
+    from .course_gap_audio import gap_evidence
+
+    for manifest in sorted((source / "lessons").glob("*/audio-gap-recovery.json")):
+        key = manifest.parent.name
+        gaps = gap_evidence(store, key, rehash=True)
+        if gaps:
+            add(f"lessons/{key}/audio-gap-recovery.json")
+            for asset in [gaps["original_packets"], *gaps["clips"]]:
+                add(f"lessons/{key}/{asset['file']}", asset["sha256"])
     for name in (
         "inventory.json",
         "inventory-unique.json",
@@ -178,6 +187,9 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "audio-timeline-production-validation.json",
         "alternate-audio-recovery-report.json",
         "alternate-audio-recovery-validation.json",
+        "audio-gap-recovery-report.json",
+        "audio-gap-recovery-validation.json",
+        "gap-window-pilot-validation.json",
         "damaged-packet-pattern.json",
         "pdf-all-pages-plan.json",
         "pdf-source-reconciliation.json",
