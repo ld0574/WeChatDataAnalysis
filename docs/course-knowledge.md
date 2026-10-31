@@ -327,6 +327,15 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 
 ## 视频删除前的验收
 
+阶段限制清单可从当前数据库状态和已有独立回执重新生成，不调用模型，也不改动课程数据：
+
+```powershell
+$env:PYTHONPATH = Join-Path $PWD 'src'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_exclusions --root output/course-knowledge
+```
+
+`KNOWN-EXCLUSIONS.md` 面向阅读，`KNOWN-EXCLUSIONS.json` 保存损坏音轨的恢复路径、精确缺口时钟、部分动画的所有来源、当前阶段与输入回执 SHA-256。这两份清单会进入后续快照；首次转换时保留旧的手工说明。生成清单不重新校验原视频、模型语义或进程存活，也不授予删除许可；最终完整范围的验收仍须单独执行。
+
 损坏音频可保留原 AAC 包，再把独立可读区间保存为 `lessons/<编号>/gap-audio/*.wav`。工作音频为 16 kHz 单声道 PCM，完整原音轨仍属于损坏状态；`audio-gap-recovery.json` 明确列出可读区间、缺失区间和原视频时钟。GPU 转写逐个片段读取，窗口在片段边界重新开始，不拼接或填充缺口。`asr-gap-source.json` 固定清单哈希及全部窗口，断点续跑拒绝无来源绑定的旧转写或变更后的片段。完成状态为 `transcribed_with_gaps`，`decoded_seconds` 只统计恢复的工作音频时长。摘要按恢复片段分组，检索、问答和离线复核页显示音频缺失提示；每段引用可播放对应片段。备份包含原损坏 AAC、全部工作片段和来源绑定，不依赖原视频提供播放。
 
 已知损坏、仍在恢复的来源可写入 `audio-preparation-plan.json`（版本 1）。每个来源指定 `video`、预期 `manifest`（`audio-recovery.json` 或 `audio-gap-recovery.json`）及 `worker` 的 `pid`、`created`、`script`。主任务在申请 GPU 前等待清单原子发布，避免先在原损坏音轨上留下无法绑定的转写；准备进程身份改变或退出而没有发布该来源时明确报错。清单存在后仍须通过媒体和来源校验，不能以文件存在充当完成证明。
