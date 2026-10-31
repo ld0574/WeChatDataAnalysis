@@ -220,6 +220,22 @@ Notebook 内嵌静态图片和已失败的教学图片可使用原分辨率切�
 
 后续新增失败项可使用 `--report-suffix followup` 保存独立的进度、结果及锁文件；默认报告和已提交的图像证据继续保留。补跑复用相同哈希和模型版本的切块缓存，各来源的引用仍独立。应在原任务结束后冻结完整的新增失败集合，避免漏掉冻结范围之后的错误。
 
+动画图片可保留完整原件、全部可解码合成帧及原始帧时序，再逐帧建立本地模型索引：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_animations --root output/course-knowledge --audit output/course-knowledge/teaching-image-audit.json
+```
+
+流程支持 GIF、动画 WebP、APNG 和多页 TIFF，不抽帧、不补帧；相同合成画面共用 PNG 和识别缓存，每次出现的帧号与时间仍独立保留。APNG 的默认海报不计入动画时钟，缺失时长保持未知。严格解码失败时保留原件和成功的前段，清单明确记录失败帧，不能算作完整动画。`document-animations` 保存原件、逐帧 PNG 及哈希清单；动画资产总预算 4 GiB，另留 32 GiB 磁盘空间。识别沿用原像素切块与本地模型，描述属于待复核草稿，不推断帧间动作。证据页可播放保留原件并下载帧清单；浏览器的最短延时和循环行为不作为原始时序证明。所有原件和解码帧都会纳入备份，即使识别尚未结束；处理结果见 `animation-ocr-report.json`。
+
+识别完成后可运行独立的像素、时序、来源、缓存文本及检索引用校验：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_animation_validation --root output/course-knowledge --audit output/course-knowledge/teaching-image-audit.json
+```
+
+校验只读取本地证据，不调用模型。`animation-ocr-validation.json` 区分完整识别范围和原件解码缺口；识别全部保留帧仍不能修复损坏原件。
+
 PDF 的单页识别失败会记录具体页号并继续后面的页；重复或截断的页面会转入分块识别。已有哈希绑定的页面证据继续复用。PDF 页面图像的最长边仍限制为 2000 像素，分块保持的是这些渲染像素；原 PDF 另行保留，不能据此声称极小字形或复杂图示已独立验收。
 
 创建独立快照并验证恢复：

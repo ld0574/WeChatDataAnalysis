@@ -80,7 +80,7 @@ def packet_summary(path, checkpoint=lambda: None):
     }
 
 
-def decoded_summary(path, checkpoint=lambda: None):
+def decoded_summary(path, checkpoint=lambda: None, *, rational_endpoints=False):
     import av
 
     digest = hashlib.sha256()
@@ -111,6 +111,14 @@ def decoded_summary(path, checkpoint=lambda: None):
             samples += frame.samples
             count += 1
             end = frame.time + frame.samples / frame.sample_rate
+            if rational_endpoints:
+                # Health proofs sum integer-sample durations before converting
+                # to float. Keep the legacy default stable for saved manifests.
+                from fractions import Fraction
+
+                if count == 1:
+                    first = float(timestamp)
+                end = float(timestamp + Fraction(frame.samples, frame.sample_rate))
     if not count:
         raise ValueError("No original audio could be decoded")
     return {

@@ -103,6 +103,17 @@ def create_snapshot(store, destination, *, reserve_gib=64):
             t: db.execute("SELECT count(*) FROM " + t).fetchone()[0] for t in TABLES
         }
     resources = source / "resources-manifest.json"
+    from .course_animations import animation_evidence
+
+    for manifest in sorted((source / "document-animations").glob("*.json")):
+        value = animation_evidence(store, manifest.stem, rehash=True)
+        if value:
+            add(str(manifest.relative_to(source)).replace("\\", "/"))
+            for asset in [
+                value["original"],
+                *[frame["image"] for frame in value["frames"]],
+            ]:
+                add(asset["file"], asset["sha256"])
     if resources.exists():
         for row in json.loads(resources.read_text(encoding="utf-8"))["completed"]:
             add(row["object"], row["sha256"])
@@ -161,6 +172,12 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "notebook-rich-audit.json",
         "notebook-rich-report.json",
         "notebook-rich-validation.json",
+        "remaining-visual-audit.json",
+        "animation-native-validation.json",
+        "animation-native-report.json",
+        "animation-production-validation.json",
+        "animation-ocr-report.json",
+        "animation-ocr-validation.json",
         "image-repair-followup-errors.json",
         "image-repairs-followup-report.json",
         "image-followup-validation.json",
@@ -199,6 +216,7 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "audio-timeline-production-validation.json",
         "alternate-audio-recovery-report.json",
         "alternate-audio-recovery-validation.json",
+        "canonical-audio-retry-validation.json",
         "audio-gap-recovery-report.json",
         "audio-gap-recovery-validation.json",
         "gap-window-pilot-validation.json",

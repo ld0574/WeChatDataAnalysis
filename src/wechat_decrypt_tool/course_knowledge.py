@@ -2131,6 +2131,38 @@ def create_app(store, model):
                 else ""
             )
             if visual:
+                visual_metadata = json.loads(visual["metadata"])
+                if visual_metadata.get("animation_manifest"):
+                    image_html += (
+                        "<p>动画逐帧证据；模型解读须复核。未采样或补帧。"
+                        + (
+                            "源动画有解码缺口，仅显示已恢复的帧。"
+                            if not visual_metadata.get("complete_source_frame_decode")
+                            else ""
+                        )
+                        + "</p><details><summary>本画面出现的帧和原始时序</summary><pre>"
+                        + html.escape(
+                            json.dumps(
+                                visual_metadata["animation_frame_occurrences"],
+                                ensure_ascii=False,
+                            )
+                        )
+                        + '</pre></details><p><a href="/animation-manifest/'
+                        + str(r["id"])
+                        + '">全部帧与校验证据</a> · <a href="/animation-source/'
+                        + str(r["id"])
+                        + '">保留的完整原动画字节</a></p>'
+                    )
+                    if visual_metadata.get("animation_format") in (
+                        "GIF",
+                        "PNG",
+                        "WEBP",
+                    ):
+                        image_html += (
+                            '<details><summary>播放保留的原动画（浏览器时序）</summary><img loading="lazy" src="/animation-source/'
+                            + str(r["id"])
+                            + '"></details>'
+                        )
                 if json.loads(visual["metadata"]).get("review_page"):
                     image_html += (
                         '<p><a href="/notebook-rich/'
@@ -2187,6 +2219,55 @@ def create_app(store, model):
             raise HTTPException(404)
         anchor = ("f" if evidence_id < 0 else "s") + str(abs(evidence_id))
         return RedirectResponse("/lesson/" + r["video"] + "#" + anchor)
+
+    def animation_asset(document_id, *, original):
+        from .course_animations import animation_evidence
+        from .course_audio_archive import file_digest
+
+        with store.connect() as db:
+            row = db.execute(
+                "SELECT m.metadata FROM documents d JOIN document_version_metadata m ON m.path=d.path AND m.source_key=d.source_key AND m.revision=d.digest WHERE d.id=?",
+                (document_id,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(404)
+        metadata = json.loads(row[0])
+        path = (store.root / metadata.get("animation_manifest", "")).resolve()
+        if (
+            not path.is_relative_to((store.root / "document-animations").resolve())
+            or not path.is_file()
+            or file_digest(path) != metadata.get("animation_manifest_digest")
+        ):
+            raise HTTPException(404)
+        try:
+            value = animation_evidence(store, metadata["animation_source_sha256"])
+            if not value or path.stem != value["source_sha256"]:
+                raise HTTPException(404)
+            if not original:
+                return FileResponse(path, media_type="application/json")
+            asset = value["original"]
+            path = store.root / asset["file"]
+            if file_digest(path) != asset["sha256"]:
+                raise HTTPException(404)
+            mime = {
+                "GIF": "image/gif",
+                "PNG": "image/png",
+                "WEBP": "image/webp",
+                "TIFF": "image/tiff",
+            }[value["source_format"]]
+            return FileResponse(
+                path, media_type=mime, headers={"X-Content-Type-Options": "nosniff"}
+            )
+        except (ValueError, OSError, RuntimeError, KeyError):
+            raise HTTPException(404) from None
+
+    @app.get("/animation-source/{document_id}")
+    def animation_source(document_id: int):
+        return animation_asset(document_id, original=True)
+
+    @app.get("/animation-manifest/{document_id}")
+    def animation_manifest(document_id: int):
+        return animation_asset(document_id, original=False)
 
     @app.get("/notebook-rich/{document_id}")
     def notebook_rich(document_id: int):

@@ -206,7 +206,9 @@ def prepare_alternate_audio(store, original, candidate, proof, health, origins):
                     "sha256": file_digest(retained, store.checkpoint),
                     "packets": packets,
                 }
-            actual = decoded_summary(temporary / NAMES[0], store.checkpoint)
+            actual = decoded_summary(
+                temporary / NAMES[0], store.checkpoint, rational_endpoints=True
+            )
             comparisons = {
                 "pcm_digest": "pcm_digest",
                 "timeline_digest": "timeline_digest",

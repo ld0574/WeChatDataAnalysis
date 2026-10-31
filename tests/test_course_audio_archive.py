@@ -175,7 +175,7 @@ def alternate_evidence(source, tmp_path):
             }
         },
     }
-    decoded = module.decoded_summary(candidate["path"])
+    decoded = module.decoded_summary(candidate["path"], rational_endpoints=True)
     health = {
         "video": key,
         "candidate_video": other,
@@ -206,6 +206,56 @@ def alternate_evidence(source, tmp_path):
         },
     }
     return original, candidate, proof, health, origins
+
+
+def test_health_endpoint_uses_one_rational_sum_without_relaxing_pcm_or_clock_checks(
+    monkeypatch,
+):
+    import contextlib
+    from fractions import Fraction
+    from types import SimpleNamespace
+
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    frame = av.AudioFrame.from_ndarray(
+        np.zeros((2, 1024), dtype="float32"), format="fltp", layout="stereo"
+    )
+    frame.sample_rate = 48000
+    frame.pts = 492495624
+    frame.time_base = Fraction(1, 48000)
+    monkeypatch.setattr(
+        av,
+        "open",
+        lambda *a, **k: contextlib.nullcontext(
+            SimpleNamespace(decode=lambda **kw: iter([frame]))
+        ),
+    )
+    legacy = module.decoded_summary("unused")
+    canonical = module.decoded_summary("unused", rational_endpoints=True)
+    expected = float(Fraction(492495624 + 1024, 48000))
+    assert legacy["end_seconds"] != expected
+    assert canonical["end_seconds"] == expected
+    assert {k: v for k, v in legacy.items() if k != "end_seconds"} == {
+        k: v for k, v in canonical.items() if k != "end_seconds"
+    }
+
+
+def test_recovery_does_not_tolerate_a_different_canonical_endpoint(
+    tmp_path, alternate_evidence
+):
+    import math
+
+    original, candidate, proof, health, origins = alternate_evidence
+    changed = {**health, "end_seconds": math.nextafter(health["end_seconds"], math.inf)}
+    with pytest.raises(RuntimeError, match="PCM or timeline differs"):
+        recovery.prepare_alternate_audio(
+            KnowledgeStore(tmp_path / "kb"),
+            original,
+            candidate,
+            proof,
+            changed,
+            origins,
+        )
 
 
 def test_alternate_recovery_retains_both_tracks_and_refuses_implicit_old_asr_mix(
