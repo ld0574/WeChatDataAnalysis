@@ -184,6 +184,40 @@ def test_tampered_staged_chunk_cannot_be_published(tmp_path):
         module.publish_spool(store, "a.csv", "", "b" * 64, spool, {"chunks": 1})
 
 
+def test_legacy_retirement_excludes_hidden_and_adjacent_sources_and_keeps_ids(tmp_path):
+    store = KnowledgeStore(tmp_path / "kb")
+    path, key = "container.zip", "archive target.csv"
+    entries = [
+        (key + " chars 0", 1, "legacy-v1", "legacy-with-explicit-key"),
+        (key + ".other chars 0", 1, "legacy-v1", ""),
+        (key + " chars 3000", 0, module.EXTRACTOR, key),
+        (key + " chars 6000", 1, module.EXTRACTOR, key),
+    ]
+    with store.write() as db:
+        for location, active, extractor, source_key in entries:
+            db.execute(
+                "INSERT INTO documents(path,locator,digest,text,search_text,active,source_key,extractor,raw_digest) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    path,
+                    location,
+                    "revision",
+                    "fixture retained text",
+                    "fixture",
+                    active,
+                    source_key,
+                    extractor,
+                    "a" * 64,
+                ),
+            )
+        before = {r["id"]: dict(r) for r in db.execute("SELECT * FROM documents")}
+        module.retire_legacy_rows(db, path, key)
+        after = {r["id"]: dict(r) for r in db.execute("SELECT * FROM documents")}
+    assert set(before) == set(after)
+    changed = [identity for identity in before if before[identity] != after[identity]]
+    assert len(changed) == 1
+    assert after[changed[0]] == {**before[changed[0]], "active": 0}
+
+
 def test_direct_zip_aliases_hash_routes_resume_and_independent_restore(tmp_path):
     from wechat_decrypt_tool.course_backup import create_snapshot, restore_snapshot
 

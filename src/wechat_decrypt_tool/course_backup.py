@@ -88,9 +88,13 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         assets[relative] = expected or assets.get(relative)
 
     with sqlite3.connect(database) as db:
+        from .course_visual_cache_assets import visual_cache_assets
+
         for (path,) in db.execute("SELECT path FROM frames"):
             add(path)
-        for (raw,) in db.execute("SELECT metadata FROM document_version_metadata"):
+        for version_path, version_key, version_digest, raw in db.execute(
+            "SELECT path,source_key,revision,metadata FROM document_version_metadata"
+        ):
             metadata = json.loads(raw)
             if metadata.get("image"):
                 add(metadata["image"], metadata["image_digest"])
@@ -99,6 +103,26 @@ def create_snapshot(store, destination, *, reserve_gib=64):
             if metadata.get("review_page"):
                 add(metadata["review_page"], metadata["review_page_digest"])
                 add(metadata["rich_record"], metadata["rich_record_digest"])
+            extractor = None
+            pdf_image = metadata.get("image", "").replace("\\", "/")
+            if (
+                metadata.get("page")
+                and pdf_image.startswith("document-visuals/")
+                and "-scale2000-dpi150/" in pdf_image
+            ):
+                version = db.execute(
+                    "SELECT extractor FROM documents INDEXED BY document_source WHERE path=? AND source_key=? AND digest=? LIMIT 1",
+                    (version_path, version_key, version_digest),
+                ).fetchone()
+                if version is None:
+                    raise RuntimeError(
+                        "PDF historical revision has no committed document"
+                    )
+                extractor = version[0]
+            for relative, digest in visual_cache_assets(
+                source, metadata, extractor=extractor
+            ).items():
+                add(relative, digest)
         counts = {
             t: db.execute("SELECT count(*) FROM " + t).fetchone()[0] for t in TABLES
         }
@@ -251,6 +275,10 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "pdf-all-pages-retained-plan.json",
         "pdf-retained-production-validation.json",
         "pdf-ocr-report.json",
+        "pdf-committed-validation.json",
+        "pdf-full-validation.json",
+        "pdf-failed-page-plan.json",
+        "pdf-parser-warning-audit.json",
     ):
         if (source / name).exists():
             add(name)

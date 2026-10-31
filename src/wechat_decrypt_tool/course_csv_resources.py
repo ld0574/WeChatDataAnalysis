@@ -31,6 +31,31 @@ SECRET_COLUMN = re.compile(
 )
 
 
+def committed_csv_revision(store, path, key, raw_digest):
+    with store.connect() as db:
+        row = db.execute(
+            "SELECT * FROM resource_revisions WHERE path=? AND source_key=? AND raw_digest=? AND extractor=?",
+            (str(path), key, raw_digest, EXTRACTOR),
+        ).fetchone()
+        if row is None:
+            return None
+        incomplete = db.execute(
+            "SELECT 1 FROM documents INDEXED BY document_source WHERE path=? AND source_key=? AND active=0 AND digest=? LIMIT 1",
+            (str(path), key, row["revision"]),
+        ).fetchone()
+        return None if incomplete else json.loads(row["metadata"])
+
+
+def retire_legacy_rows(db, path, key):
+    # The active flag is in this existing index. Reject hidden staged rows before
+    # reading their large text pages through the legacy locator-range predicate.
+    prefix = key + " "
+    db.execute(
+        "UPDATE documents INDEXED BY document_source SET active=0 WHERE path=? AND active=1 AND extractor='legacy-v1' AND locator>=? AND locator<?",
+        (str(path), prefix, prefix + "\U0010ffff"),
+    )
+
+
 def spool_rows(source, destination, plan, checkpoint=lambda: None):
     """Keep field strings/empty fields/quoted newlines; never infer a header or types."""
     encoding = plan["encoding"]
@@ -231,11 +256,7 @@ def publish_spool(
         ).fetchone()[0]
         if count != total:
             raise RuntimeError("Staged CSV contains missing or extra chunks")
-        prefix = key + " "
-        db.execute(
-            "UPDATE documents SET active=0 WHERE path=? AND extractor='legacy-v1' AND locator>=? AND locator<?",
-            (str(path), prefix, prefix + "\U0010ffff"),
-        )
+        retire_legacy_rows(db, path, key)
         db.execute(
             "UPDATE documents SET active=0 WHERE path=? AND source_key=? AND digest!=? AND active=1",
             (str(path), key, revision),
@@ -406,7 +427,7 @@ def index_csv_resources(store, profile_path, *, reserve_gib=32):
                             "Identical CSV bytes have conflicting audited counters"
                         )
                 context = {**metadata, "archive_members": chain}
-                previous = store.document_revision(path, key, sha, EXTRACTOR)
+                previous = committed_csv_revision(store, path, key, sha)
                 cached = previous is not None
                 if cached and previous != json.loads(json.dumps(context)):
                     raise RuntimeError(
