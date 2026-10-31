@@ -181,6 +181,9 @@ class KnowledgeStore:
             schema_lease(self.root / "writer.lock"),
         ):
             self._initialize_schema()
+        from .course_document_counts import initialize_document_counts
+
+        initialize_document_counts(self)
 
     def _initialize_schema(self):
         with self.connect() as c:
@@ -263,6 +266,9 @@ class KnowledgeStore:
                 c.execute("INSERT INTO visual_fts(visual_fts) VALUES('rebuild')")
             if not had_document_index:
                 c.execute("INSERT INTO document_fts(document_fts) VALUES('rebuild')")
+            from .course_document_counts import install_document_counts
+
+            install_document_counts(c)
 
     @contextmanager
     def connect(self):
@@ -435,6 +441,11 @@ class KnowledgeStore:
 
     def status(self):
         with self.connect() as c:
+            counts = c.execute(
+                "SELECT active,historical FROM course_document_counts WHERE id=1 AND initialized=1"
+            ).fetchone()
+            if counts is None:
+                raise RuntimeError("Document counters missing; reopen archive to initialize")
             result = {
                 "videos": [
                     dict(r)
@@ -458,12 +469,8 @@ class KnowledgeStore:
                 "notes": c.execute(
                     "SELECT COUNT(*) FROM notes WHERE status='ready'"
                 ).fetchone()[0],
-                "document_chunks": c.execute(
-                    "SELECT COUNT(*) FROM documents WHERE active=1"
-                ).fetchone()[0],
-                "historical_document_chunks": c.execute(
-                    "SELECT COUNT(*) FROM documents WHERE active=0"
-                ).fetchone()[0],
+                "document_chunks": counts[0],
+                "historical_document_chunks": counts[1],
                 "verified_duplicate_video_paths": c.execute(
                     "SELECT COUNT(*) FROM aliases"
                 ).fetchone()[0],

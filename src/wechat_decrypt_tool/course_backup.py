@@ -436,6 +436,9 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
         }
         if counts != manifest["counts"]:
             raise RuntimeError("Snapshot row counts differ from captured manifest")
+        from .course_document_counts import verify_document_counts
+
+        document_counts_checked = verify_document_counts(db)
         notes_checked = _validate_note_evidence(db)
         available = {row["path"] for row in manifest["files"]}
         if any(
@@ -455,6 +458,7 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
         "unique_objects": len(checked),
         "verified_audio_files": manifest["verified_audio_files"],
         "ready_note_evidence_validated": notes_checked,
+        "document_counts_independently_verified": document_counts_checked,
     }
 
 
