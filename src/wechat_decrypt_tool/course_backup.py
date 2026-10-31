@@ -126,6 +126,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "teaching-image-audit.json",
         "images-ocr-report.json",
         "nested-courseware-report.json",
+        "nested-full-scope-validation.json",
+        "notebook-visual-audit.json",
         "spreadsheet-resource-audit.json",
         "spreadsheet-index-report.json",
         "spreadsheet-index-validation.json",
@@ -147,6 +149,11 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "asr-batch-benchmark.json",
         "source-audio-error-audit.json",
         "source-audio-ffmpeg-crosscheck.json",
+        "alternate-packet-difference-report.json",
+        "alternate-absolute-origin-validation.json",
+        "candidate-audio-health.json",
+        "damaged-packet-pattern.json",
+        "pdf-all-pages-plan.json",
     ):
         if (source / name).exists():
             add(name)
