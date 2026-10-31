@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 TABLES = ("videos", "segments", "frames", "notes", "documents")
@@ -60,7 +61,7 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         )
 
     progress("sqlite_backup")
-    with store.connect() as src, sqlite3.connect(database) as dst:
+    with store.connect() as src, closing(sqlite3.connect(database)) as dst, dst:
         # Hold a WAL read transaction so concurrent ASR commits cannot restart
         # every incremental backup step and indefinitely starve a large snapshot.
         src.execute("BEGIN")
@@ -87,7 +88,7 @@ def create_snapshot(store, destination, *, reserve_gib=64):
             raise RuntimeError("Conflicting immutable asset hashes in snapshot")
         assets[relative] = expected or assets.get(relative)
 
-    with sqlite3.connect(database) as db:
+    with closing(sqlite3.connect(database)) as db:
         from .course_visual_cache_assets import visual_cache_assets
 
         for (path,) in db.execute("SELECT path FROM frames"):
@@ -384,7 +385,7 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
             checked[obj] = (obj.stat().st_size, file_hash(obj, checkpoint))
         if checked[obj] != (row["bytes"], row["sha256"]):
             raise RuntimeError("Snapshot evidence object hash changed")
-    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as db:
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
         integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok" or db.execute("PRAGMA foreign_key_check").fetchone():
             raise RuntimeError("Snapshot SQLite integrity validation failed")

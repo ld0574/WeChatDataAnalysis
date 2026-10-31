@@ -86,6 +86,38 @@ def test_backup_corruption_is_detected_and_restore_does_not_overwrite(tmp_path):
         verify_snapshot(snapshot)
 
 
+@pytest.mark.parametrize("fail_verification", [False, True])
+def test_snapshot_connections_close_without_waiting_for_garbage_collection(
+    tmp_path, monkeypatch, fail_verification
+):
+    store = KnowledgeStore(tmp_path / "working")
+    connect = module.sqlite3.connect
+    connections = []
+
+    def track(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        # Keep strong references so a leaked connection cannot pass through GC.
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(module.sqlite3, "connect", track)
+    result = create_snapshot(store, tmp_path / "backup", reserve_gib=0)
+    snapshot = __import__("pathlib").Path(result["snapshot"])
+    if fail_verification:
+        manifest_path = snapshot / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["counts"]["segments"] += 1
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="row counts differ"):
+            verify_snapshot(snapshot)
+    else:
+        assert verify_snapshot(snapshot)["database_integrity"] == "ok"
+    assert connections
+    for connection in connections:
+        with pytest.raises(module.sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
 def test_backup_rejects_outside_evidence_path_before_copy(tmp_path):
     store = KnowledgeStore(tmp_path / "working")
     video = tmp_path / "source.mp4"
