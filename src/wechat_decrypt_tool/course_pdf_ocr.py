@@ -17,45 +17,63 @@ from pathlib import Path
 
 def pdf_targets(reports):
     found = {}
+
+    def add(row, key, page):
+        target = {"path": row["path"], "source_key": key, "page": page}
+        digest = row.get("parent_raw_digest")
+        if digest is not None:
+            if not re.fullmatch(r"[a-f0-9]{64}", digest):
+                raise ValueError("Invalid planned PDF source digest")
+            target["expected_digest"] = digest
+        identity = (row["path"], key, page)
+        previous = found.get(identity, {})
+        if previous.get("expected_digest", digest) != digest:
+            if digest is not None:
+                raise ValueError("Conflicting planned PDF source revisions")
+        found[identity] = {**previous, **target}
+
     for report in reports:
+        for row in report.get("pdf_sources_all_pages", []):
+            add(row, row["source_key"], None)
         for row in report.get("pdf_pages_needing_ocr", []):
             match = re.fullmatch(r"(.*) page (\d+)", row["location"])
             if not match or int(match[2]) < 1:
                 raise ValueError("Invalid PDF page locator")
-            key = (row["path"], match[1], int(match[2]))
-            found[key] = {
-                "path": row["path"],
-                "source_key": match[1],
-                "page": int(match[2]),
-            }
+            add(row, match[1], int(match[2]))
         for row in report.get("pdf_warnings", []):
             if "skipped" not in row["warning"].lower():
                 continue
             match = re.fullmatch(r"page (\d+)", row.get("page", ""))
             page = int(match[1]) if match else None
-            key = (row["path"], row.get("location", ""), page)
-            found[key] = {"path": row["path"], "source_key": key[1], "page": page}
+            add(row, row.get("location", ""), page)
     return list(found.values())
 
 
 @contextmanager
 def pdf_source(root, target, temporary, *, store=None):
-    if target["source_key"].startswith("archive-chain "):
+    if target["source_key"].startswith("archive-chain ") or (
+        store is not None and (store.root / "resources-manifest.json").exists()
+    ):
         if store is None:
             raise ValueError("Retained store required for nested PDF source")
         from .course_attachments import resolve_retained_version, archive_members
 
         members = archive_members(target["source_key"])
-        if Path(members[-1]).suffix.lower() != ".pdf":
-            raise ValueError("Nested source is not a PDF")
+        filename = members[-1] if members else target["path"]
+        if Path(filename).suffix.lower() != ".pdf":
+            raise ValueError("Retained source is not a PDF")
+        if target["source_key"] and not members:
+            raise ValueError("Unsupported PDF source locator")
         result = resolve_retained_version(store, target["path"], target["source_key"])
         pdf = result["path"]
         if pdf.stat().st_size > 128 * 1024**2:
-            raise ValueError("Nested PDF exceeds OCR limit")
+            raise ValueError("Retained PDF exceeds OCR limit")
         digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+        if target.get("expected_digest", digest) != digest:
+            raise RuntimeError("Planned PDF source revision changed")
         yield pdf, digest
         if hashlib.sha256(pdf.read_bytes()).hexdigest() != digest:
-            raise RuntimeError("Retained nested PDF changed during OCR")
+            raise RuntimeError("Retained PDF changed during OCR")
         return
     path = Path(target["path"]).resolve()
     root = Path(root).resolve()
@@ -85,6 +103,8 @@ def pdf_source(root, target, temporary, *, store=None):
     with pdf.open("rb") as f:
         for block in iter(lambda: f.read(8 * 1024**2), b""):
             digest.update(block)
+    if target.get("expected_digest", digest.hexdigest()) != digest.hexdigest():
+        raise RuntimeError("Planned PDF source revision changed")
     yield pdf, digest.hexdigest()
     after = path.stat()
     if (state.st_size, state.st_mtime_ns) != (after.st_size, after.st_mtime_ns):

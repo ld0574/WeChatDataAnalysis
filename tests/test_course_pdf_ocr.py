@@ -158,3 +158,140 @@ def test_page_gpu_waits_without_losing_pause_control(tmp_path, monkeypatch):
     with pytest.raises(InterruptedError):
         with module.page_gpu_lease(store, gpu_lease, stages.append, True):
             pass
+
+
+@pytest.mark.parametrize("archived", [False, True])
+def test_pdf_uses_retained_source_and_rejects_stale_plan(tmp_path, archived):
+    from wechat_decrypt_tool.course_resource_archive import archive_resources
+
+    source = tmp_path / "source"
+    source.mkdir()
+    path = source / ("course.zip" if archived else "course.pdf")
+    raw = b"synthetic retained PDF"
+    if archived:
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("slides/course.pdf", raw)
+    else:
+        path.write_bytes(raw)
+    key = "archive slides/course.pdf" if archived else ""
+    digest = hashlib.sha256(raw).hexdigest()
+    store = KnowledgeStore(tmp_path / "kb")
+    store.save_document_versions(
+        [
+            {
+                "path": str(path),
+                "source_key": key,
+                "raw_digest": digest,
+                "extractor": "synthetic",
+                "chunks": [],
+                "metadata": {"pages": 1},
+            }
+        ]
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text("{}")
+    archive_resources(store, source, inventory, reserve_gib=0)
+    path.unlink()
+    target = {"path": str(path), "source_key": key, "expected_digest": digest}
+    with module.pdf_source(source, target, tmp_path, store=store) as (pdf, sha):
+        assert pdf.read_bytes() == raw and sha == digest
+    with pytest.raises(RuntimeError, match="revision changed"):
+        with module.pdf_source(
+            source, {**target, "expected_digest": "0" * 64}, tmp_path, store=store
+        ):
+            pytest.fail("stale plan must never reach rendering")
+
+
+def test_all_page_plan_preserves_digest_and_rejects_conflicts():
+    row = {"path": "source.pdf", "source_key": "", "parent_raw_digest": "a" * 64}
+    plan = {"pdf_sources_all_pages": [row]}
+    assert module.pdf_targets([plan, plan]) == [
+        {
+            "path": "source.pdf",
+            "source_key": "",
+            "page": None,
+            "expected_digest": "a" * 64,
+        }
+    ]
+    with pytest.raises(ValueError, match="Conflicting"):
+        module.pdf_targets(
+            [plan, {"pdf_sources_all_pages": [{**row, "parent_raw_digest": "b" * 64}]}]
+        )
+
+
+def test_all_pages_ocr_reuses_hash_cache_across_portable_aliases(tmp_path, monkeypatch):
+    from io import BytesIO
+    from PIL import Image
+    from pypdf import PdfWriter
+    from wechat_decrypt_tool.course_resource_archive import archive_resources
+
+    source = tmp_path / "source"
+    source.mkdir()
+    writer = PdfWriter()
+    for _ in range(2):
+        writer.add_blank_page(width=100, height=100)
+    buffer = BytesIO()
+    writer.write(buffer)
+    raw = buffer.getvalue()
+    sha = hashlib.sha256(raw).hexdigest()
+    store = KnowledgeStore(tmp_path / "kb")
+    parents = []
+    for name in ("original.pdf", "alias.pdf"):
+        path = source / name
+        path.write_bytes(raw)
+        store.save_document_versions(
+            [
+                {
+                    "path": str(path),
+                    "source_key": "",
+                    "raw_digest": sha,
+                    "extractor": "synthetic",
+                    "chunks": [],
+                    "metadata": {"pages": 2},
+                }
+            ]
+        )
+        parents.append({"path": str(path), "source_key": "", "parent_raw_digest": sha})
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text("{}")
+    archive_resources(store, source, inventory, reserve_gib=0)
+    for path in source.iterdir():
+        path.unlink()
+    report = tmp_path / "plan.json"
+    report.write_text(json.dumps({"pdf_sources_all_pages": parents}))
+    renderer = tmp_path / "renderer.exe"
+    renderer.write_bytes(b"synthetic renderer")
+    monkeypatch.setattr(module, "local_model_digest", lambda _: "local-weights")
+    renders, calls = [], []
+
+    def render(pdf, page, destination, program):
+        renders.append(page)
+        Image.new("RGB", (20, 20), "white").save(destination)
+
+    def chat(*args):
+        calls.append(1)
+        return "synthetic_page_marker"
+
+    monkeypatch.setattr(module, "render_page", render)
+    result = module.run_pdf_ocr(
+        store,
+        [report],
+        source,
+        "local",
+        chat,
+        lambda _: nullcontext(),
+        poppler=renderer,
+    )
+    assert result["full_requested_scope_processed"] and result["processed"] == 4
+    assert renders == [1, 2] and len(calls) == 2
+    with store.connect() as db:
+        metadata = [
+            json.loads(r[0])
+            for r in db.execute(
+                "SELECT metadata FROM resource_revisions WHERE source_key LIKE 'visual %'"
+            )
+        ]
+        assert len(metadata) == 4
+        assert all(
+            m["parent_raw_digest"] == sha and m["review_required"] for m in metadata
+        )
