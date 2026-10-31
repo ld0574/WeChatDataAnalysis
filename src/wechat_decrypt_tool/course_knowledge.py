@@ -2175,6 +2175,8 @@ def main():
     tables.add_argument("--audit", type=Path, required=True)
     sqlite_resources = sub.add_parser("sqlite-courseware")
     sqlite_resources.add_argument("--audit", type=Path, required=True)
+    supplemental = sub.add_parser("supplemental-courseware")
+    supplemental.add_argument("--audit", type=Path, required=True)
     legacy = sub.add_parser("retire-ignored-legacy")
     legacy.add_argument("--source", type=Path, required=True)
     legacy.add_argument("--audit", type=Path, required=True)
@@ -2441,6 +2443,17 @@ def main():
                     indent=2,
                 )
             )
+        return
+    if args.command == "supplemental-courseware":
+        from .course_text_resources import index_text_resources
+
+        with schema_lease(store.root / "supplemental-text-index.lock", timeout=0):
+            value = index_text_resources(store, args.audit)
+        print(
+            json.dumps(
+                {"completed": len(value["completed"]), "errors": len(value["errors"])}
+            )
+        )
         return
     if args.command == "sqlite-courseware":
         from .course_sqlite_resources import index_sqlite_resources
