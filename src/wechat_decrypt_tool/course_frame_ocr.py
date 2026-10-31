@@ -73,7 +73,10 @@ def describe_frame(store, frame, model, chat):
                     )
                     return [{"top": top, "bottom": bottom, "text": text}]
                 except RuntimeError as exc:
-                    if str(exc) != "Text model output was truncated":
+                    if str(exc) not in {
+                        "Text model output was truncated",
+                        "Text model repetition limit reached",
+                    }:
                         raise
                     if hasattr(exc, "local_output"):
                         store.write_json(
@@ -94,7 +97,7 @@ def describe_frame(store, frame, model, chat):
                             "source_digest": source_digest,
                             "policy": policy,
                             "split": True,
-                            "reason": "truncated output discarded",
+                            "reason": "incomplete or repetitive output discarded",
                         },
                     )
             if depth >= 3 or bottom - top < 160:

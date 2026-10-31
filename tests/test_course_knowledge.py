@@ -610,3 +610,44 @@ def test_asr_batch4_memory_retry_preserves_every_window_without_duplicates(
             ).fetchone()[0]
             == 1
         )
+
+
+def test_repeat_limit_server_error_is_classified_before_blind_retry(monkeypatch):
+    import httpx
+    from wechat_decrypt_tool import course_knowledge as module
+
+    calls = []
+    monkeypatch.setattr(
+        "wechat_decrypt_tool.course_pdf_ocr.local_model_digest",
+        lambda _: "local-weights",
+    )
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda _: pytest.fail(
+            "Deterministic repeat abort must be subdivided, not blindly retried"
+        ),
+    )
+
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json):
+            calls.append(1)
+            return httpx.Response(
+                500,
+                request=httpx.Request("POST", url),
+                json={"error": "prediction aborted, token repeat limit reached"},
+            )
+
+    monkeypatch.setattr(httpx, "Client", Client)
+    with pytest.raises(module.ModelRepetitionError):
+        module.local_chat("local", [{"role": "user", "content": "synthetic input"}])
+    assert len(calls) == 1

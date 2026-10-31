@@ -37,6 +37,13 @@ class ModelOutputTruncatedError(RuntimeError):
         }
 
 
+class ModelRepetitionError(RuntimeError):
+    def __init__(self):
+        super().__init__("Text model repetition limit reached")
+        self.local_output = ""
+        self.metrics = {"done_reason": "server_repeat_limit"}
+
+
 @contextmanager
 def schema_lease(path, timeout=300):
     """Serialize schema migrations without consuming the GPU processing lease."""
@@ -1413,6 +1420,17 @@ def local_chat(model, messages, *, schema=None):
                 time.sleep((1, 3)[attempt - 1])
                 local_model_digest(model)
             r = c.post("http://127.0.0.1:11434/api/chat", json=body)
+            if r.status_code >= 400:
+                try:
+                    failure = r.json()
+                except ValueError:
+                    failure = {}
+                if (
+                    isinstance(failure, dict)
+                    and failure.get("error")
+                    == "prediction aborted, token repeat limit reached"
+                ):
+                    raise ModelRepetitionError()
             if 500 <= r.status_code < 600 and attempt < 2:
                 continue
             r.raise_for_status()

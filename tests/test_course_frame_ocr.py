@@ -8,6 +8,7 @@ from PIL import Image
 from wechat_decrypt_tool.course_knowledge import (
     KnowledgeStore,
     ModelOutputTruncatedError,
+    ModelRepetitionError,
 )
 from wechat_decrypt_tool import course_frame_ocr as module
 
@@ -23,8 +24,9 @@ def fixture(tmp_path, monkeypatch):
     return store, frame
 
 
+@pytest.mark.parametrize("failure", ["truncated", "server_repeat"])
 def test_truncation_splits_with_overlap_and_reuses_complete_regions(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, failure
 ):
     store, frame = fixture(tmp_path, monkeypatch)
     calls = []
@@ -36,6 +38,8 @@ def test_truncation_splits_with_overlap_and_reuses_complete_regions(
             height = image.height
         calls.append(height)
         if height > 250:
+            if failure == "server_repeat":
+                raise ModelRepetitionError()
             raise ModelOutputTruncatedError(
                 {
                     "done_reason": "length",
