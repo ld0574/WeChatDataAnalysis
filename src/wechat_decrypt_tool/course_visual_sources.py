@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 
@@ -61,11 +62,24 @@ def notebook_image_bytes(store, target, cache):
 
 
 def index_visual_sources(
-    store, audit_path, model, chat, lease, *, failures_path=None, limit=0, wait=True
+    store,
+    audit_path,
+    model,
+    chat,
+    lease,
+    *,
+    failures_path=None,
+    limit=0,
+    wait=True,
+    report_suffix="",
 ):
+    if report_suffix and not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", report_suffix):
+        raise ValueError("Invalid visual report suffix")
     audit = json.loads(Path(audit_path).read_text("utf-8"))
     notebook = failures_path is None
     kind = "notebook-images" if notebook else "image-repairs"
+    if report_suffix:
+        kind += "-" + report_suffix
     if notebook:
         if audit.get("errors"):
             raise ValueError("Notebook image source audit contains unresolved errors")
@@ -265,9 +279,14 @@ def main():
     parser.add_argument("--audit", type=Path, required=True)
     parser.add_argument("--failures", type=Path)
     parser.add_argument("--model", default="qwen3.5:9b")
+    parser.add_argument("--report-suffix", default="")
     args = parser.parse_args()
     store = KnowledgeStore(args.root)
     kind = "image-repairs" if args.failures else "notebook-images"
+    if args.report_suffix:
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", args.report_suffix):
+            parser.error("Invalid visual report suffix")
+        kind += "-" + args.report_suffix
     with schema_lease(store.root / (kind + ".lock"), timeout=0):
         result = index_visual_sources(
             store,
@@ -276,6 +295,7 @@ def main():
             local_chat,
             gpu_lease,
             failures_path=args.failures,
+            report_suffix=args.report_suffix,
         )
     print(
         json.dumps(

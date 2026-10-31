@@ -185,3 +185,35 @@ def test_static_repair_uses_retained_image_and_completes_every_planned_tile(
         and len(result["completed"][0]["tiles"]) == 2
     )
     assert len(store.search("recovered_crop_marker")) == 2
+    original_report = (store.root / "image-repairs-report.json").read_bytes()
+    followup = module.index_visual_sources(
+        store,
+        store.root / "audit.json",
+        "local",
+        lambda *a: (_ for _ in ()).throw(
+            AssertionError("Committed tiles must be reused")
+        ),
+        lambda _: contextlib.nullcontext(),
+        failures_path=store.root / "errors.json",
+        report_suffix="followup",
+        wait=False,
+    )
+    assert followup["full_requested_scope_processed"]
+    assert (store.root / "image-repairs-report.json").read_bytes() == original_report
+    assert (store.root / "image-repairs-followup-report.json").is_file()
+    assert len(store.search("recovered_crop_marker")) == 2
+
+
+def test_followup_report_suffix_cannot_escape_archive_root(tmp_path):
+    import pytest
+
+    store = KnowledgeStore(tmp_path / "kb")
+    with pytest.raises(ValueError, match="report suffix"):
+        module.index_visual_sources(
+            store,
+            store.root / "missing.json",
+            "unused",
+            None,
+            None,
+            report_suffix="../escape",
+        )

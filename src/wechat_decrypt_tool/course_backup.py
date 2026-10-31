@@ -96,6 +96,9 @@ def create_snapshot(store, destination, *, reserve_gib=64):
                 add(metadata["image"], metadata["image_digest"])
             if metadata.get("media"):
                 add(metadata["media"], metadata["media_digest"])
+            if metadata.get("review_page"):
+                add(metadata["review_page"], metadata["review_page_digest"])
+                add(metadata["rich_record"], metadata["rich_record_digest"])
         counts = {
             t: db.execute("SELECT count(*) FROM " + t).fetchone()[0] for t in TABLES
         }
@@ -155,6 +158,12 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "notebook-outputs-report.json",
         "notebook-outputs-validation.json",
         "notebook-image-audit.json",
+        "notebook-rich-audit.json",
+        "notebook-rich-report.json",
+        "notebook-rich-validation.json",
+        "image-repair-followup-errors.json",
+        "image-repairs-followup-report.json",
+        "image-followup-validation.json",
         "notebook-images-report.json",
         "image-repair-source-errors.json",
         "image-repairs-report.json",

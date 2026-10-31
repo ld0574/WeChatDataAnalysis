@@ -2131,6 +2131,12 @@ def create_app(store, model):
                 else ""
             )
             if visual:
+                if json.loads(visual["metadata"]).get("review_page"):
+                    image_html += (
+                        '<p><a href="/notebook-rich/'
+                        + str(r["id"])
+                        + '">查看静态表格、DOM 或控件状态（未执行交互）</a></p>'
+                    )
                 demo_key = json.loads(visual["metadata"]).get("video", "")
                 if re.fullmatch("[a-f0-9]{24}", demo_key):
                     image_html += (
@@ -2181,6 +2187,36 @@ def create_app(store, model):
             raise HTTPException(404)
         anchor = ("f" if evidence_id < 0 else "s") + str(abs(evidence_id))
         return RedirectResponse("/lesson/" + r["video"] + "#" + anchor)
+
+    @app.get("/notebook-rich/{document_id}")
+    def notebook_rich(document_id: int):
+        from .course_audio_archive import file_digest
+
+        with store.connect() as db:
+            row = db.execute(
+                "SELECT m.metadata FROM documents d JOIN document_version_metadata m ON m.path=d.path AND m.source_key=d.source_key AND m.revision=d.digest WHERE d.id=?",
+                (document_id,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(404)
+        metadata = json.loads(row[0])
+        relative = metadata.get("review_page", "")
+        path = (store.root / relative).resolve()
+        if (
+            not relative
+            or not path.is_relative_to((store.root / "document-reviews").resolve())
+            or not path.is_file()
+            or file_digest(path) != metadata.get("review_page_digest")
+        ):
+            raise HTTPException(404)
+        return FileResponse(
+            path,
+            media_type="text/html",
+            headers={
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get("/document-source/{document_id}")
     def document_source(document_id: int, container: bool = False):
