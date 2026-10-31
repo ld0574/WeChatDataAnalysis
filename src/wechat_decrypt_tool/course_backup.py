@@ -279,9 +279,14 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "pdf-full-validation.json",
         "pdf-failed-page-plan.json",
         "pdf-parser-warning-audit.json",
+        "video-visual-production-validation.json",
     ):
         if (source / name).exists():
             add(name)
+    # Native-frame diagnostics contain timestamps/pixel hashes, not video pixels.
+    # Preserve their evidence while leaving visual coverage explicitly incomplete.
+    for diagnostic in sorted((source / "video-visual-audits").glob("*.json")):
+        add(diagnostic.relative_to(source).as_posix())
     completed = []
     objects = destination / "objects"
     for relative, expected in sorted(assets.items()):
