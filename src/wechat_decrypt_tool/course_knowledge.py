@@ -2164,6 +2164,8 @@ def main():
     nested = sub.add_parser("nested-courseware")
     nested.add_argument("--audit", type=Path, required=True)
     nested.add_argument("--limit", type=int, default=0)
+    tables = sub.add_parser("spreadsheet-courseware")
+    tables.add_argument("--audit", type=Path, required=True)
     legacy = sub.add_parser("retire-ignored-legacy")
     legacy.add_argument("--source", type=Path, required=True)
     legacy.add_argument("--audit", type=Path, required=True)
@@ -2425,6 +2427,17 @@ def main():
                     indent=2,
                 )
             )
+        return
+    if args.command == "spreadsheet-courseware":
+        from .course_tabular_resources import index_spreadsheets
+
+        with schema_lease(store.root / "spreadsheet-index.lock", timeout=0):
+            value = index_spreadsheets(store, args.audit)
+        print(
+            json.dumps(
+                {"completed": len(value["completed"]), "errors": len(value["errors"])}
+            )
+        )
         return
     if args.command == "nested-courseware":
         from .course_nested_documents import index_nested_courseware

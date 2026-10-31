@@ -125,6 +125,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "teaching-image-audit.json",
         "images-ocr-report.json",
         "nested-courseware-report.json",
+        "spreadsheet-resource-audit.json",
+        "spreadsheet-index-report.json",
         "nested-pilot-validation.json",
         "teaching-image-production-validation.json",
         "KNOWN-EXCLUSIONS.md",
