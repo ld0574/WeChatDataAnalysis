@@ -289,6 +289,61 @@ def validate_exports(store, video_ids=None):
     }
 
 
+def snapshot_export_assets(root, database, *, capture_markers, checkpoint=lambda: None):
+    """Select only exports matching the frozen DB, without touching live writers.
+
+    A live export may be ahead of the SQLite backup or still incomplete. Defer
+    those files explicitly; never label them as belonging to this snapshot.
+    """
+
+    class SnapshotSource(ReadOnlyArchive):
+        def __init__(self):
+            self.root = Path(root).resolve()
+            self.path = Path(database).resolve()
+
+    store = SnapshotSource()
+    with store.connect() as db:
+        keys = [
+            r[0]
+            for r in db.execute(
+                "SELECT id FROM videos WHERE status!='visual_only' ORDER BY id"
+            )
+        ]
+    assets, included, deferred = {}, [], []
+    for key in keys:
+        checkpoint()
+        try:
+            checked = validate_lesson(store, key)
+            require(
+                capture_markers.get(key)
+                == checked["files_sha256"]["frames-completed.json"],
+                "capture_checkpoint_newer_than_snapshot",
+            )
+        except ExportMismatch as exc:
+            deferred.append({"video": key, "code": str(exc)})
+            continue
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+            deferred.append(
+                {"video": key, "code": "unreadable_or_invalid_export_structure"}
+            )
+            continue
+        files = {}
+        for name in ("evidence.json", "graph.json", "frames-completed.json"):
+            relative = f"lessons/{key}/{name}"
+            files[relative] = checked["files_sha256"][name]
+            assets[relative] = files[relative]
+        included.append({"video": key, "files_sha256": files})
+    return assets, {
+        "scope": "registered_audio_lesson_exports_in_frozen_database",
+        "requested_registered_audio_lessons": len(keys),
+        "included": included,
+        "deferred": deferred,
+        "all_registered_audio_exports_included": bool(keys) and not deferred,
+        "full_inventory_completion_claimed": False,
+        "source_deletion_allowed": False,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)

@@ -48,6 +48,14 @@ def create_snapshot(store, destination, *, reserve_gib=64):
     snapshot.mkdir(parents=True)
     database = snapshot / "knowledge.sqlite3"
     started = time.time()
+    # A marker published after the DB read transaction can describe frames not
+    # present in that transaction. Freeze markers before starting the snapshot.
+    capture_markers = {}
+    for marker in (source / "lessons").glob("*/frames-completed.json"):
+        checked = inside(source, marker.relative_to(source))
+        capture_markers[marker.parent.name] = hashlib.sha256(
+            checked.read_bytes()
+        ).hexdigest()
 
     def progress(stage, **extra):
         store.write_json(
@@ -322,6 +330,13 @@ def create_snapshot(store, destination, *, reserve_gib=64):
     # Preserve their evidence while leaving visual coverage explicitly incomplete.
     for diagnostic in sorted((source / "video-visual-audits").glob("*.json")):
         add(diagnostic.relative_to(source).as_posix())
+    from .course_lesson_exports import snapshot_export_assets
+
+    lesson_assets, lesson_exports = snapshot_export_assets(
+        source, database, capture_markers=capture_markers, checkpoint=store.checkpoint
+    )
+    for relative, expected in lesson_assets.items():
+        add(relative, expected)
     completed = []
     objects = destination / "objects"
     for relative, expected in sorted(assets.items()):
@@ -374,6 +389,7 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "database_sha256": file_hash(database, store.checkpoint),
         "files": completed,
         "verified_audio_files": audio_count,
+        "lesson_exports": lesson_exports,
         "source_videos_deleted": False,
         "complete_course_archive": False,
     }
@@ -451,6 +467,44 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
         document_counts_checked = verify_document_counts(db)
         notes_checked = _validate_note_evidence(db)
         available = {row["path"] for row in manifest["files"]}
+        captured = {row["path"]: row["sha256"] for row in manifest["files"]}
+        exported = set()
+        for lesson in manifest.get("lesson_exports", {}).get("included", []):
+            key = lesson["video"]
+            if not re.fullmatch(r"[0-9a-f]{24}", key) or key in exported:
+                raise RuntimeError("Snapshot lesson export identity is invalid")
+            exported.add(key)
+            expected = {
+                f"lessons/{key}/{name}"
+                for name in ("evidence.json", "graph.json", "frames-completed.json")
+            }
+            if set(lesson["files_sha256"]) != expected or any(
+                captured.get(path) != digest
+                for path, digest in lesson["files_sha256"].items()
+            ):
+                raise RuntimeError("Snapshot is missing validated lesson exports")
+        export_scope = manifest.get("lesson_exports")
+        if export_scope is not None:
+            expected_lessons = {
+                row[0]
+                for row in db.execute(
+                    "SELECT id FROM videos WHERE status!='visual_only'"
+                )
+            }
+            deferred = [row["video"] for row in export_scope["deferred"]]
+            if (
+                len(deferred) != len(set(deferred))
+                or exported & set(deferred)
+                or exported | set(deferred) != expected_lessons
+                or export_scope["requested_registered_audio_lessons"]
+                != len(expected_lessons)
+                or export_scope["all_registered_audio_exports_included"]
+                is not (bool(expected_lessons) and not deferred)
+                or export_scope["full_inventory_completion_claimed"] is not False
+            ):
+                raise RuntimeError(
+                    "Snapshot lesson export scope differs from frozen database"
+                )
         if any(
             row[0] not in available for row in db.execute("SELECT path FROM frames")
         ):
@@ -469,6 +523,7 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
         "verified_audio_files": manifest["verified_audio_files"],
         "ready_note_evidence_validated": notes_checked,
         "document_counts_independently_verified": document_counts_checked,
+        "consistent_lesson_exports": len(exported),
     }
 
 
