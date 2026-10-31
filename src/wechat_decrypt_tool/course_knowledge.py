@@ -1183,7 +1183,11 @@ def transcribe(store, key, model_folder, *, batch_size=2):
             (time.time(), key),
         )
     started = time.monotonic()
-    worker = ProcessBackend("qwen-hf", str(model_folder), "float32", 4)
+    # The caller retains the GPU lease throughout this lesson. Slow source
+    # decoding or SQLite commits must not evict/reload the model between batches.
+    worker = ProcessBackend(
+        "qwen-hf", str(model_folder), "float32", 4, idle_timeout=900
+    )
     store.progress(
         "asr_preparing",
         video=key,

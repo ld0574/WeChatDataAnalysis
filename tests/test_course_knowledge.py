@@ -578,7 +578,8 @@ def test_asr_batch4_memory_retry_preserves_every_window_without_duplicates(
         is_loaded = False
         last_batch_metrics = {}
 
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
+            assert kwargs.get("idle_timeout") == 900
             pass
 
         def transcribe_audio_batch(self, paths, language, *, batch_size, gpu_precision):

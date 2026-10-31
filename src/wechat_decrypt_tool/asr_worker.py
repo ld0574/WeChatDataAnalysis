@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import math
 import os
 import threading
 import time
@@ -22,8 +23,10 @@ class AsrError(RuntimeError):
 def _batch_request(model,paths,language,batch_size):
     from .asr_backends import read_audio,transcribe_audio_batch
     def decode(path):
-        try:return read_audio(path)
-        except Exception as exc:return exc
+        try:
+            return read_audio(path)
+        except Exception as exc:
+            return exc
     # Two CPU decoders run ahead while the GPU consumes the current window.
     # Requests are capped at 16 files by the parent, bounding prefetched memory.
     with ThreadPoolExecutor(max_workers=2,thread_name_prefix='asr-decode') as pool:
@@ -36,7 +39,7 @@ def _batch_request(model,paths,language,batch_size):
         return results
 
 
-def _worker(connection, backend: str, folder: str, threads: int):
+def _worker(connection, backend: str, folder: str, threads: int, idle_timeout: float = 120):
     os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1",
                       HF_HUB_DISABLE_PROGRESS_BARS="1", OMP_NUM_THREADS=str(threads),
                       MKL_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS=str(threads))
@@ -46,7 +49,7 @@ def _worker(connection, backend: str, folder: str, threads: int):
             from .qwen_gpu_runtime import activate_for_worker
             activate_for_worker()
         from .asr_backends import audio_chunks, load_backend, read_audio, transcribe_chunk
-        while connection.poll(120):
+        while connection.poll(idle_timeout):
             request = connection.recv()
             try:
                 if model is None:
@@ -85,8 +88,12 @@ def _worker(connection, backend: str, folder: str, threads: int):
 
 
 class ProcessBackend:
-    def __init__(self, backend: str, folder: str, precision: str, threads: int = 4):
+    def __init__(self, backend: str, folder: str, precision: str, threads: int = 4, *, idle_timeout: float = 120):
+        idle_timeout = float(idle_timeout)
+        if not math.isfinite(idle_timeout) or not 0 < idle_timeout <= 3600:
+            raise ValueError("ASR idle timeout must be positive and at most one hour")
         self.backend, self.folder, self.precision = backend, folder, precision
+        self.idle_timeout = idle_timeout
         self.threads = max(1, min(threads, os.cpu_count() or 1))
         self.process = None
         self.connection = None
@@ -101,7 +108,7 @@ class ProcessBackend:
         self.close()
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
-        self.process = context.Process(target=_worker, args=(child, self.backend, self.folder, self.threads), daemon=True)
+        self.process = context.Process(target=_worker, args=(child, self.backend, self.folder, self.threads, self.idle_timeout), daemon=True)
         try:
             self.process.start()
         finally:
@@ -192,7 +199,8 @@ def _runtime_probe(connection, root, folder):
         from .qwen_gpu_runtime import activate_for_worker
         activate_for_worker(root)
         import torch
-        from transformers import AutoProcessor, AutoModelForMultimodalLM
+        # Import both public interfaces to validate this runtime installation.
+        from transformers import AutoProcessor, AutoModelForMultimodalLM  # noqa: F401
         if not torch.cuda.is_available():
             raise ValueError("GPU 组件已安装，但 NVIDIA 显卡不可用，请检查显卡驱动。")
         # 实际执行 CUDA 运算，发现驱动或架构不兼容，而非只检查设备列表。
