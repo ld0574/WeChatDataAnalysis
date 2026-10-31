@@ -95,3 +95,62 @@ def validate_archived_audio(store, item):
         "original_and_retained_files_unmodified": True,
         "verified_at": time.time(),
     }
+
+
+def reuse_archived_audio_validation(store, item, prior):
+    """Reuse a trusted full-decode receipt only after hashing both entire files.
+
+    File size/mtime alone cannot establish that the previous packet/PCM/clock
+    proof still applies. The manifest and every recorded decode field must also
+    match the receipt. This never rewrites evidence or treats an archive-only
+    producer manifest as an independent full-validation receipt.
+    """
+    source, source_stat = _source_state(item)
+    key = hashlib.sha256(str(source).encode()).hexdigest()[:24]
+    folder = store.root / 'lessons' / key
+    manifest = folder / 'audio.json'
+    audio = folder / 'audio.m4a'
+    raw = manifest.read_bytes()
+    value = json.loads(raw)
+    before = audio.stat()
+    if not (
+        prior.get('all_packets_pcm_and_every_frame_timestamps_identical') is True
+        and prior.get('original_and_retained_files_unmodified') is True
+        and prior.get('video') == value.get('video') == key
+        and value.get('verified') is True
+        and value.get('source') == str(source)
+        and value.get('file') == 'audio.m4a'
+        and prior.get('manifest_digest') == hashlib.sha256(raw).hexdigest()
+        and prior.get('source_digest') == value.get('source_digest')
+        and (not item.get('sha256') or item['sha256'] == prior.get('source_digest'))
+        and prior.get('file_digest') == value.get('file_digest')
+        and prior.get('source_size') == value.get('source_size') == source_stat.st_size
+        and prior.get('source_mtime_ns') == value.get('source_mtime_ns') == source_stat.st_mtime_ns
+        and prior.get('file_bytes') == value.get('file_bytes') == before.st_size
+        and prior.get('file_mtime_ns') == before.st_mtime_ns
+        and prior.get('packet_digest') == value.get('packets', {}).get('packet_digest')
+        and prior.get('decoded', {}).get('timeline_digest')
+        and value.get('decoded')
+        and all(prior['decoded'].get(name) == recorded
+                for name, recorded in value['decoded'].items())
+    ):
+        raise RuntimeError('Prior full audio validation does not bind current evidence')
+    for stage, path, expected in (
+        ('rehashing_complete_original_for_prior_audio_proof', source, prior['source_digest']),
+        ('rehashing_complete_retained_audio_for_prior_proof', audio, prior['file_digest']),
+    ):
+        store.write_json('audio-timeline-validation-progress.json',
+                         {'stage': stage, 'video': key, 'updated': time.time()})
+        if file_digest(path, store.checkpoint) != expected:
+            raise RuntimeError('Complete file hash differs from prior full audio proof')
+    _source_state(item)
+    after = audio.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or manifest.read_bytes() != raw:
+        raise RuntimeError('Audio evidence changed while rechecking prior full proof')
+    return {
+        **prior,
+        'validation_method': 'prior_full_packet_pcm_timeline_proof_with_fresh_full_file_hashes',
+        'original_and_retained_complete_hashes_rechecked': True,
+        'complete_hashes_rechecked_at': time.time(),
+        'full_decode_reused_from_verified_at': prior['verified_at'],
+    }

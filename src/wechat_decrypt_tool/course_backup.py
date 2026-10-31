@@ -195,6 +195,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "model-bundle-validation.json",
         "restored-model-inference-validation.json",
         "audio-timeline-completion-validation.json",
+        "full-audio-timeline-validation-plan.json",
+        "full-audio-timeline-validation-report.json",
         "failed-frame-retry-validation.json",
         "postprocessing-repair-plan.json",
         "postprocessing-repair-validation.json",

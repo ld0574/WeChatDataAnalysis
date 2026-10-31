@@ -133,6 +133,83 @@ def test_full_validation_detects_manifest_change_during_decode(
         validation.validate_archived_audio(store, source)
 
 
+def test_full_audio_proof_reuse_rehashes_both_files_without_redecoding(tmp_path, source, monkeypatch):
+    store = KnowledgeStore(tmp_path / 'kb')
+    value = module.archive_one(store, source)
+    prior = validation.validate_archived_audio(store, source)
+    manifest = store.root / 'lessons' / value['video'] / 'audio.json'
+    original = manifest.read_bytes()
+    digest = validation.file_digest
+    hashed = []
+
+    def rehash(path, checkpoint):
+        hashed.append(str(path))
+        return digest(path, checkpoint)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Reuse must not repeat packet/decode verification')
+
+    monkeypatch.setattr(validation, 'file_digest', rehash)
+    monkeypatch.setattr(validation, 'decoded_summary', forbidden)
+    monkeypatch.setattr(validation, 'packet_summary', forbidden)
+    result = validation.reuse_archived_audio_validation(store, source, prior)
+    assert len(hashed) == 2
+    assert result['original_and_retained_complete_hashes_rechecked']
+    assert result['full_decode_reused_from_verified_at'] == prior['verified_at']
+    assert result['decoded'] == prior['decoded']
+    assert manifest.read_bytes() == original
+
+
+@pytest.mark.parametrize('which', ['source', 'retained'])
+def test_reuse_rejects_same_size_same_mtime_byte_tampering(tmp_path, source, which):
+    import os
+    from pathlib import Path
+
+    store = KnowledgeStore(tmp_path / 'kb')
+    value = module.archive_one(store, source)
+    prior = validation.validate_archived_audio(store, source)
+    path = Path(source['path']) if which == 'source' else store.root / 'lessons' / value['video'] / 'audio.m4a'
+    stat = path.stat()
+    data = bytearray(path.read_bytes())
+    data[-1] ^= 1
+    path.write_bytes(data)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    with pytest.raises(RuntimeError, match='Complete file hash differs'):
+        validation.reuse_archived_audio_validation(store, source, prior)
+    assert path.read_bytes() == data
+
+
+@pytest.mark.parametrize('field,value', [
+    ('all_packets_pcm_and_every_frame_timestamps_identical', False),
+    ('manifest_digest', 'wrong'), ('packet_digest', 'wrong'),
+    ('decoded', {'timeline_digest':'wrong'}),
+])
+def test_reuse_rejects_incomplete_or_unbound_prior_proof(tmp_path, source, field, value):
+    store = KnowledgeStore(tmp_path / 'kb')
+    module.archive_one(store, source)
+    prior = validation.validate_archived_audio(store, source)
+    with pytest.raises(RuntimeError, match='does not bind'):
+        validation.reuse_archived_audio_validation(store, source, {**prior, field:value})
+
+
+def test_reuse_accepts_a_full_legacy_receipt_with_new_timeline_digest(tmp_path, source):
+    store = KnowledgeStore(tmp_path / 'kb')
+    value = module.archive_one(store, source)
+    del value['decoded']['timeline_digest']
+    manifest = store.root / 'lessons' / value['video'] / 'audio.json'
+    manifest.write_text(json.dumps(value), encoding='utf-8')
+    prior = validation.validate_archived_audio(store, source)
+    assert validation.reuse_archived_audio_validation(store, source, prior)['decoded']['timeline_digest']
+
+
+def test_reuse_rejects_frozen_inventory_hash_that_disagrees_with_prior_source(tmp_path, source):
+    store = KnowledgeStore(tmp_path / 'kb')
+    module.archive_one(store, source)
+    prior = validation.validate_archived_audio(store, source)
+    with pytest.raises(RuntimeError, match='does not bind'):
+        validation.reuse_archived_audio_validation(store, {**source,'sha256':'0' * 64}, prior)
+
+
 @pytest.fixture
 def alternate_evidence(source, tmp_path):
     from pathlib import Path
