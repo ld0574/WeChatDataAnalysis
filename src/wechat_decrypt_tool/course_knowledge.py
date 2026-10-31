@@ -1889,6 +1889,25 @@ def create_app(store, model):
                         + demo_key
                         + '">查看完整无声演示与画面证据</a></p>'
                     )
+            from .course_attachments import source_reference, AttachmentIntegrityError
+
+            try:
+                source = source_reference(store, r["id"])
+            except (OSError, ValueError, AttachmentIntegrityError):
+                source = None
+            if source:
+                image_html += (
+                    '<p><a href="/document-source/'
+                    + str(r["id"])
+                    + '">下载归档原文件</a>'
+                )
+                if source["member"]:
+                    image_html += (
+                        ' · <a href="/document-source/'
+                        + str(r["id"])
+                        + '?container=true">下载所在压缩包</a>'
+                    )
+                image_html += "</p>"
             return HTMLResponse(
                 '<meta charset="utf-8"><a href="/">返回知识库</a><h2>'
                 + html.escape(r["path"])
@@ -1913,6 +1932,44 @@ def create_app(store, model):
             raise HTTPException(404)
         anchor = ("f" if evidence_id < 0 else "s") + str(abs(evidence_id))
         return RedirectResponse("/lesson/" + r["video"] + "#" + anchor)
+
+    @app.get("/document-source/{document_id}")
+    def document_source(document_id: int, container: bool = False):
+        import zipfile
+        from .course_attachments import (
+            resolve_source,
+            source_reference,
+            SourceVersionUnavailable,
+            AttachmentIntegrityError,
+            AttachmentCapacityError,
+        )
+
+        try:
+            if source_reference(store, document_id) is None:
+                raise HTTPException(404, "此引用版本没有可核验的归档原文件")
+            value = resolve_source(store, document_id, container=container)
+        except SourceVersionUnavailable:
+            raise HTTPException(
+                409, "归档原件与此引用版本不一致，或压缩包成员暂不可读取"
+            ) from None
+        except AttachmentCapacityError:
+            raise HTTPException(
+                507,
+                "提取原件的缓存已满或磁盘余量不足；可清理归档目录 resources/derived 后重试",
+            ) from None
+        except (OSError, ValueError, zipfile.BadZipFile, AttachmentIntegrityError):
+            raise HTTPException(
+                503, "归档原文件校验失败，已停止提供下载；文字证据仍可查看"
+            ) from None
+        return FileResponse(
+            value["path"],
+            media_type="application/octet-stream",
+            filename=value["filename"],
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+            },
+        )
 
     @app.get("/silent-demo/{key}")
     def silent_demo_media(key: str):
