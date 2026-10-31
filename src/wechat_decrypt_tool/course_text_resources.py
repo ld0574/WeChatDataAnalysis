@@ -27,7 +27,7 @@ def decode_text(raw):
     return text, encoding
 
 
-def redact_credentials(text):
+def redact_credentials(text, *, sensitive_pattern=SENSITIVE):
     lines = text.splitlines(keepends=True)
     output = []
     redacted = 0
@@ -49,7 +49,7 @@ def redact_credentials(text):
         line = lines[i]
         i += 1
         match = ASSIGNMENT.match(line.rstrip("\r\n"))
-        if not match or not SENSITIVE.search(match[2]):
+        if not match or not sensitive_pattern.search(match[2]):
             output.append(line)
             continue
         redacted += 1

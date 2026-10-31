@@ -2177,6 +2177,8 @@ def main():
     sqlite_resources.add_argument("--audit", type=Path, required=True)
     supplemental = sub.add_parser("supplemental-courseware")
     supplemental.add_argument("--audit", type=Path, required=True)
+    notebook_outputs = sub.add_parser("notebook-outputs")
+    notebook_outputs.add_argument("--audit", type=Path, required=True)
     legacy = sub.add_parser("retire-ignored-legacy")
     legacy.add_argument("--source", type=Path, required=True)
     legacy.add_argument("--audit", type=Path, required=True)
@@ -2449,6 +2451,17 @@ def main():
 
         with schema_lease(store.root / "supplemental-text-index.lock", timeout=0):
             value = index_text_resources(store, args.audit)
+        print(
+            json.dumps(
+                {"completed": len(value["completed"]), "errors": len(value["errors"])}
+            )
+        )
+        return
+    if args.command == "notebook-outputs":
+        from .course_notebook_outputs import index_notebook_outputs
+
+        with schema_lease(store.root / "notebook-outputs.lock", timeout=0):
+            value = index_notebook_outputs(store, args.audit)
         print(
             json.dumps(
                 {"completed": len(value["completed"]), "errors": len(value["errors"])}

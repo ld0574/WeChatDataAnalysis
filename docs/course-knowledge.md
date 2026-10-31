@@ -183,6 +183,14 @@ PDF 图像页使用本地 Poppler 渲染，再交给本地 GPU 模型转录和�
 
 从 ZIP 提取的下载文件按哈希缓存到 `resources/derived`，单文件上限 512 MiB，总缓存上限 2 GiB，并保留 32 GiB 磁盘余量；缓存写入串行执行。缓存满或损坏时会明确停止成员下载，可清理该衍生缓存后重试。下载整个原压缩包不占衍生缓存，但仍核对被引用成员。所有原文件以附件提供，不在知识库页面执行课程代码或 HTML。
 
+Notebook 的运行输出可单独建立索引，不会运行单元代码。先准备经归档副本核对的 `notebook-source-audit.json`，其 `completed` 每项包含原路径 `path`、父文档键 `source_key` 和完整源文件哈希 `raw_digest`，再运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge notebook-outputs --audit output/course-knowledge/notebook-source-audit.json
+```
+
+命令只从已保留的原始 Notebook 读取打印结果、错误、文本 MIME 和 JSON 展示数据；现有父文档代码索引继续保留。尚未索引的 Notebook 会先补建源单元索引，包括历史 checkpoint；已存在的父文档哈希与审计不符时停止该项。每个输出按单元号、输出序号、表示类型和字符位置建立引用，重复运行复用当前版本。HTML 和 JavaScript 作为文本索引，页面不会执行；图片、嵌入附件、富文本和交互展示的视觉解释缺口会单独列出。已识别的凭据赋值和 JSON 敏感字段在索引里掩码，训练参数和普通 token/key 数据继续保留，原始文件仍作为哈希绑定附件保存。结果与错误见 `notebook-outputs-report.json`，该报告和审计、验证文件会进入备份。
+
 创建独立快照并验证恢复：
 
 ```powershell
