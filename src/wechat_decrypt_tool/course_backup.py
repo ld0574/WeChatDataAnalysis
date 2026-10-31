@@ -154,6 +154,10 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "candidate-audio-health.json",
         "damaged-packet-pattern.json",
         "pdf-all-pages-plan.json",
+        "pdf-source-reconciliation.json",
+        "pdf-all-pages-retained-plan.json",
+        "pdf-retained-production-validation.json",
+        "pdf-ocr-report.json",
     ):
         if (source / name).exists():
             add(name)
