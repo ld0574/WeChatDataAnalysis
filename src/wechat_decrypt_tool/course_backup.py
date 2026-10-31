@@ -299,6 +299,10 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "pdf-committed-validation.json",
         "pdf-full-validation.json",
         "pdf-failed-page-plan.json",
+        "pdf-retry-primary-report.json",
+        "pdf-retry-ocr-report.json",
+        "pdf-reconciled-report.json",
+        "pdf-reconciled-validation.json",
         "pdf-parser-warning-audit.json",
         "video-visual-production-validation.json",
     ):

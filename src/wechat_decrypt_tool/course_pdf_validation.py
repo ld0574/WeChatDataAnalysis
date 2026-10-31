@@ -192,7 +192,15 @@ def cache_body(store, metadata, extractor, image):
 
 
 def verify_pdf_archive(
-    store, plan_path, poppler, *, mode="final", limit=0, rerender=None
+    store,
+    plan_path,
+    poppler,
+    *,
+    mode="final",
+    limit=0,
+    rerender=None,
+    report_path=None,
+    result_name=None,
 ):
     """Final mode proves the entire attempted scope; committed mode is explicitly provisional."""
     from PIL import Image
@@ -207,6 +215,10 @@ def verify_pdf_archive(
     )
     require(
         mode != "final" or limit == 0, "Final PDF validation cannot use a page limit"
+    )
+    require(
+        report_path is None or mode == "final",
+        "Explicit PDF reports require final validation mode",
     )
     plan = json.loads(Path(plan_path).read_text("utf-8"))
     expected = {}
@@ -230,7 +242,16 @@ def verify_pdf_archive(
     )
     errors = []
     if mode == "final":
-        report = json.loads((store.root / "pdf-ocr-report.json").read_text("utf-8"))
+        report_file = (
+            Path(report_path)
+            if report_path is not None
+            else store.root / "pdf-ocr-report.json"
+        )
+        require(
+            report_file.resolve().is_relative_to(store.root.resolve()),
+            "PDF report outside archive",
+        )
+        report = json.loads(report_file.read_text("utf-8"))
         require(
             report.get("limit") == 0
             and report.get("full_requested_scope_attempted")
@@ -276,10 +297,19 @@ def verify_pdf_archive(
     source_downloads = set()
     chunks = regions = routes = cross_renderer_pages = 0
     original_renderers = set()
-    result_name = (
+    result_name = result_name or (
         "pdf-full-validation.json"
         if mode == "final"
         else "pdf-committed-validation.json"
+    )
+    require(
+        Path(result_name).name == result_name and result_name.endswith(".json"),
+        "Invalid PDF validation receipt name",
+    )
+    require(
+        mode != "final"
+        or (store.root / result_name).resolve() != report_file.resolve(),
+        "PDF validation must preserve its input report",
     )
     with (
         tempfile.TemporaryDirectory(

@@ -279,6 +279,15 @@ PDF 独立验收重新打开保留原件并核对真实页数，用本机 Popple
 
 `pdf-full-validation.json` 保留失败页计数与重渲染告警的技术摘要；有失败页时，全范围尝试校验可以通过，但全量页面验收保持失败。原件文字、原生字形/布局及模型解读不能仅凭像素可重复就声明完整验收。快照现将已提交 PDF 页面缓存、分块图片及已接受的推理树一起带走；推理树的分支决策和叶节点均保留，拒绝或未完成的输出不作为已接受证据备份。恢复后可以重新完成这些独立核对。
 
+PDF 失败页可用更细的 640 像素初始网格补跑，保留现有 2000 像素页面渲染和所有失败缓存，不缩小渲染图。它只处理主报告明确失败的页，复用接受区域和已提交版本，不执行语音转写。请在主批次结束后运行，或用 `--after-pid` 与 `--after-created` 绑定仍在运行的 `run_all_pdf_pages.py` 进程：
+
+```powershell
+$env:PYTHONPATH = Join-Path $PWD 'src'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_pdf_retry --root output/course-knowledge --plan output/course-knowledge/pdf-all-pages-retained-plan.json --poppler '<本机 pdftoppm.exe 的完整路径>' --backup 'C:\Users\Administrator\Documents\CourseKnowledgeBackups'
+```
+
+补跑冻结主报告到 `pdf-retry-primary-report.json`，不覆盖 `pdf-ocr-report.json`。补跑与主批次的完成/失败集合必须严格对应，合并结果写入 `pdf-reconciled-report.json`；随后对全部计划页面执行独立校验，结果写入 `pdf-reconciled-validation.json`。这些回执进入快照，`pdf-retry-driver-progress.json` 区分等待主任务、等待 GPU、独立校验、备份及仍有失败的状态。中断后可重启相同命令，复用已接受结果；主报告变化时停止以保留不同批次证据。备份和页面校验通过仍不代表课程原视频可以删除。
+
 创建独立快照并验证恢复：
 
 ```powershell
