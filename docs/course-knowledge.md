@@ -247,6 +247,14 @@ npm.cmd install --prefix output/course-knowledge/render-runtime --ignore-scripts
 
 SVG 裁切坐标明确属于派生渲染图像，原始矢量文档通过附件下载；模型描述须复核。逐像素重复渲染验证证明本机结果可复现，不证明所有文字布局、滤镜或小字形的视觉效果都已独立验收。`document-vectors` 中的原件、渲染图和清单即使尚未 OCR 也会进入备份；`svg-native-validation.json` 记录源图准备，`svg-images-report.json` 记录每个来源的识别结果。
 
+SVG 自身保存的文字可另外直接建索引，不依赖字体渲染或模型识别：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_svg_text --root output/course-knowledge --audit output/course-knowledge/teaching-image-audit.json
+```
+
+流程保留文字、标题、描述、嵌套文字片段、原始空白、节点位置及祖先的变换和样式属性；不执行 CSS 或计算最终显示布局。来源中已变为轮廓路径或位图的文字不会冒充可提取的 Unicode，继续由单独的视觉索引处理。每个原件和别名都有哈希绑定的引用，重复运行复用已提交版本。凭据赋值会在检索文字中掩码，跨文字片段的凭据会同时掩码对应原始片段；原件仍可下载。`svg-source-text-index-report.json`、来源计划及独立校验结果会进入备份。
+
 PDF 的单页识别失败会记录具体页号并继续后面的页；重复或截断的页面会转入分块识别。已有哈希绑定的页面证据继续复用。PDF 页面图像的最长边仍限制为 2000 像素，分块保持的是这些渲染像素；原 PDF 另行保留，不能据此声称极小字形或复杂图示已独立验收。
 
 创建独立快照并验证恢复：
