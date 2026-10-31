@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 import sqlite3
@@ -221,7 +222,7 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
     database = snapshot / "knowledge.sqlite3"
     if file_hash(database, checkpoint) != manifest["database_sha256"]:
         raise RuntimeError("Snapshot database hash changed")
-    checked = set()
+    checked = {}
     for row in manifest["files"]:
         checkpoint()
         inside(Path("restore-target").resolve(), row["path"])
@@ -229,12 +230,9 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
         if not obj.is_relative_to((root / "objects").resolve()):
             raise ValueError("Snapshot object outside backup pool")
         if obj not in checked:
-            if (
-                obj.stat().st_size != row["bytes"]
-                or file_hash(obj, checkpoint) != row["sha256"]
-            ):
-                raise RuntimeError("Snapshot evidence object hash changed")
-            checked.add(obj)
+            checked[obj] = (obj.stat().st_size, file_hash(obj, checkpoint))
+        if checked[obj] != (row["bytes"], row["sha256"]):
+            raise RuntimeError("Snapshot evidence object hash changed")
     with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as db:
         integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok" or db.execute("PRAGMA foreign_key_check").fetchone():
@@ -264,21 +262,59 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
     }
 
 
-def restore_snapshot(snapshot, destination):
+def restore_snapshot(snapshot, destination, *, reserve_gib=32):
+    if not math.isfinite(reserve_gib) or reserve_gib < 0:
+        raise ValueError("Restore reserve must be finite and nonnegative")
     snapshot = Path(snapshot).resolve()
     destination = Path(destination).resolve()
     if destination.is_relative_to(snapshot.parent.parent):
         raise ValueError("Restore destination must be outside backup storage")
     if destination.exists() and any(destination.iterdir()):
         raise ValueError("Restore destination must be empty")
-    verify_snapshot(snapshot)
     manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
+    reserve = int(reserve_gib * 1024**3)
+    ancestor = destination
+    while not ancestor.exists():
+        if ancestor == ancestor.parent:
+            raise ValueError("Restore target volume is unavailable")
+        ancestor = ancestor.parent
+
+    def allocated(size):
+        return (size + 4095) // 4096 * 4096
+
+    database_bytes = (snapshot / "knowledge.sqlite3").stat().st_size
+    required = (
+        allocated(database_bytes)
+        + sum(
+            allocated(inside(snapshot.parent.parent, row["object"]).stat().st_size)
+            for row in manifest["files"]
+        )
+        + 64 * 1024**2
+    )
+    available = shutil.disk_usage(ancestor).free
+    if available < required + reserve:
+        raise InterruptedError(
+            f"Insufficient restore disk capacity: need {required} bytes plus {reserve} reserved; {available} available"
+        )
+    verify_snapshot(snapshot)
+    if shutil.disk_usage(ancestor).free < required + reserve:
+        raise InterruptedError(
+            "Restore disk capacity changed during verification; no destination written"
+        )
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(snapshot / "knowledge.sqlite3", destination / "knowledge.sqlite3")
     for row in manifest["files"]:
+        source = inside(snapshot.parent.parent, row["object"])
+        if (
+            shutil.disk_usage(destination).free
+            < allocated(source.stat().st_size) + reserve
+        ):
+            raise InterruptedError(
+                "Restore reached reserved disk capacity; partial restore retained"
+            )
         target = inside(destination, row["path"])
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(inside(snapshot.parent.parent, row["object"]), target)
+        shutil.copyfile(source, target)
         if file_hash(target) != row["sha256"]:
             raise RuntimeError("Restored evidence hash mismatch")
     if file_hash(destination / "knowledge.sqlite3") != manifest["database_sha256"]:

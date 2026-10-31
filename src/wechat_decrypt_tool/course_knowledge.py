@@ -2204,6 +2204,7 @@ def main():
     verify = sub.add_parser("backup-verify")
     verify.add_argument("--snapshot", type=Path, required=True)
     restore = sub.add_parser("backup-restore")
+    restore.add_argument("--reserve-gib", type=float, default=32)
     restore.add_argument("--snapshot", type=Path, required=True)
     restore.add_argument("--destination", type=Path, required=True)
     courseware.add_argument(
@@ -2277,7 +2278,11 @@ def main():
     if args.command == "backup-restore":
         from .course_backup import restore_snapshot
 
-        print(restore_snapshot(args.snapshot, args.destination))
+        print(
+            restore_snapshot(
+                args.snapshot, args.destination, reserve_gib=args.reserve_gib
+            )
+        )
         return
     if args.command == "pdf-ocr":
         from .course_pdf_ocr import run_pdf_ocr
