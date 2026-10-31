@@ -191,6 +191,17 @@ Notebook 的运行输出可单独建立索引，不会运行单元代码。先�
 
 命令只从已保留的原始 Notebook 读取打印结果、错误、文本 MIME 和 JSON 展示数据；现有父文档代码索引继续保留。尚未索引的 Notebook 会先补建源单元索引，包括历史 checkpoint；已存在的父文档哈希与审计不符时停止该项。每个输出按单元号、输出序号、表示类型和字符位置建立引用，重复运行复用当前版本。HTML 和 JavaScript 作为文本索引，页面不会执行；图片、嵌入附件、富文本和交互展示的视觉解释缺口会单独列出。已识别的凭据赋值和 JSON 敏感字段在索引里掩码，训练参数和普通 token/key 数据继续保留，原始文件仍作为哈希绑定附件保存。结果与错误见 `notebook-outputs-report.json`，该报告和审计、验证文件会进入备份。
 
+Notebook 内嵌静态图片和已失败的教学图片可使用原分辨率切块流程处理：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_visual_sources --root output/course-knowledge --audit output/course-knowledge/notebook-image-audit.json
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_visual_sources --root output/course-knowledge --audit output/course-knowledge/teaching-image-audit.json --failures output/course-knowledge/image-repair-source-errors.json
+```
+
+切块保留原图像素，不缩放，最大 1200×1200 像素，相邻块重叠 64 像素。遇到模型截断或重复输出时沿较长方向继续细分；失败内容不当作完整证据。每个裁切图保留源图坐标、PNG 哈希、本地模型哈希和来源附件链接，Notebook 图像同时绑定 Notebook 文件及内嵌图像的哈希。相同裁切图共用识别缓存，各个来源保留独立引用。当前单图限制为 32 MiB、6400 万像素及 256 块，超出范围仍保留原件并明确报错；切块图像预算 4 GiB、另留 32 GiB 磁盘空间。模型描述仍需复核，静态识别不代表完成动画、HTML 或交互控件的视觉覆盖。
+
+PDF 的单页识别失败会记录具体页号并继续后面的页；重复或截断的页面会转入分块识别。已有哈希绑定的页面证据继续复用。PDF 页面图像的最长边仍限制为 2000 像素，分块保持的是这些渲染像素；原 PDF 另行保留，不能据此声称极小字形或复杂图示已独立验收。
+
 创建独立快照并验证恢复：
 
 ```powershell

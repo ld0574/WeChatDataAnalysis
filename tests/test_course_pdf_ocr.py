@@ -295,3 +295,89 @@ def test_all_pages_ocr_reuses_hash_cache_across_portable_aliases(tmp_path, monke
         assert all(
             m["parent_raw_digest"] == sha and m["review_required"] for m in metadata
         )
+
+
+@pytest.mark.parametrize("mode", ["page_error", "tiled_fallback"])
+def test_pdf_continues_after_page_error_and_subdivides_repetitive_pages(
+    tmp_path, monkeypatch, mode
+):
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    from pypdf import PdfWriter
+    from wechat_decrypt_tool import course_tiled_ocr
+    from wechat_decrypt_tool.course_knowledge import ModelRepetitionError
+
+    source = tmp_path / "source"
+    source.mkdir()
+    pdf = source / "fixture.pdf"
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=100, height=100)
+    with pdf.open("wb") as stream:
+        writer.write(stream)
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps({"pdf_sources_all_pages": [{"path": str(pdf), "source_key": ""}]})
+    )
+    renderer = tmp_path / "renderer.exe"
+    renderer.write_bytes(b"fixture-renderer")
+    for imported in (module, course_tiled_ocr):
+        monkeypatch.setattr(imported, "local_model_digest", lambda _: "local-fixture")
+
+    def render(pdf, page, destination, program):
+        Image.new(
+            "RGB",
+            (1800, 40) if mode == "tiled_fallback" else (50, 40),
+            (page, 255, 255),
+        ).save(destination)
+
+    monkeypatch.setattr(module, "render_page", render)
+    calls = []
+
+    def chat(model, messages):
+        with Image.open(BytesIO(base64.b64decode(messages[-1]["images"][0]))) as image:
+            page = image.getpixel((0, 0))[0]
+            width = image.width
+        calls.append((page, width))
+        if mode == "page_error" and page == 2:
+            raise RuntimeError("fixture unavailable page")
+        if mode == "tiled_fallback" and width > 1500:
+            raise ModelRepetitionError()
+        return "complete_page_fixture"
+
+    store = KnowledgeStore(tmp_path / "kb")
+    result = module.run_pdf_ocr(
+        store, [plan], source, "local", chat, lambda _: nullcontext(), poppler=renderer
+    )
+    if mode == "page_error":
+        assert [p["page"] for p in result["completed"]] == [1, 3]
+        assert result["errors"][0]["page"] == 2
+        assert (
+            result["attempted_page_occurrences"] == 3
+            and result["full_requested_scope_attempted"]
+        )
+        assert not result["full_requested_scope_processed"]
+    else:
+        assert result["full_requested_scope_processed"] and result["processed"] == 3
+        assert sum(width == 1800 for _, width in calls) == 3
+        assert sum(width <= 1200 for _, width in calls) == 6
+        with store.connect() as db:
+            metadata = [
+                json.loads(x[0])
+                for x in db.execute(
+                    "SELECT metadata FROM resource_revisions WHERE source_key LIKE 'visual %'"
+                )
+            ]
+        assert all(m["tile_coverage"]["all_planned_tiles_completed"] for m in metadata)
+        count = len(calls)
+        module.run_pdf_ocr(
+            store,
+            [plan],
+            source,
+            "local",
+            chat,
+            lambda _: nullcontext(),
+            poppler=renderer,
+        )
+        assert len(calls) == count
