@@ -327,6 +327,15 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 
 ## 视频删除前的验收
 
+静态教学图片主批次结束后，可以只读核对全部成功来源，不重新运行模型：
+
+```powershell
+$env:PYTHONPATH = Join-Path $PWD 'src'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_image_validation --root output/course-knowledge
+```
+
+该检查要求完整主批次报告，并将成功和失败来源与原始审计逐项核对。每个成功来源都从归档附件解析原图，逐像素核对 EXIF 方向及白底透明合成后的图片，重新遍历已接受的 OCR 分区树，核对全部正文块、不可变版本元数据、搜索字段和逐块 FTS 查询。它只读取一个 WAL 数据库快照，不持有生产写锁，也不需要原课程目录或模型服务；Windows 上使用低磁盘优先级。`primary-static-image-validation.json` 会进入后续备份。主批次失败项仍须另查分块补跑及独立校验，逐块检索探针也不能替代完整原生 FTS 校验；像素与正文一致不代表模型语义正确。
+
 阶段限制清单可从当前数据库状态和已有独立回执重新生成，不调用模型，也不改动课程数据：
 
 ```powershell

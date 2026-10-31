@@ -273,6 +273,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "KNOWN-EXCLUSIONS.json",
         "course-server-live-validation.json",
         "document-count-deployment-validation.json",
+        "primary-static-image-validation.json",
+        "static-image-full-partition-validation.json",
         "pdf-full-scope-validation.json",
         "slides-ocr-full-validation.json",
         "silent-demo-validation.json",
