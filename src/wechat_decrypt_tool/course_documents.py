@@ -68,8 +68,7 @@ def retire_ignored_legacy(store, source, candidate_ids):
     missing = 0
     for offset in range(0, len(candidates), 100):
         store.checkpoint()
-        with store.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with store.write() as db:
             changed = []
             for key in candidates[offset : offset + 100]:
                 row = db.execute(

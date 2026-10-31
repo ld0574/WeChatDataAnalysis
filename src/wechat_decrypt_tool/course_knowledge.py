@@ -11,7 +11,7 @@ import sqlite3
 import tempfile
 import time
 import wave
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 
 SEGMENT_SECONDS = 25
@@ -44,6 +44,16 @@ class ModelRepetitionError(RuntimeError):
         self.metrics = {"done_reason": "server_repeat_limit"}
 
 
+def sqlite_busy(error):
+    code = getattr(error, "sqlite_errorcode", None)
+    return (
+        code is not None and code & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+    ) or str(error).lower() in (
+        "database is locked",
+        "database table is locked",
+    )
+
+
 @contextmanager
 def schema_lease(path, timeout=300):
     """Serialize schema migrations without consuming the GPU processing lease."""
@@ -65,7 +75,8 @@ def schema_lease(path, timeout=300):
             except OSError:
                 if time.monotonic() >= deadline:
                     raise RuntimeError(
-                        "Another course archive schema migration is still active"
+                        "Another course archive operation still holds "
+                        + Path(path).name
                     ) from None
                 time.sleep(0.1)
         handle.seek(0, 2)
@@ -165,7 +176,10 @@ class KnowledgeStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "knowledge.sqlite3"
-        with schema_lease(self.root / "schema.lock"):
+        with (
+            schema_lease(self.root / "schema.lock"),
+            schema_lease(self.root / "writer.lock"),
+        ):
             self._initialize_schema()
 
     def _initialize_schema(self):
@@ -252,12 +266,36 @@ class KnowledgeStore:
     def connect(self):
         c = sqlite3.connect(self.path, timeout=30)
         c.row_factory = sqlite3.Row
-        c.execute("PRAGMA synchronous=FULL")
         try:
+            c.execute("PRAGMA synchronous=FULL")
             with c:
                 yield c
         finally:
             c.close()
+
+    @contextmanager
+    def write(self):
+        """Serialize writers and retry lock acquisition before caller code runs."""
+        self.checkpoint()
+        with schema_lease(self.root / "writer.lock"):
+            for attempt in range(8):
+                stack = ExitStack()
+                try:
+                    connection = stack.enter_context(self.connect())
+                    connection.execute("BEGIN IMMEDIATE")
+                except sqlite3.OperationalError as exc:
+                    stack.close()
+                    if not sqlite_busy(exc) or attempt == 7:
+                        raise
+                    self.checkpoint()
+                    time.sleep(min(0.25 * (attempt + 1), 2))
+                except BaseException:
+                    stack.close()
+                    raise
+                else:
+                    break
+            with stack:
+                yield connection
 
     def register(self, item):
         path = Path(item["path"]).resolve()
@@ -270,7 +308,7 @@ class KnowledgeStore:
                 "Inventory source changed; refresh inventory before importing"
             )
         key = hashlib.sha256(str(path).encode()).hexdigest()[:24]
-        with self.connect() as c:
+        with self.write() as c:
             old = c.execute(
                 "SELECT * FROM videos WHERE path=?", (str(path),)
             ).fetchone()
@@ -313,7 +351,7 @@ class KnowledgeStore:
     def save_segment(self, key, n, start, end, text):
         if end <= start or start < 0:
             raise ValueError("Invalid segment timeline")
-        with self.connect() as c:
+        with self.write() as c:
             title = c.execute("SELECT title FROM videos WHERE id=?", (key,)).fetchone()[
                 0
             ]
@@ -495,22 +533,13 @@ class KnowledgeStore:
             try:
                 return self._save_document_versions(versions)
             except sqlite3.OperationalError as exc:
-                code = getattr(exc, "sqlite_errorcode", None)
-                busy = (
-                    code is not None
-                    and code & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
-                ) or str(exc).lower() in (
-                    "database is locked",
-                    "database table is locked",
-                )
-                if not busy or attempt == 7:
+                if not sqlite_busy(exc) or attempt == 7:
                     raise
                 time.sleep(min(0.25 * (attempt + 1), 2))
 
     def _save_document_versions(self, versions):
         """Atomically activate complete derived versions; preserve historical evidence IDs."""
-        with self.connect() as c:
-            c.execute("BEGIN IMMEDIATE")
+        with self.write() as c:
             for version in versions:
                 path = str(version["path"])
                 key = version["source_key"]
@@ -1143,7 +1172,7 @@ def transcribe(store, key, model_folder, *, batch_size=2):
 
     __import__("os").environ["HF_HUB_OFFLINE"] = "1"
     __import__("os").environ["TRANSFORMERS_OFFLINE"] = "1"
-    with store.connect() as c:
+    with store.write() as c:
         video = dict(c.execute("SELECT * FROM videos WHERE id=?", (key,)).fetchone())
         done = {r[0] for r in c.execute("SELECT n FROM segments WHERE video=?", (key,))}
         c.execute(
@@ -1208,7 +1237,7 @@ def transcribe(store, key, model_folder, *, batch_size=2):
                         batch_size=2,
                         pending_windows=len(batch),
                     )
-                    with store.connect() as db:
+                    with store.write() as db:
                         db.execute(
                             "INSERT INTO events(time,kind,data) VALUES(?,?,?)",
                             (
@@ -1282,7 +1311,7 @@ def transcribe(store, key, model_folder, *, batch_size=2):
             raise RuntimeError(
                 "Decoded audio does not cover the declared audio stream duration"
             )
-        with store.connect() as c:
+        with store.write() as c:
             # All committed windows must form one continuous coverage interval.
             segments = c.execute(
                 "SELECT n,start,end FROM segments WHERE video=? ORDER BY n", (key,)
@@ -1314,7 +1343,7 @@ def transcribe(store, key, model_folder, *, batch_size=2):
                 ),
             )
     except Exception as exc:
-        with store.connect() as c:
+        with store.write() as c:
             c.execute(
                 "UPDATE videos SET status='error',error=?,updated=? WHERE id=?",
                 (str(exc), time.time(), key),
@@ -1375,7 +1404,7 @@ def capture_frames(store, key, step=30):
             image.thumbnail((1920, 1080))
             path = folder / f"{second:07}.jpg"
             image.save(path, quality=88)
-            with store.connect() as c:
+            with store.write() as c:
                 c.execute(
                     "INSERT OR IGNORE INTO frames(video,time,path) VALUES(?,?,?)",
                     (key, second, str(path.relative_to(store.root))),
@@ -1624,7 +1653,7 @@ def _enrich(store, key, model, *, cooperative=False):
                 return local_chat(model, messages)
 
         content = describe_frame(store, frame, model, chat_frame)
-        with store.connect() as c:
+        with store.write() as c:
             c.execute(
                 "UPDATE frames SET description=?,search_text=?,status='ready',model=? WHERE id=?",
                 (content, " ".join(tokens(content)), model, frame["id"]),
@@ -1670,7 +1699,7 @@ def _enrich(store, key, model, *, cooperative=False):
             note = generate_note(model, evidence, visuals, set(source_ids))
         for claim in note["concepts"] + note["relations"]:
             claim["evidence"] = [source_ids[i] for i in claim["evidence"]]
-        with store.connect() as c:
+        with store.write() as c:
             c.execute(
                 "INSERT OR REPLACE INTO notes VALUES(?,?,?,?,?)",
                 (key, window, json.dumps(note, ensure_ascii=False), model, "ready"),
@@ -1788,7 +1817,7 @@ def answer(store, question, model, video_id=None):
         if re.search(r'[。！？.!?][”"\']?$', cleaned):
             break
     else:
-        with store.connect() as c:
+        with store.write() as c:
             c.execute(
                 "INSERT INTO events VALUES(?,?,?)",
                 (
@@ -2521,7 +2550,7 @@ def run_courses(store, args):
             if args.enrich:
                 enrich(store, key, args.model, cooperative=True)
             export_review(store, key)
-            with store.connect() as c:
+            with store.write() as c:
                 c.execute(
                     "UPDATE videos SET error='',updated=? WHERE id=?",
                     (time.time(), key),
@@ -2536,7 +2565,7 @@ def run_courses(store, args):
             raise
         except Exception as exc:
             failures += 1
-            with store.connect() as c:
+            with store.write() as c:
                 c.execute(
                     "UPDATE videos SET error=?,updated=? WHERE id=?",
                     (str(exc), time.time(), key),

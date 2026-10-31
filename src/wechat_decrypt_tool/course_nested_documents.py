@@ -94,6 +94,8 @@ def index_nested_courseware(store, audit_path, *, limit=0):
             store.save_document_versions(pending)
             pending.clear()
             chunks = 0
+            # Allow already-running older workers to acquire the SQLite writer.
+            time.sleep(0.1)
 
     def save(path, chain, raw, suffix):
         nonlocal files, cached, chunks
@@ -251,7 +253,8 @@ def index_nested_courseware(store, audit_path, *, limit=0):
             "completed": completed,
             "errors": errors,
             "skipped": skipped,
-            "indexed_entities": files,
+            "indexed_entities": files - len(pending),
+            "pending_entities_not_committed": len(pending),
             "cached_entities": cached,
             "extractor": identity,
             "pdf_warnings": warnings,
@@ -329,9 +332,7 @@ def index_nested_courseware(store, audit_path, *, limit=0):
         progress("finished_with_errors" if errors else "batch_finished")
         return result
     except BaseException as exc:
-        # Preserve complete pending entities on pause; no partial file revisions.
-        if pending:
-            store.save_document_versions(pending)
+        # Uncommitted entities are replayed on resume; never bypass a pause flag.
         report()
         progress(
             "paused"
