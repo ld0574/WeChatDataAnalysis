@@ -84,6 +84,7 @@ def decoded_summary(path, checkpoint=lambda: None):
     import av
 
     digest = hashlib.sha256()
+    timeline = hashlib.sha256()
     count = 0
     samples = 0
     first = None
@@ -96,6 +97,12 @@ def decoded_summary(path, checkpoint=lambda: None):
                 raise ValueError("Decoded audio frame has no timestamp")
             if first is None:
                 first = frame.time
+            # Rational timestamps avoid hiding interior discontinuities behind
+            # equal first/end times, without float rounding differences.
+            timestamp = frame.pts * frame.time_base
+            timeline.update(
+                f"{timestamp.numerator}/{timestamp.denominator};".encode("ascii")
+            )
             digest.update(frame.samples.to_bytes(4, "big"))
             digest.update(frame.sample_rate.to_bytes(4, "big"))
             digest.update(frame.layout.name.encode())
@@ -108,6 +115,7 @@ def decoded_summary(path, checkpoint=lambda: None):
         raise ValueError("No original audio could be decoded")
     return {
         "pcm_digest": digest.hexdigest(),
+        "timeline_digest": timeline.hexdigest(),
         "frames": count,
         "samples": samples,
         "first_seconds": first,
@@ -223,9 +231,37 @@ def archive_one(store, item, *, remaining_budget=None):
         progress("verifying_decoded_source")
         original_pcm = decoded_summary(path, store.checkpoint)
         progress("verifying_decoded_copy")
-        copied_pcm = decoded_summary(candidate, store.checkpoint)
+        import av
+
+        try:
+            copied_pcm = decoded_summary(candidate, store.checkpoint)
+        except av.error.FFmpegError:
+            # A remux can expose priming packets excluded by the original edits.
+            # The source has already decoded successfully; never hide its errors.
+            copied_pcm = None
+        edit_repair = None
         if copied_pcm != original_pcm:
-            raise RuntimeError("Decoded PCM/timeline mismatch; original retained")
+            from .course_mp4_edits import preserve_audio_edits
+
+            progress("preserving_source_audio_edits")
+            if (
+                shutil.disk_usage(store.root).free
+                < candidate.stat().st_size + 32 * 1024**3
+            ):
+                raise InterruptedError(
+                    "Insufficient disk headroom for audio edit repair"
+                )
+            repaired = Path(temporary) / "audio-source-edits.m4a"
+            edit_repair = preserve_audio_edits(
+                path, candidate, repaired, store.checkpoint
+            )
+            progress("verifying_repaired_packets")
+            if packet_summary(repaired, store.checkpoint) != original_packets:
+                raise RuntimeError("Repaired AAC packet mismatch; original retained")
+            progress("verifying_repaired_pcm")
+            if decoded_summary(repaired, store.checkpoint) != original_pcm:
+                raise RuntimeError("Repaired PCM/timeline mismatch; original retained")
+            candidate = repaired
         if remaining_budget is not None and candidate.stat().st_size > remaining_budget:
             raise InterruptedError("Audio archive size budget reached")
         progress("hashing_source")
@@ -234,7 +270,7 @@ def archive_one(store, item, *, remaining_budget=None):
             raise RuntimeError("Original video hash changed")
         _source_state(item)
         value = {
-            "schema": 1,
+            "schema": 2,
             "video": key,
             "source": str(path),
             "source_size": before.st_size,
@@ -249,6 +285,8 @@ def archive_one(store, item, *, remaining_budget=None):
             "verified": True,
             "verified_at": time.time(),
         }
+        if edit_repair:
+            value["edit_repair"] = edit_repair
         if candidate != output:
             candidate.replace(output)
         store.write_json(str(manifest.relative_to(store.root)), value)
@@ -357,8 +395,18 @@ def _archive_audio(store, inventory_path, *, limit=0, budget_gib=48):
         except InterruptedError:
             raise
         except Exception as exc:
+            progress_path = store.root / "audio-archive-progress.json"
+            phase = (
+                json.loads(progress_path.read_text(encoding="utf-8")).get("stage")
+                if progress_path.exists()
+                else None
+            )
             errors.append(
-                {"path": item["path"], "error": type(exc).__name__ + ": " + str(exc)}
+                {
+                    "path": item["path"],
+                    "stage": phase,
+                    "error": type(exc).__name__ + ": " + str(exc),
+                }
             )
         store.write_json(
             "audio-archive-report.json",
