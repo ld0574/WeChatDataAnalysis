@@ -57,6 +57,76 @@ def extractor_identity():
     )
 
 
+def retire_ignored_legacy(store, source, candidate_ids):
+    """Retire audited legacy cache rows from search, retaining every historical ID."""
+    scope = str(source).replace("\\", "/").rstrip("/").casefold() + "/"
+    candidates = list(dict.fromkeys(candidate_ids))
+    if any(type(value) is not int or value <= 0 for value in candidates):
+        raise ValueError("Legacy repair requires positive integer evidence IDs")
+    retired = []
+    inactive = 0
+    missing = 0
+    for offset in range(0, len(candidates), 100):
+        store.checkpoint()
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            changed = []
+            for key in candidates[offset : offset + 100]:
+                row = db.execute(
+                    "SELECT id,path,locator,extractor,active FROM documents WHERE id=?",
+                    (key,),
+                ).fetchone()
+                if row is None:
+                    missing += 1
+                    continue
+                if not row["active"]:
+                    inactive += 1
+                    continue
+                if not row["path"].replace("\\", "/").casefold().startswith(scope):
+                    raise ValueError(
+                        "Legacy repair source outside requested course root"
+                    )
+                location = row["locator"].removeprefix("archive ").replace("\\", "/")
+                parts = set(
+                    (row["path"].replace("\\", "/") + "/" + location).split("/")
+                )
+                if row["extractor"] != "legacy-v1" or not (
+                    parts & IGNORED_PARTS or location.split("/")[-1].startswith("._")
+                ):
+                    raise ValueError(
+                        "Refusing to retire a nonignored course evidence row"
+                    )
+                db.execute("UPDATE documents SET active=0 WHERE id=?", (key,))
+                changed.append(key)
+            if changed:
+                db.execute(
+                    "INSERT INTO events(time,kind,data) VALUES(?,?,?)",
+                    (
+                        time.time(),
+                        "retired_ignored_legacy",
+                        json.dumps(
+                            {
+                                "ids": changed,
+                                "source": str(source),
+                                "rows_and_history_preserved": True,
+                            }
+                        ),
+                    ),
+                )
+            retired.extend(changed)
+    result = {
+        "requested": len(candidates),
+        "retired": retired,
+        "already_inactive": inactive,
+        "missing": missing,
+        "historical_ids_preserved": True,
+        "source_files_deleted": False,
+        "updated": time.time(),
+    }
+    store.write_json("legacy-search-repair-report.json", result)
+    return result
+
+
 def _limit(suffix):
     return (
         OFFICE_LIMIT

@@ -1122,10 +1122,14 @@ def audio_windows(path, seconds=SEGMENT_SECONDS):
             number += 1
 
 
-def transcribe(store, key, model_folder):
+def transcribe(store, key, model_folder, *, batch_size=2):
     import av
     import numpy as np
     from .asr_worker import ProcessBackend
+
+    if batch_size not in (1, 2, 4):
+        raise ValueError("ASR batch size must be 1, 2, or 4")
+    effective_batch_size = batch_size
 
     __import__("os").environ["HF_HUB_OFFLINE"] = "1"
     __import__("os").environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -1160,6 +1164,7 @@ def transcribe(store, key, model_folder):
         ) as temporary:
 
             def flush():
+                nonlocal effective_batch_size
                 if not batch:
                     return
                 store.progress(
@@ -1168,13 +1173,50 @@ def transcribe(store, key, model_folder):
                     pending_start=batch[0][1],
                     pending_end=batch[-1][2],
                     duration=video["duration"],
+                    batch_size=effective_batch_size,
                 )
-                values = worker.transcribe_audio_batch(
-                    [str(x[3]) for x in batch],
-                    "auto",
-                    batch_size=2,
-                    gpu_precision="float32",
-                )
+                paths = [str(x[3]) for x in batch]
+                try:
+                    values = worker.transcribe_audio_batch(
+                        paths,
+                        "auto",
+                        batch_size=effective_batch_size,
+                        gpu_precision="float32",
+                    )
+                except RuntimeError as exc:
+                    message = str(exc).lower()
+                    if effective_batch_size != 4 or not (
+                        "cuda" in message
+                        and ("out of memory" in message or "out_of_memory" in message)
+                    ):
+                        raise
+                    worker.close()
+                    effective_batch_size = 2
+                    store.progress(
+                        "asr_memory_retry",
+                        video=key,
+                        batch_size=2,
+                        pending_windows=len(batch),
+                    )
+                    with store.connect() as db:
+                        db.execute(
+                            "INSERT INTO events(time,kind,data) VALUES(?,?,?)",
+                            (
+                                time.time(),
+                                "asr_batch_fallback",
+                                json.dumps(
+                                    {
+                                        "video": key,
+                                        "from_batch": 4,
+                                        "to_batch": 2,
+                                        "precision": "float32",
+                                    }
+                                ),
+                            ),
+                        )
+                    values = worker.transcribe_audio_batch(
+                        paths, "auto", batch_size=2, gpu_precision="float32"
+                    )
                 if len(values) != len(batch):
                     raise RuntimeError("ASR output count mismatch")
                 for (n, start, end, path), value in zip(batch, values):
@@ -1218,7 +1260,7 @@ def transcribe(store, key, model_folder):
                     f.setframerate(16000)
                     f.writeframes(pcm.tobytes())
                 batch.append((n, start, decoded_end, path))
-                if len(batch) == 2:
+                if len(batch) == effective_batch_size:
                     flush()
             flush()
         s = Path(video["path"]).stat()
@@ -1366,9 +1408,16 @@ def local_chat(model, messages, *, schema=None):
     if schema:
         body["format"] = schema
     with httpx.Client(trust_env=False, timeout=600) as c:
-        r = c.post("http://127.0.0.1:11434/api/chat", json=body)
-        r.raise_for_status()
-        value = r.json()
+        for attempt in range(3):
+            if attempt:
+                time.sleep((1, 3)[attempt - 1])
+                local_model_digest(model)
+            r = c.post("http://127.0.0.1:11434/api/chat", json=body)
+            if 500 <= r.status_code < 600 and attempt < 2:
+                continue
+            r.raise_for_status()
+            value = r.json()
+            break
     if value.get("done_reason") != "stop":
         raise ModelOutputTruncatedError(value)
     return value["message"]["content"]
@@ -2045,6 +2094,7 @@ def main():
     run.add_argument("--asr-model", required=True, type=Path)
     run.add_argument("--limit", type=int, default=1)
     run.add_argument("--enrich", action="store_true")
+    run.add_argument("--asr-batch-size", type=int, choices=(1, 2, 4), default=2)
     run.add_argument("--deduplicate", action="store_true")
     sub.add_parser("status")
     review = sub.add_parser("review")
@@ -2061,6 +2111,9 @@ def main():
     sub.add_parser("resume")
     courseware = sub.add_parser("courseware")
     courseware.add_argument("source", type=Path)
+    legacy = sub.add_parser("retire-ignored-legacy")
+    legacy.add_argument("--source", type=Path, required=True)
+    legacy.add_argument("--audit", type=Path, required=True)
     ocr = sub.add_parser("pdf-ocr")
     ocr.add_argument("--source", required=True, type=Path)
     ocr.add_argument("--report", action="append", required=True, type=Path)
@@ -2109,6 +2162,21 @@ def main():
     store = KnowledgeStore(args.root)
     if args.command == "status":
         print(json.dumps(store.status(), ensure_ascii=False, indent=2))
+        return
+    if args.command == "retire-ignored-legacy":
+        from .course_documents import retire_ignored_legacy
+
+        audit = json.loads(args.audit.read_text(encoding="utf-8"))
+        result = retire_ignored_legacy(store, args.source, audit["ids"])
+        print(
+            json.dumps(
+                {
+                    "retired": len(result["retired"]),
+                    "already_inactive": result["already_inactive"],
+                    "historical_ids_preserved": True,
+                }
+            )
+        )
         return
     if args.command == "silent-archive":
         from .course_silent_demo import archive_silent_demos
@@ -2333,6 +2401,21 @@ def run_courses(store, args):
     paused = False
     pause_reason = ""
     store.progress("starting", inventory=str(args.inventory))
+    store.write_json(
+        "run-plan.json",
+        {
+            "started": time.time(),
+            "pid": __import__("os").getpid(),
+            "inventory": str(args.inventory),
+            "loaded_audio_sources": len(inventory["videos"]),
+            "inventory_payload_sha256": hashlib.sha256(
+                json.dumps(inventory, sort_keys=True, ensure_ascii=False).encode()
+            ).hexdigest(),
+            "asr_batch_size": getattr(args, "asr_batch_size", 2),
+            "asr_precision": "float32",
+            "knowledge_model": args.model,
+        },
+    )
     for item in inventory["videos"]:
         if args.video and Path(item["path"]).resolve() != Path(args.video).resolve():
             continue
@@ -2355,7 +2438,12 @@ def run_courses(store, args):
             if state != "transcribed":
                 with wait_gpu_lease(store):
                     unload_model(args.model)
-                    transcribe(store, key, args.asr_model)
+                    transcribe(
+                        store,
+                        key,
+                        args.asr_model,
+                        batch_size=getattr(args, "asr_batch_size", 2),
+                    )
             capture_frames(store, key)
             if args.enrich:
                 enrich(store, key, args.model, cooperative=True)

@@ -5,7 +5,9 @@
     [string]$Query = '',
     [string]$VideoId = '',
     [string]$Model = 'qwen3.5:9b',
-    [int]$Port = 3002
+    [int]$Port = 3002,
+    [ValidateSet(1,2,4)]
+    [int]$AsrBatchSize = 2
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -15,12 +17,21 @@ $env:PYTHONPATH = Join-Path $projectRoot 'src'
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:HF_HUB_DISABLE_TELEMETRY = '1'
+if ($Mode -in @('Build','Run') -and !$PSBoundParameters.ContainsKey('AsrBatchSize')) {
+    $settingsPath = Join-Path $archiveRoot 'processing-settings.json'
+    if (Test-Path -LiteralPath $settingsPath) {
+        $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+        $configuredBatch = [int]$settings.asr_batch_size
+        if ($configuredBatch -notin @(1,2,4)) { throw 'processing-settings.json 的 asr_batch_size 必须是 1、2 或 4。' }
+        $AsrBatchSize = $configuredBatch
+    }
+}
 if ($Mode -eq 'Build') {
     if (!(Test-Path -LiteralPath (Join-Path $archiveRoot 'inventory.json'))) {
         & $PSCommandPath -Mode Inventory -Source $Source -Model $Model
     }
     foreach ($step in @('Resources','Prepare','Run')) {
-        & $PSCommandPath -Mode $step -Source $Source -Model $Model
+        & $PSCommandPath -Mode $step -Source $Source -Model $Model -AsrBatchSize $AsrBatchSize
     }
     return
 }
@@ -33,7 +44,7 @@ switch ($Mode) {
     'Run' {
         $inventoryPath = Join-Path $archiveRoot 'inventory-unique.json'
         if (!(Test-Path -LiteralPath $inventoryPath)) { throw '请先运行 Prepare，完成文件内容去重。' }
-        $arguments += @('run','--inventory',$inventoryPath,'--asr-model',(Join-Path $projectRoot 'voice_models\qwen3-asr-06b-hf'),'--limit','0','--enrich')
+        $arguments += @('run','--inventory',$inventoryPath,'--asr-model',(Join-Path $projectRoot 'voice_models\qwen3-asr-06b-hf'),'--limit','0','--enrich','--asr-batch-size',"$AsrBatchSize")
     }
     'Serve' { $arguments += @('serve','--port',"$Port") }
     'Pause' { Set-Content -LiteralPath (Join-Path $archiveRoot 'pause.flag') -Value 'pause'; return }

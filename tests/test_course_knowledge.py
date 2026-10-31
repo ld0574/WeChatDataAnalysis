@@ -418,7 +418,8 @@ def test_run_releases_gpu_between_asr_and_cpu_capture(tmp_path, monkeypatch):
     )
     phases = []
 
-    def transcribe(*args):
+    def transcribe(*args, **kwargs):
+        assert kwargs["batch_size"] == 2
         with pytest.raises(module.GpuBusyError):
             with module.gpu_lease(store):
                 pass
@@ -470,4 +471,142 @@ def test_remote_model_rejected_before_any_course_chat_request(monkeypatch):
     with pytest.raises(RuntimeError, match="Cloud model forbidden"):
         module.local_chat(
             "remote", [{"role": "user", "content": "synthetic confidential marker"}]
+        )
+
+
+def test_local_chat_recovers_transient_server_error_with_bounded_retry(monkeypatch):
+    import httpx
+    from wechat_decrypt_tool import course_knowledge as module
+
+    calls = []
+    delays = []
+    guards = []
+    monkeypatch.setattr(
+        "wechat_decrypt_tool.course_pdf_ocr.local_model_digest",
+        lambda model: guards.append(model) or "local-weights",
+    )
+    monkeypatch.setattr(module.time, "sleep", delays.append)
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs["trust_env"] is False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json):
+            calls.append(json)
+            return httpx.Response(
+                500 if len(calls) == 1 else 200,
+                request=httpx.Request("POST", url),
+                json={
+                    "done_reason": "stop",
+                    "message": {"content": "synthetic recovered reply"},
+                },
+            )
+
+    monkeypatch.setattr(httpx, "Client", Client)
+    assert (
+        module.local_chat("local", [{"role": "user", "content": "synthetic input"}])
+        == "synthetic recovered reply"
+    )
+    assert (
+        len(calls) == 2 and calls[0] == calls[1] and delays == [1] and len(guards) == 2
+    )
+
+
+@pytest.mark.parametrize("status,expected_attempts", [(500, 3), (400, 1)])
+def test_local_chat_stops_retrying_permanent_failures(
+    monkeypatch, status, expected_attempts
+):
+    import httpx
+    from wechat_decrypt_tool import course_knowledge as module
+
+    calls = []
+    monkeypatch.setattr(
+        "wechat_decrypt_tool.course_pdf_ocr.local_model_digest",
+        lambda _: "local-weights",
+    )
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json):
+            calls.append(1)
+            return httpx.Response(
+                status,
+                request=httpx.Request("POST", url),
+                json={"error": "synthetic server error"},
+            )
+
+    monkeypatch.setattr(httpx, "Client", Client)
+    with pytest.raises(httpx.HTTPStatusError):
+        module.local_chat("local", [{"role": "user", "content": "synthetic input"}])
+    assert len(calls) == expected_attempts
+
+
+def test_asr_batch4_memory_retry_preserves_every_window_without_duplicates(
+    tmp_path, monkeypatch
+):
+    import wave
+    from pathlib import Path
+    from wechat_decrypt_tool import course_knowledge as module
+
+    source = tmp_path / "silence.wav"
+    with wave.open(str(source), "wb") as file:
+        file.setnchannels(1)
+        file.setsampwidth(2)
+        file.setframerate(16000)
+        file.writeframes(b"\0\0" * (16000 * 150))
+    store = KnowledgeStore(tmp_path / "kb")
+    key = store.register({"path": str(source), "duration_seconds": 150})
+    calls = []
+
+    class Backend:
+        precision = "float32"
+        is_loaded = False
+        last_batch_metrics = {}
+
+        def __init__(self, *args):
+            pass
+
+        def transcribe_audio_batch(self, paths, language, *, batch_size, gpu_precision):
+            assert gpu_precision == "float32"
+            calls.append((len(paths), batch_size))
+            if batch_size == 4:
+                raise RuntimeError("CUDA out of memory")
+            return [{"text": "synthetic_" + Path(p).stem} for p in paths]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("wechat_decrypt_tool.asr_worker.ProcessBackend", Backend)
+    module.transcribe(store, key, tmp_path / "model", batch_size=4)
+    assert calls == [(4, 4), (4, 2), (2, 2)]
+    with store.connect() as db:
+        rows = db.execute(
+            "SELECT n,start,end FROM segments WHERE video=? ORDER BY n", (key,)
+        ).fetchall()
+        assert [row["n"] for row in rows] == list(range(6))
+        assert rows[0]["start"] == 0 and rows[-1]["end"] == 150
+        assert (
+            db.execute("SELECT status FROM videos WHERE id=?", (key,)).fetchone()[0]
+            == "transcribed"
+        )
+        assert (
+            db.execute(
+                "SELECT count(*) FROM events WHERE kind='asr_batch_fallback'"
+            ).fetchone()[0]
+            == 1
         )

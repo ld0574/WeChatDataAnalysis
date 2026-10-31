@@ -8,6 +8,70 @@ from wechat_decrypt_tool.course_knowledge import KnowledgeStore, create_app, tok
 from wechat_decrypt_tool import course_documents
 
 
+def test_ignored_legacy_repair_retires_search_but_retains_history_and_raw_source(
+    tmp_path,
+):
+    from fastapi.testclient import TestClient
+
+    source = tmp_path / "source"
+    path = source / ".ipynb_checkpoints" / "example.py"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"synthetic original checkpoint")
+    store = KnowledgeStore(tmp_path / "kb")
+    with store.connect() as db:
+        key = db.execute(
+            "INSERT INTO documents(path,locator,digest,text,search_text) VALUES(?,?,?,?,?)",
+            (
+                str(path),
+                " text chars 0",
+                "legacy",
+                "ignored_legacy_marker",
+                "ignored_legacy_marker",
+            ),
+        ).lastrowid
+    assert store.search("ignored_legacy_marker")
+    before = path.read_bytes()
+    result = course_documents.retire_ignored_legacy(store, source, [key])
+    assert result["retired"] == [key] and not store.search("ignored_legacy_marker")
+    assert path.read_bytes() == before
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM documents").fetchone()[0] == 1
+    with TestClient(create_app(store, "unused")) as client:
+        response = client.get("/evidence/" + str(-1_000_000_000 - key))
+        assert response.status_code == 200 and "ignored_legacy_marker" in response.text
+    assert (
+        course_documents.retire_ignored_legacy(store, source, [key])["already_inactive"]
+        == 1
+    )
+
+
+def test_legacy_repair_refuses_genuine_course_rows_and_other_source_roots(tmp_path):
+    store = KnowledgeStore(tmp_path / "kb")
+    source = tmp_path / "source"
+    with store.connect() as db:
+        genuine = db.execute(
+            "INSERT INTO documents(path,locator,digest,text) VALUES(?,?,?,?)",
+            (str(source / "lecture.py"), " text chars 0", "legacy", "genuine course"),
+        ).lastrowid
+        other = db.execute(
+            "INSERT INTO documents(path,locator,digest,text) VALUES(?,?,?,?)",
+            (
+                str(tmp_path / "other" / ".ipynb_checkpoints" / "code.py"),
+                " text chars 0",
+                "legacy",
+                "other",
+            ),
+        ).lastrowid
+    for key in (genuine, other):
+        with pytest.raises(ValueError):
+            course_documents.retire_ignored_legacy(store, source, [key])
+    with store.connect() as db:
+        assert (
+            db.execute("SELECT count(*) FROM documents WHERE active=1").fetchone()[0]
+            == 2
+        )
+
+
 def version(path, text, extractor="v1", key="", chunks=None):
     return {
         "path": str(path),
