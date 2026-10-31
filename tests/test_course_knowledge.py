@@ -32,6 +32,18 @@ def test_changed_source_cannot_overwrite_old_archive(tmp_path):
         store.register({"path": str(tmp_path / "source.mp4"), "duration_seconds": 50})
 
 
+@pytest.mark.parametrize("query", ["___ Python", "环境变量 ___", "___ __init__"])
+def test_search_ignores_punctuation_only_tokens_without_dropping_identifiers(
+    tmp_path, query
+):
+    store = KnowledgeStore(tmp_path / "kb")
+    key = register(store, tmp_path)
+    store.save_segment(key, 0, 0, 25, "Python 环境变量 __init__")
+    hits = store.search(query, video_id=key)
+    assert len(hits) == 1 and hits[0]["video"] == key
+    assert store.search("___") == []
+
+
 def test_changed_segment_is_not_silently_accepted(tmp_path):
     store = KnowledgeStore(tmp_path / "kb")
     key = register(store, tmp_path)

@@ -376,7 +376,8 @@ class KnowledgeStore:
             )
 
     def search(self, query, limit=12, video_id=None):
-        terms = tokens(query)
+        # SQLite unicode61 ignores underscore-only rules copied with code.
+        terms = [term for term in tokens(query) if term.strip("_")]
         if not terms:
             return []
         # AND preserves English identifiers and permits CJK phrases without a cloud tokenizer.

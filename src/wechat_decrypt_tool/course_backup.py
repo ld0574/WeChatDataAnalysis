@@ -198,6 +198,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "failed-frame-retry-validation.json",
         "postprocessing-repair-plan.json",
         "postprocessing-repair-validation.json",
+        "query-only-deployment-validation.json",
+        "search-filter-production-validation.json",
         "resources-plan.json",
         "goal-audit.json",
         "teaching-image-audit.json",
