@@ -236,6 +236,17 @@ Notebook 内嵌静态图片和已失败的教学图片可使用原分辨率切�
 
 校验只读取本地证据，不调用模型。`animation-ocr-validation.json` 区分完整识别范围和原件解码缺口；识别全部保留帧仍不能修复损坏原件。
 
+静态 SVG 使用独立的本地渲染流程，保留矢量原件和派生 PNG：
+
+```powershell
+npm.cmd install --prefix output/course-knowledge/render-runtime --ignore-scripts --no-audit --no-fund --save-exact @resvg/resvg-js@2.6.2
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_svg_visuals --root output/course-knowledge --audit output/course-knowledge/teaching-image-audit.json --runtime output/course-knowledge/render-runtime --font C:\Windows\Fonts\msyh.ttc --font C:\Windows\Fonts\msyhbd.ttc --font C:\Windows\Fonts\arial.ttf --font C:\Windows\Fonts\consola.ttf --prepare-only
+```
+
+去掉 `--prepare-only` 可在准备和重复渲染校验后继续本地 GPU 分块识别。流程只处理静态、自包含的 SVG；外部图片、嵌套矢量资源、脚本、事件、动画、DTD 和外部样式资源会明确拒绝。内嵌位图逐个严格解码，不将动画位图当作静态内容。渲染宽度固定为 2400 像素，画布最多 6400 万像素；使用明确指定的本机字体，不自动扫描系统字体。清单记录原件、渲染图、每像素摘要、引擎版本、原生运行库和字体哈希、源画布与渲染尺寸。告警摘要只移除日志时钟，其他告警仍参与比较；告警和渲染效果限制会保留。
+
+SVG 裁切坐标明确属于派生渲染图像，原始矢量文档通过附件下载；模型描述须复核。逐像素重复渲染验证证明本机结果可复现，不证明所有文字布局、滤镜或小字形的视觉效果都已独立验收。`document-vectors` 中的原件、渲染图和清单即使尚未 OCR 也会进入备份；`svg-native-validation.json` 记录源图准备，`svg-images-report.json` 记录每个来源的识别结果。
+
 PDF 的单页识别失败会记录具体页号并继续后面的页；重复或截断的页面会转入分块识别。已有哈希绑定的页面证据继续复用。PDF 页面图像的最长边仍限制为 2000 像素，分块保持的是这些渲染像素；原 PDF 另行保留，不能据此声称极小字形或复杂图示已独立验收。
 
 创建独立快照并验证恢复：

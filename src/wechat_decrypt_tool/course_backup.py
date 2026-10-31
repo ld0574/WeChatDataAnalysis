@@ -114,6 +114,14 @@ def create_snapshot(store, destination, *, reserve_gib=64):
                 *[frame["image"] for frame in value["frames"]],
             ]:
                 add(asset["file"], asset["sha256"])
+    from .course_svg_visuals import svg_evidence
+
+    for manifest in sorted((source / "document-vectors").glob("*.json")):
+        value = svg_evidence(store, manifest.stem, rehash=True)
+        if value:
+            add(str(manifest.relative_to(source)).replace("\\", "/"))
+            for key in ("original", "render"):
+                add(value[key]["file"], value[key]["sha256"])
     if resources.exists():
         for row in json.loads(resources.read_text(encoding="utf-8"))["completed"]:
             add(row["object"], row["sha256"])
@@ -186,6 +194,10 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "image-repairs-small-report.json",
         "small-image-production-validation.json",
         "small-image-validation.json",
+        "svg-native-validation.json",
+        "svg-production-validation.json",
+        "svg-images-report.json",
+        "svg-images-validation.json",
         "notebook-images-report.json",
         "image-repair-source-errors.json",
         "image-repairs-report.json",
