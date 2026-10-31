@@ -131,6 +131,7 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "notebook-source-audit.json",
         "notebook-outputs-report.json",
         "notebook-outputs-validation.json",
+        "notebook-image-audit.json",
         "spreadsheet-resource-audit.json",
         "spreadsheet-index-report.json",
         "spreadsheet-index-validation.json",
