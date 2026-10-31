@@ -241,8 +241,11 @@ class KnowledgeStore:
                 source_key TEXT NOT NULL DEFAULT '',extractor TEXT NOT NULL DEFAULT 'legacy-v1',
                 raw_digest TEXT NOT NULL DEFAULT '',UNIQUE(path,locator,digest));
               CREATE INDEX IF NOT EXISTS document_source ON documents(path,source_key,active);
+              CREATE INDEX IF NOT EXISTS document_revision_rows ON documents(path,digest);
               CREATE TABLE IF NOT EXISTS resource_revisions(path TEXT,source_key TEXT,raw_digest TEXT,
                 extractor TEXT,revision TEXT,metadata TEXT,completed REAL,PRIMARY KEY(path,source_key));
+              CREATE INDEX IF NOT EXISTS resource_parent_revision ON resource_revisions(
+                path,json_extract(metadata,'$.parent_source_key'),json_extract(metadata,'$.parent_raw_digest'));
               CREATE TABLE IF NOT EXISTS document_version_metadata(path TEXT,source_key TEXT,revision TEXT,
                 metadata TEXT,PRIMARY KEY(path,source_key,revision));
               CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(search_text,
@@ -541,6 +544,7 @@ class KnowledgeStore:
         """Atomically activate complete derived versions; preserve historical evidence IDs."""
         with self.write() as c:
             for version in versions:
+                self.checkpoint()
                 path = str(version["path"])
                 key = version["source_key"]
                 extractor = version["extractor"]
@@ -2166,6 +2170,8 @@ def main():
     nested.add_argument("--limit", type=int, default=0)
     tables = sub.add_parser("spreadsheet-courseware")
     tables.add_argument("--audit", type=Path, required=True)
+    sqlite_resources = sub.add_parser("sqlite-courseware")
+    sqlite_resources.add_argument("--audit", type=Path, required=True)
     legacy = sub.add_parser("retire-ignored-legacy")
     legacy.add_argument("--source", type=Path, required=True)
     legacy.add_argument("--audit", type=Path, required=True)
@@ -2432,6 +2438,17 @@ def main():
                     indent=2,
                 )
             )
+        return
+    if args.command == "sqlite-courseware":
+        from .course_sqlite_resources import index_sqlite_resources
+
+        with schema_lease(store.root / "sqlite-index.lock", timeout=0):
+            value = index_sqlite_resources(store, args.audit)
+        print(
+            json.dumps(
+                {"completed": len(value["completed"]), "errors": len(value["errors"])}
+            )
+        )
         return
     if args.command == "spreadsheet-courseware":
         from .course_tabular_resources import index_spreadsheets

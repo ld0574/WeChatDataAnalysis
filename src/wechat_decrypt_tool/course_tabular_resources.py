@@ -115,6 +115,27 @@ def workbook_chunks(raw, checkpoint=lambda: None):
 def index_spreadsheets(store, audit_path):
     import openpyxl
 
+    return index_audited_resources(
+        store,
+        audit_path,
+        parser=workbook_chunks,
+        kind="spreadsheet",
+        extractor="xlsx-cells-v1/openpyxl-" + openpyxl.__version__,
+    )
+
+
+def index_audited_resources(
+    store,
+    audit_path,
+    *,
+    parser,
+    kind,
+    extractor,
+    max_bytes=32 * 1024**2,
+    validate_item=lambda item: None,
+    forbid_sibling_suffixes=(),
+):
+    """Bind bounded parsers to retained bytes and every identical source alias."""
     audit = json.loads(Path(audit_path).read_text(encoding="utf-8"))
     manifest = json.loads(
         (store.root / "resources-manifest.json").read_text(encoding="utf-8")
@@ -134,12 +155,11 @@ def index_spreadsheets(store, audit_path):
             if pointer not in seen:
                 seen.add(pointer)
                 targets.append({**item, "path": path, "resource": resource})
-    extractor = "xlsx-cells-v1/openpyxl-" + openpyxl.__version__
     completed, errors, checked, parsed = [], [], set(), {}
     for item in targets:
         store.checkpoint()
         store.write_json(
-            "spreadsheet-index-progress.json",
+            kind + "-index-progress.json",
             {
                 "stage": "indexing",
                 "pid": __import__("os").getpid(),
@@ -150,50 +170,59 @@ def index_spreadsheets(store, audit_path):
             },
         )
         try:
+            validate_item(item)
             resource = item["resource"]
             source = (store.root / resource["object"]).resolve()
             if not source.is_relative_to(
                 (store.root / "resources" / "objects").resolve()
             ):
-                raise ValueError("Spreadsheet object outside retained resource root")
+                raise ValueError("Audited object outside retained resource root")
             before = source.stat()
             state = (str(source), before.st_size, before.st_mtime_ns)
             if before.st_size != resource["bytes"] or (
                 state not in checked and digest(source) != resource["sha256"]
             ):
-                raise RuntimeError("Retained spreadsheet container changed")
+                raise RuntimeError("Retained audited container changed")
             checked.add(state)
             key = archive_locator(item["chain"]) if item["chain"] else ""
             if item["chain"]:
                 with open_archive_member(
-                    source, item["chain"], checkpoint=store.checkpoint
+                    source,
+                    item["chain"],
+                    checkpoint=store.checkpoint,
+                    forbid_sibling_suffixes=forbid_sibling_suffixes,
                 ) as (entry, stream):
-                    if entry.file_size > 32 * 1024**2:
-                        raise ValueError("Spreadsheet input bound exceeded")
-                    raw = stream.read(32 * 1024**2 + 1)
+                    if entry.file_size > max_bytes:
+                        raise ValueError("Audited resource input bound exceeded")
+                    raw = stream.read(max_bytes + 1)
                     if len(raw) != entry.file_size:
-                        raise ValueError("Spreadsheet member byte count mismatch")
+                        raise ValueError("Audited resource member byte count mismatch")
             else:
-                if source.stat().st_size > 32 * 1024**2:
-                    raise ValueError("Spreadsheet input bound exceeded")
+                if any(
+                    normalized_original(item["path"] + suffix) in resources
+                    for suffix in forbid_sibling_suffixes
+                ):
+                    raise ValueError("Source has unsupported sidecars; raw retained")
+                if source.stat().st_size > max_bytes:
+                    raise ValueError("Audited resource input bound exceeded")
                 raw = source.read_bytes()
             sha = hashlib.sha256(raw).hexdigest()
             if sha != item["raw_digest"]:
-                raise RuntimeError("Spreadsheet differs from audited revision")
+                raise RuntimeError("Resource differs from audited revision")
             if store.document_revision(item["path"], key, sha, extractor) is not None:
                 completed.append(
                     {"path": item["path"], "source_key": key, "cached": True}
                 )
                 continue
             if sha not in parsed:
-                parsed[sha] = workbook_chunks(raw, store.checkpoint)
+                parsed[sha] = parser(raw, store.checkpoint)
             chunks, metadata = parsed[sha]
             after = source.stat()
             if (before.st_size, before.st_mtime_ns) != (
                 after.st_size,
                 after.st_mtime_ns,
             ):
-                raise RuntimeError("Spreadsheet container changed during indexing")
+                raise RuntimeError("Audited container changed during indexing")
             store.save_document_versions(
                 [
                     {
@@ -216,7 +245,11 @@ def index_spreadsheets(store, audit_path):
                 {
                     "path": item["path"],
                     "source_key": key,
-                    "nonempty_cells": metadata["nonempty_cells"],
+                    **{
+                        k: metadata[k]
+                        for k in ("nonempty_cells", "rows", "tables")
+                        if k in metadata
+                    },
                 }
             )
         except InterruptedError:
@@ -230,7 +263,7 @@ def index_spreadsheets(store, audit_path):
                 }
             )
         store.write_json(
-            "spreadsheet-index-report.json",
+            kind + "-index-report.json",
             {
                 "completed": completed,
                 "errors": errors,
@@ -244,9 +277,9 @@ def index_spreadsheets(store, audit_path):
         "requested": len(targets),
         "originals_not_modified": True,
     }
-    store.write_json("spreadsheet-index-report.json", result)
+    store.write_json(kind + "-index-report.json", result)
     store.write_json(
-        "spreadsheet-index-progress.json",
+        kind + "-index-progress.json",
         {
             "stage": "finished_with_errors" if errors else "batch_finished",
             "pid": __import__("os").getpid(),

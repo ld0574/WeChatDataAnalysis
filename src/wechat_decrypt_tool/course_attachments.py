@@ -94,7 +94,9 @@ def archive_locator(members):
 
 
 @contextmanager
-def open_archive_member(path, members, *, checkpoint=lambda: None):
+def open_archive_member(
+    path, members, *, checkpoint=lambda: None, forbid_sibling_suffixes=()
+):
     """Stream a leaf through bounded in-memory ZIP containers; never extract paths."""
     members = archive_members(archive_locator(members))
     with ExitStack() as stack:
@@ -121,6 +123,14 @@ def open_archive_member(path, members, *, checkpoint=lambda: None):
                     "Source archive member exceeds bounded download limit"
                 )
             if index == len(members) - 1:
+                if any(
+                    sibling.filename.replace("\\", "/")
+                    in {member + suffix for suffix in forbid_sibling_suffixes}
+                    for sibling in archive.infolist()
+                ):
+                    raise SourceVersionUnavailable(
+                        "Source has unsupported sidecars; complete raw container retained"
+                    )
                 yield entry, stack.enter_context(archive.open(entry))
                 return
             expanded += entry.file_size
