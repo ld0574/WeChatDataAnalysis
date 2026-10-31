@@ -11,6 +11,7 @@ from wechat_decrypt_tool.course_knowledge import (
 from wechat_decrypt_tool import course_audio_archive as module
 from wechat_decrypt_tool import course_mp4_edits as edits
 from wechat_decrypt_tool import course_audio_validation as validation
+from wechat_decrypt_tool import course_audio_recovery as recovery
 
 
 @pytest.fixture
@@ -130,6 +131,222 @@ def test_full_validation_detects_manifest_change_during_decode(
     monkeypatch.setattr(validation, "decoded_summary", changed)
     with pytest.raises(RuntimeError, match="changed during full validation"):
         validation.validate_archived_audio(store, source)
+
+
+@pytest.fixture
+def alternate_evidence(source, tmp_path):
+    from pathlib import Path
+
+    original = dict(source)
+    candidate = dict(source)
+    candidate_path = tmp_path / "alternate.mp4"
+    candidate_path.write_bytes(Path(source["path"]).read_bytes())
+    candidate.update(
+        path=str(candidate_path), mtime_ns=candidate_path.stat().st_mtime_ns
+    )
+    # A different original payload remains retained; tests do not decode or
+    # promote this untrusted source as healthy original audio.
+    import av
+
+    with av.open(source["path"]) as media:
+        packet = next(packet for packet in media.demux(audio=0) if packet.size > 20)
+        position = packet.pos + 12
+    raw = bytearray(Path(source["path"]).read_bytes())
+    raw[position] ^= 0xF0
+    Path(source["path"]).write_bytes(raw)
+    original.update(mtime_ns=Path(source["path"]).stat().st_mtime_ns)
+    key, other = (
+        recovery.video_key(original["path"]),
+        recovery.video_key(candidate["path"]),
+    )
+    count = module.packet_summary(original["path"])["packets"]
+    proof = {
+        "video": key,
+        "candidate_video": other,
+        "source_sha256": module.file_digest(original["path"]),
+        "candidate_sha256": module.file_digest(candidate["path"]),
+        "codec_configuration_identical": True,
+        "tracks": {
+            "audio": {
+                "source_packets": count,
+                "candidate_packets": count,
+                "timing_mismatches": 0,
+                "payload_mismatches_outside_source_decode_gaps": 0,
+            }
+        },
+    }
+    decoded = module.decoded_summary(candidate["path"])
+    health = {
+        "video": key,
+        "candidate_video": other,
+        "candidate_sha256": proof["candidate_sha256"],
+        "full_candidate_audio_healthy": True,
+        "all_intact_source_audio_packets_identical": True,
+        "ready_for_recovery_design_review": True,
+        "discontinuities": 0,
+        "pcm_digest": decoded["pcm_digest"],
+        "timeline_digest": decoded["timeline_digest"],
+        "decoded_frames": decoded["frames"],
+        "decoded_samples": decoded["samples"],
+        "first_seconds": decoded["first_seconds"],
+        "end_seconds": decoded["end_seconds"],
+    }
+    clock, first = recovery._clock(original["path"])
+    origins = {
+        "source": key,
+        "candidate": other,
+        "all_absolute_stream_metadata_and_first_packet_clocks_identical": True,
+        "source_origins": {
+            "streams": {"audio": clock},
+            "first_packets": {"audio": first},
+        },
+        "candidate_origins": {
+            "streams": {"audio": clock},
+            "first_packets": {"audio": first},
+        },
+    }
+    return original, candidate, proof, health, origins
+
+
+def test_alternate_recovery_retains_both_tracks_and_refuses_implicit_old_asr_mix(
+    tmp_path, alternate_evidence
+):
+    original, candidate, proof, health, origins = alternate_evidence
+    store = KnowledgeStore(tmp_path / "kb")
+    key = store.register(original)
+    result = recovery.prepare_alternate_audio(store, *alternate_evidence)
+    assert result["alternate_audio_verified"] and not result["original_audio_verified"]
+    assert not result["video_byte_alias"]
+    folder = store.root / "lessons" / key
+    assert module.packet_summary(
+        folder / "damaged-original-audio.m4a"
+    ) == module.packet_summary(original["path"])
+    assert module.decoded_summary(
+        folder / "alternate-audio.m4a"
+    ) == module.decoded_summary(candidate["path"])
+    with store.connect() as db:
+        video = dict(db.execute("SELECT * FROM videos WHERE id=?", (key,)).fetchone())
+    with pytest.raises(RuntimeError, match="explicit migration"):
+        recovery.transcription_audio(store, video, has_segments=True)
+    path, binding = recovery.transcription_audio(store, video, has_segments=False)
+    assert (
+        path == folder / "alternate-audio.m4a"
+        and binding["candidate_video"] == proof["candidate_video"]
+    )
+    assert recovery.transcription_audio(store, video, has_segments=True) == (
+        path,
+        binding,
+    )
+    assert recovery.prepare_alternate_audio(store, *alternate_evidence)["cached"]
+
+
+@pytest.mark.parametrize(
+    "failure", ["source_hash", "unmatched_intact_packet", "unhealthy", "clock"]
+)
+def test_alternate_recovery_rejects_inadequate_proofs(
+    tmp_path, alternate_evidence, failure
+):
+    original, candidate, proof, health, origins = alternate_evidence
+    if failure == "source_hash":
+        proof["source_sha256"] = "0" * 64
+    elif failure == "unmatched_intact_packet":
+        proof["tracks"]["audio"]["payload_mismatches_outside_source_decode_gaps"] = 1
+    elif failure == "unhealthy":
+        health["full_candidate_audio_healthy"] = False
+    else:
+        origins["source_origins"]["streams"]["audio"]["start"] = [999, 1]
+    store = KnowledgeStore(tmp_path / "kb")
+    with pytest.raises((ValueError, RuntimeError)):
+        recovery.prepare_alternate_audio(store, *alternate_evidence)
+    assert not list(store.root.glob("lessons/*/audio-recovery.json"))
+
+
+def test_recovered_routes_export_and_backup_preserve_honest_provenance(
+    tmp_path, alternate_evidence
+):
+    from fastapi.testclient import TestClient
+    from wechat_decrypt_tool.course_backup import create_snapshot, restore_snapshot
+
+    store = KnowledgeStore(tmp_path / "kb")
+    key = store.register(alternate_evidence[0])
+    recovery.prepare_alternate_audio(store, *alternate_evidence)
+    store.save_segment(key, 0, 0, 0.05, "alternate_fixture_marker")
+    page = export_review(store, key).read_text("utf-8")
+    assert "替代录制版本音轨" in page and "alternate-audio.m4a" in page
+    assert "两份视频不是字节相同副本" in page
+    snapshot = create_snapshot(store, tmp_path / "backup", reserve_gib=0)
+    restored = KnowledgeStore(
+        restore_snapshot(snapshot["snapshot"], tmp_path / "restored", reserve_gib=0)
+    )
+    for item in alternate_evidence[:2]:
+        __import__("pathlib").Path(item["path"]).unlink()
+    with TestClient(create_app(restored, "unused")) as client:
+        assert client.get("/audio/" + key).status_code == 404
+        assert client.get("/recovery-audio/" + key).status_code == 200
+        assert client.get("/damaged-audio/" + key).status_code == 200
+        assert (
+            client.get("/audio-recovery/" + key).json()["original_audio_verified"]
+            is False
+        )
+        assert "播放对应替代音轨" in client.get("/lesson/" + key).text
+        assert client.get("/recovery-audio/not-a-key").status_code == 404
+    output = restored.root / "lessons" / key / "alternate-audio.m4a"
+    raw = bytearray(output.read_bytes())
+    raw[-1] ^= 1
+    output.write_bytes(raw)
+    with TestClient(create_app(restored, "unused")) as client:
+        assert client.get("/recovery-audio/" + key).status_code == 404
+
+
+def test_transcribe_consumes_retained_alternate_with_binding_and_original_video_id(
+    tmp_path, alternate_evidence, monkeypatch
+):
+    from wechat_decrypt_tool import course_knowledge as knowledge
+
+    store = KnowledgeStore(tmp_path / "kb")
+    key = store.register(alternate_evidence[0])
+    recovery.prepare_alternate_audio(store, *alternate_evidence)
+    windows = knowledge.audio_windows
+    used = []
+
+    def checked(path):
+        used.append(path)
+        assert path.name == "alternate-audio.m4a"
+        yield from windows(path)
+
+    class Backend:
+        is_loaded = False
+        precision = "float32"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def transcribe_audio_batch(self, paths, language, **kwargs):
+            return [{"text": "retained_alternate_asr_fixture"} for _ in paths]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(knowledge, "audio_windows", checked)
+    monkeypatch.setattr("wechat_decrypt_tool.asr_worker.ProcessBackend", Backend)
+    knowledge.transcribe(store, key, tmp_path / "model")
+    assert len(used) == 1
+    exported = store.export(key)
+    assert (
+        exported["asr_audio_source"]["candidate_video"]
+        == alternate_evidence[2]["candidate_video"]
+    )
+    with store.connect() as db:
+        assert (
+            db.execute("SELECT status FROM videos WHERE id=?", (key,)).fetchone()[0]
+            == "transcribed"
+        )
+        assert (
+            db.execute(
+                "SELECT count(*) FROM segments WHERE video=?", (key,)
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_audio_endpoint_and_offline_review_link_to_verified_sound(tmp_path, source):

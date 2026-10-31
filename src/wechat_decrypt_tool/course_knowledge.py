@@ -682,6 +682,13 @@ class KnowledgeStore:
         from .course_audio_archive import verified_audio
 
         payload["audio"] = verified_audio(self, key)
+        from .course_audio_recovery import recovery_evidence
+
+        payload["audio_recovery"] = recovery_evidence(self, key)
+        binding = folder / "asr-audio-source.json"
+        payload["asr_audio_source"] = (
+            json.loads(binding.read_text("utf-8")) if binding.exists() else None
+        )
         from .course_silent_demo import retained_demo
 
         payload["silent_demo"] = retained_demo(self, key)
@@ -695,6 +702,15 @@ class KnowledgeStore:
             "模型摘要为待核对草稿，课程说法与旧 API 未经外部核实；截图为抽样，尚不可删除原视频。",
             "",
         ]
+        if payload.get("audio_recovery"):
+            lines.extend(
+                [
+                    payload["audio_recovery"]["provenance_notice"],
+                    "恢复依据：audio-recovery.json；候选录制文件哈希："
+                    + payload["audio_recovery"]["candidate_sha256"],
+                    "",
+                ]
+            )
         for s in segments:
             lines.extend(
                 [
@@ -793,6 +809,15 @@ def export_review(store, key):
             '<h2>完整无声演示原片</h2><video controls preload="metadata" style="max-width:100%" src="'
             + esc(media, quote=True)
             + '"></video>'
+        )
+
+    if payload.get("audio_recovery"):
+        parts.append(
+            "<h2>替代录制版本音轨</h2><p>"
+            + esc(payload["audio_recovery"]["provenance_notice"])
+            + '</p><audio id="recording" controls preload="metadata" src="alternate-audio.m4a"></audio>'
+            + '<p><a href="audio-recovery.json">恢复来源与校验证据</a> · '
+            + '<a href="damaged-original-audio.m4a" download>保留的原损坏音轨</a></p>'
         )
 
     def links(ids):
@@ -1182,6 +1207,11 @@ def transcribe(store, key, model_folder, *, batch_size=2):
             "UPDATE videos SET status='transcribing',error='',updated=? WHERE id=?",
             (time.time(), key),
         )
+    from .course_audio_recovery import transcription_audio
+
+    audio_path, recovery_binding = transcription_audio(
+        store, video, has_segments=bool(done)
+    )
     started = time.monotonic()
     # The caller retains the GPU lease throughout this lesson. Slow source
     # decoding or SQLite commits must not evict/reload the model between batches.
@@ -1197,7 +1227,7 @@ def transcribe(store, key, model_folder, *, batch_size=2):
     batch = []
     decoded_end = 0
     try:
-        with av.open(video["path"], metadata_errors="replace") as source:
+        with av.open(str(audio_path), metadata_errors="replace") as source:
             audio = source.streams.audio[0]
             expected_end = (
                 float((audio.start_time or 0) * audio.time_base)
@@ -1289,7 +1319,7 @@ def transcribe(store, key, model_folder, *, batch_size=2):
                 )
                 batch.clear()
 
-            for n, start, audio in audio_windows(video["path"]):
+            for n, start, audio in audio_windows(audio_path):
                 try:
                     store.checkpoint()
                 except InterruptedError:
@@ -1312,6 +1342,20 @@ def transcribe(store, key, model_folder, *, batch_size=2):
         s = Path(video["path"]).stat()
         if (s.st_size, s.st_mtime_ns) != (video["size"], video["mtime_ns"]):
             raise RuntimeError("Source changed during transcription")
+        if recovery_binding is not None:
+            from .course_audio_archive import file_digest
+
+            if (
+                file_digest(audio_path, store.checkpoint)
+                != recovery_binding["alternate_file_digest"]
+                or file_digest(
+                    audio_path.parent / "audio-recovery.json", store.checkpoint
+                )
+                != recovery_binding["recovery_manifest_digest"]
+            ):
+                raise RuntimeError(
+                    "Alternate ASR evidence changed during transcription"
+                )
         if decoded_end <= 0:
             raise RuntimeError("No audio decoded")
         if expected_end is not None and abs(decoded_end - expected_end) > 2:
@@ -1937,6 +1981,21 @@ def create_app(store, model):
                 + key
                 + '"></audio>'
             )
+        from .course_audio_recovery import recovery_evidence
+
+        recovery = recovery_evidence(store, key)
+        if recovery:
+            text += (
+                "<h2>替代录制版本音轨</h2><p>"
+                + html.escape(recovery["provenance_notice"])
+                + '</p><audio id="recording" controls preload="metadata" src="/recovery-audio/'
+                + key
+                + '"></audio><p><a href="/audio-recovery/'
+                + key
+                + '">恢复来源与校验证据</a> · <a href="/damaged-audio/'
+                + key
+                + '">保留的原损坏音轨</a></p>'
+            )
         from .course_silent_demo import retained_demo
 
         if retained_demo(store, key):
@@ -1951,8 +2010,9 @@ def create_app(store, model):
                 + html.escape(s["text"])
                 + "</p></article>"
             )
-            if audio:
-                text += f'''<button data-time="{float(s["start"]):.6f}" onclick="const a=document.getElementById('recording');a.currentTime=Number(this.dataset.time);a.play()">播放对应原声</button>'''
+            if audio or recovery:
+                label = "播放对应替代音轨" if recovery else "播放对应原声"
+                text += f'''<button data-time="{float(s["start"]):.6f}" onclick="const a=document.getElementById('recording');a.currentTime=Number(this.dataset.time);a.play()">{label}</button>'''
         for f in frames:
             text += (
                 f'<h3 id="f{f["id"]}">画面 {timestamp(f["time"])}</h3><img loading="lazy" src="/frame/{f["id"]}"><pre>'
@@ -2122,6 +2182,36 @@ def create_app(store, model):
         if not path.is_relative_to((store.root / "lessons").resolve()):
             raise HTTPException(404)
         return FileResponse(path, media_type="audio/mp4")
+
+    def recovered_asset(key, name):
+        from .course_audio_recovery import recovery_evidence
+
+        try:
+            if not recovery_evidence(store, key, rehash=True):
+                raise HTTPException(404)
+        except (OSError, ValueError, RuntimeError):
+            raise HTTPException(404) from None
+        return store.root / "lessons" / key / name
+
+    @app.get("/recovery-audio/{key}")
+    def recovery_audio(key: str):
+        return FileResponse(
+            recovered_asset(key, "alternate-audio.m4a"), media_type="audio/mp4"
+        )
+
+    @app.get("/damaged-audio/{key}")
+    def damaged_audio(key: str):
+        return FileResponse(
+            recovered_asset(key, "damaged-original-audio.m4a"),
+            media_type="audio/mp4",
+            filename="damaged-original-audio.m4a",
+        )
+
+    @app.get("/audio-recovery/{key}")
+    def audio_recovery(key: str):
+        return FileResponse(
+            recovered_asset(key, "audio-recovery.json"), media_type="application/json"
+        )
 
     @app.get("/frame/{frame_id}")
     def frame(frame_id: int):

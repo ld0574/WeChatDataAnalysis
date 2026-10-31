@@ -114,6 +114,17 @@ def create_snapshot(store, destination, *, reserve_gib=64):
             add(f"lessons/{key}/audio.m4a", value["file_digest"])
             add(f"lessons/{key}/audio.json")
             audio_count += 1
+    from .course_audio_recovery import recovery_evidence
+
+    for manifest in sorted((source / "lessons").glob("*/audio-recovery.json")):
+        key = manifest.parent.name
+        recovered = recovery_evidence(store, key, rehash=True)
+        if recovered:
+            add(f"lessons/{key}/audio-recovery.json")
+            for name, asset in recovered["files"].items():
+                add(f"lessons/{key}/{name}", asset["sha256"])
+            if (manifest.parent / "asr-audio-source.json").exists():
+                add(f"lessons/{key}/asr-audio-source.json")
     for name in (
         "inventory.json",
         "inventory-unique.json",
@@ -165,6 +176,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "audio-timeline-validation-plan.json",
         "audio-timeline-validation-report.json",
         "audio-timeline-production-validation.json",
+        "alternate-audio-recovery-report.json",
+        "alternate-audio-recovery-validation.json",
         "damaged-packet-pattern.json",
         "pdf-all-pages-plan.json",
         "pdf-source-reconciliation.json",
