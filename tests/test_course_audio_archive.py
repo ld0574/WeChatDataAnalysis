@@ -10,6 +10,7 @@ from wechat_decrypt_tool.course_knowledge import (
 )
 from wechat_decrypt_tool import course_audio_archive as module
 from wechat_decrypt_tool import course_mp4_edits as edits
+from wechat_decrypt_tool import course_audio_validation as validation
 
 
 @pytest.fixture
@@ -66,6 +67,69 @@ def test_verified_audio_corruption_is_not_overwritten(tmp_path, source):
     with pytest.raises(RuntimeError, match="archive changed"):
         module.archive_one(store, source)
     assert path.read_bytes() == b"tampered"
+
+
+def test_full_readonly_validation_upgrades_legacy_proof_without_changing_manifest(
+    tmp_path, source
+):
+    store = KnowledgeStore(tmp_path / "kb")
+    value = module.archive_one(store, source)
+    manifest = store.root / "lessons" / value["video"] / "audio.json"
+    del value["decoded"]["timeline_digest"]
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+    before = manifest.read_bytes()
+    result = validation.validate_archived_audio(store, source)
+    assert result["all_packets_pcm_and_every_frame_timestamps_identical"]
+    assert result["legacy_manifest_lacked_timeline"]
+    assert result["decoded"]["timeline_digest"]
+    assert manifest.read_bytes() == before
+
+
+def test_full_validation_rejects_interior_timing_change(tmp_path, source, monkeypatch):
+    store = KnowledgeStore(tmp_path / "kb")
+    module.archive_one(store, source)
+    decode = validation.decoded_summary
+
+    def changed(path, checkpoint):
+        result = decode(path, checkpoint)
+        if str(path).endswith("audio.m4a"):
+            result["timeline_digest"] = "interior_shift_with_same_endpoints_and_pcm"
+        return result
+
+    monkeypatch.setattr(validation, "decoded_summary", changed)
+    with pytest.raises(RuntimeError, match="every-frame timeline"):
+        validation.validate_archived_audio(store, source)
+
+
+def test_full_validation_preserves_corrupted_audio_for_review(tmp_path, source):
+    store = KnowledgeStore(tmp_path / "kb")
+    value = module.archive_one(store, source)
+    output = store.root / "lessons" / value["video"] / "audio.m4a"
+    raw = bytearray(output.read_bytes())
+    raw[-1] ^= 1
+    output.write_bytes(raw)
+    with pytest.raises(RuntimeError, match="audio hash differs"):
+        validation.validate_archived_audio(store, source)
+    assert output.read_bytes() == raw
+
+
+def test_full_validation_detects_manifest_change_during_decode(
+    tmp_path, source, monkeypatch
+):
+    store = KnowledgeStore(tmp_path / "kb")
+    value = module.archive_one(store, source)
+    manifest = store.root / "lessons" / value["video"] / "audio.json"
+    decode = validation.decoded_summary
+
+    def changed(path, checkpoint):
+        result = decode(path, checkpoint)
+        if str(path).endswith("audio.m4a"):
+            manifest.write_bytes(manifest.read_bytes() + b"\n")
+        return result
+
+    monkeypatch.setattr(validation, "decoded_summary", changed)
+    with pytest.raises(RuntimeError, match="changed during full validation"):
+        validation.validate_archived_audio(store, source)
 
 
 def test_audio_endpoint_and_offline_review_link_to_verified_sound(tmp_path, source):
@@ -158,6 +222,16 @@ def test_original_edits_repair_real_decoder_and_faststart_offsets(
     assert value["edit_repair"]["movie_timescale"] == 48000
     assert value["decoded"]["timeline_digest"]
     assert module.archive_one(store, edited_source)["cached"]
+
+
+def test_full_validation_preserves_nonzero_original_movie_clock(
+    tmp_path, edited_source
+):
+    store = KnowledgeStore(tmp_path / "kb")
+    archived = module.archive_one(store, edited_source)
+    result = validation.validate_archived_audio(store, edited_source)
+    assert result["decoded"]["first_seconds"] == 1806 / 48000
+    assert result["decoded"] == archived["decoded"]
 
 
 def test_target_decode_error_can_repair_without_ignoring_source_errors(
