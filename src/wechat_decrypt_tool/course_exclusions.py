@@ -59,6 +59,8 @@ def write_exclusions(root):
             "job",
             "pdf-ocr",
             "images-ocr",
+            "image-followup-driver",
+            "primary-static-image-validation",
             "pdf-retry-driver",
             "animation-driver",
             "small-image-driver",
@@ -137,6 +139,8 @@ def write_exclusions(root):
     backup = read("interim-backup-validation.json")
     current_structure = read("current-integrity-validation.json")
     local_query = read("course-server-live-validation.json")
+    primary_images = read("primary-static-image-validation.json")
+    image_followup = read("image-followup-validation.json")
     read("document-count-deployment-validation.json")
     read("pdf-retry-deployment.json")
     summary = {
@@ -180,6 +184,8 @@ def write_exclusions(root):
             "interim_backup": backup,
             "structural_snapshot": current_structure,
             "local_query": local_query,
+            "primary_static_images": primary_images,
+            "later_image_repairs": image_followup,
         },
         "evidence": evidence,
     }
@@ -295,6 +301,19 @@ def write_exclusions(root):
             else "全范围验收尚未确认。"
         ),
         f"- PDF：冻结计划共 {pdf.get('summary', {}).get('page_occurrences', '未知')} 个页面来源。保留原件，页面渲染最长边为 2000 像素；分块保留的是渲染像素，不能证明原生极小字形、布局或模型解读全部正确。单页失败由独立补跑报告与合并验收报告保留。",
+        "- 静态图片：主批次成功来源的全量逐项校验"
+        + (
+            "已有通过回执"
+            if primary_images.get("all_primary_successful_occurrences_verified")
+            else "尚待通过"
+        )
+        + "；后续失败补跑的独立校验"
+        + (
+            "已有通过回执"
+            if image_followup.get("all_later_failure_sources_verified")
+            else "尚待通过"
+        )
+        + "。两者范围分别保留，不以失败项补跑通过代替全部主批次成功来源的验收。模型文字与图示解读仍需复核。",
         "- Notebook：富输出的静态结构、表格与原件引用有独立回执；缺少匹配保存状态的控件不能复现交互。原 CSS、外部资源、脚本与交互运行效果未作为已完成内容。",
         "- SVG：本机固定引擎与替代字体的可重复渲染不等于原字体字形与原始视觉布局验收。原件及可直接提取的 XML 文字另行保留。",
         "- 视频：画面每 30 秒抽样并抑制近似静态图；短暂代码、鼠标操作和动画可能遗漏。原生逐帧窗口诊断只证明所查窗口，不代表全片视觉语义覆盖。",
