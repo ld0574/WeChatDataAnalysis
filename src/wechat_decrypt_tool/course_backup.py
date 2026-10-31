@@ -200,6 +200,9 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "postprocessing-repair-validation.json",
         "query-only-deployment-validation.json",
         "search-filter-production-validation.json",
+        "current-integrity-validation.json",
+        "current-integrity-notes-frames-validation.json",
+        "ready-note-production-validation.json",
         "resources-plan.json",
         "goal-audit.json",
         "teaching-image-audit.json",
@@ -371,6 +374,32 @@ def create_snapshot(store, destination, *, reserve_gib=64):
     return {"snapshot": str(snapshot), **report}
 
 
+def _validate_note_evidence(db):
+    from .course_knowledge import validate_note
+
+    evidence = {}
+    videos = {row[0] for row in db.execute("SELECT id FROM videos")}
+    for table, sign in (("segments", 1), ("frames", -1)):
+        for identifier, video in db.execute("SELECT id,video FROM " + table):
+            evidence.setdefault(video, set()).add(sign * identifier)
+    checked = 0
+    for video, raw in db.execute("SELECT video,data FROM notes WHERE status='ready'"):
+        try:
+            if video not in videos:
+                raise ValueError("Note has no registered lesson")
+            note = json.loads(raw)
+            for claim in note["concepts"] + note["relations"]:
+                if any(type(identifier) is not int for identifier in claim["evidence"]):
+                    raise ValueError("Citation IDs must be integers, not booleans")
+            validate_note(note, evidence.get(video, set()))
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeError(
+                "Snapshot note evidence is invalid or belongs to another lesson"
+            ) from None
+        checked += 1
+    return checked
+
+
 def verify_snapshot(snapshot, *, checkpoint=lambda: None):
     snapshot = Path(snapshot).resolve()
     root = snapshot.parent.parent
@@ -398,6 +427,7 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
         }
         if counts != manifest["counts"]:
             raise RuntimeError("Snapshot row counts differ from captured manifest")
+        notes_checked = _validate_note_evidence(db)
         available = {row["path"] for row in manifest["files"]}
         if any(
             row[0] not in available for row in db.execute("SELECT path FROM frames")
@@ -415,6 +445,7 @@ def verify_snapshot(snapshot, *, checkpoint=lambda: None):
         "asset_paths": len(manifest["files"]),
         "unique_objects": len(checked),
         "verified_audio_files": manifest["verified_audio_files"],
+        "ready_note_evidence_validated": notes_checked,
     }
 
 

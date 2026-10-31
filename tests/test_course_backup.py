@@ -86,6 +86,95 @@ def test_backup_corruption_is_detected_and_restore_does_not_overwrite(tmp_path):
         verify_snapshot(snapshot)
 
 
+@pytest.mark.parametrize(
+    "case", ["valid", "frame", "missing", "other_lesson", "boolean", "edge", "orphan"]
+)
+def test_snapshot_validates_ready_graph_citations_within_their_lesson(tmp_path, case):
+    store = KnowledgeStore(tmp_path / "working")
+    keys = []
+    for name in ("first", "second"):
+        source = tmp_path / (name + ".mp4")
+        source.write_bytes(name.encode())
+        key = store.register({"path": str(source), "duration_seconds": 25})
+        store.save_segment(key, 0, 0, 25, "synthetic evidence")
+        keys.append(key)
+    with store.connect() as db:
+        identifiers = {
+            video: identifier
+            for identifier, video in db.execute("SELECT id,video FROM segments")
+        }
+    citation = {
+        "valid": identifiers[keys[0]],
+        "missing": 999999,
+        "other_lesson": identifiers[keys[1]],
+        "boolean": True,
+        "edge": identifiers[keys[0]],
+        "frame": identifiers[keys[0]],
+        "orphan": identifiers[keys[0]],
+    }[case]
+    if case == "frame":
+        image = store.root / "lessons" / keys[0] / "frames" / "synthetic.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"synthetic frame evidence")
+        with store.write() as db:
+            citation = -db.execute(
+                "INSERT INTO frames(video,time,path) VALUES(?,?,?)",
+                (keys[0], 0, image.relative_to(store.root).as_posix()),
+            ).lastrowid
+    note = {
+        "summary": "synthetic",
+        "concepts": [
+            {"name": "alpha", "explanation": "synthetic", "evidence": [citation]}
+        ],
+        "relations": [],
+        "questions": [],
+    }
+    if case == "edge":
+        note["relations"] = [
+            {
+                "from": "alpha",
+                "to": "absent",
+                "relation": "synthetic",
+                "evidence": [citation],
+            }
+        ]
+    if case == "orphan":
+        note["concepts"] = []
+    with store.write() as db:
+        db.execute(
+            "INSERT INTO notes VALUES(?,?,?,?,?)",
+            (
+                "missing-video" if case == "orphan" else keys[0],
+                0,
+                json.dumps(note),
+                "synthetic",
+                "ready",
+            ),
+        )
+    if case in ("valid", "frame"):
+        result = create_snapshot(store, tmp_path / "backup", reserve_gib=0)
+        assert result["ready_note_evidence_validated"] == 1
+        assert verify_snapshot(result["snapshot"])["ready_note_evidence_validated"] == 1
+        with store.write() as db:
+            db.execute("DELETE FROM notes")
+        if case == "frame":
+            image.unlink()
+        destination = restore_snapshot(
+            result["snapshot"], tmp_path / "restored", reserve_gib=0
+        )
+        with KnowledgeStore(destination).connect() as db:
+            restored = json.loads(db.execute("SELECT data FROM notes").fetchone()[0])
+            assert restored == note
+            assert module._validate_note_evidence(db) == 1
+        if case == "frame":
+            assert (
+                destination / image.relative_to(store.root)
+            ).read_bytes() == b"synthetic frame evidence"
+    else:
+        with pytest.raises(RuntimeError, match="note evidence"):
+            create_snapshot(store, tmp_path / "backup", reserve_gib=0)
+
+
 @pytest.mark.parametrize("fail_verification", [False, True])
 def test_snapshot_connections_close_without_waiting_for_garbage_collection(
     tmp_path, monkeypatch, fail_verification
