@@ -127,6 +127,14 @@ PDF 图像页使用本地 Poppler 渲染，再交给本地 GPU 模型转录和�
 
 图片盘点只展开一层 ZIP；里面再次嵌套的 ZIP 会单列为未展开附件，不能把它们算作已完成图片覆盖。原始嵌套压缩包随容器保留。
 
+嵌套压缩包中的文字课件可继续加入索引：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge nested-courseware --audit output/course-knowledge/teaching-image-audit.json
+```
+
+该命令核对保留容器的完整 SHA-256，只在内存中展开受深度和字节预算约束的 ZIP，不执行脚本。可处理常规课件、代码以及 JSONL、TSV 等文本样例；暂不解析的类型、超限项和加密成员逐项写入 `nested-courseware-report.json`，原始容器仍保留。相同来源版本重跑复用索引；不同来源位置保留独立引用。嵌套来源的下载会逐层校验成员与最终文件哈希，可同时下载所在原始外层 ZIP。空白 PDF 页和含视觉内容的 PPTX 页继续生成视觉处理清单；对应 PDF/PPTX 渲染命令可从保留附件读取嵌套来源，无需原课程目录。
+
 ## 原声证据
 
 当前课程清单中的有声视频均为单条 AAC 音轨。`audio-archive` 将其复制到每课的 `audio.m4a`，不重新编码，不再次降低音质。验证覆盖压缩包边界和完整哈希、编解码参数、全部解码 PCM 哈希、样本数及起止时间，并记录原视频完整哈希；新生成的第二版清单还验证每个解码帧的精确时间戳，不只比较首尾。已验证的音轨重跑时校验文件哈希后复用，不覆盖被改动的音轨。

@@ -430,6 +430,7 @@ class KnowledgeStore:
             "pdf-ocr-progress",
             "images-ocr-progress",
             "teaching-image-audit-progress",
+            "nested-courseware-progress",
         ):
             path = self.root / (name + ".json")
             if path.exists():
@@ -2131,6 +2132,9 @@ def main():
     sub.add_parser("resume")
     courseware = sub.add_parser("courseware")
     courseware.add_argument("source", type=Path)
+    nested = sub.add_parser("nested-courseware")
+    nested.add_argument("--audit", type=Path, required=True)
+    nested.add_argument("--limit", type=int, default=0)
     legacy = sub.add_parser("retire-ignored-legacy")
     legacy.add_argument("--source", type=Path, required=True)
     legacy.add_argument("--audit", type=Path, required=True)
@@ -2392,6 +2396,21 @@ def main():
                     indent=2,
                 )
             )
+        return
+    if args.command == "nested-courseware":
+        from .course_nested_documents import index_nested_courseware
+
+        with schema_lease(store.root / "nested-courseware.lock", timeout=0):
+            value = index_nested_courseware(store, args.audit, limit=args.limit)
+        print(
+            json.dumps(
+                {
+                    "indexed_entities": value["indexed_entities"],
+                    "errors": len(value["errors"]),
+                    "skipped": len(value["skipped"]),
+                }
+            )
+        )
         return
     if args.command == "courseware":
         options = {}

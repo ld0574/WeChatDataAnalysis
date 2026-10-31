@@ -39,7 +39,24 @@ def pdf_targets(reports):
 
 
 @contextmanager
-def pdf_source(root, target, temporary):
+def pdf_source(root, target, temporary, *, store=None):
+    if target["source_key"].startswith("archive-chain "):
+        if store is None:
+            raise ValueError("Retained store required for nested PDF source")
+        from .course_attachments import resolve_retained_version, archive_members
+
+        members = archive_members(target["source_key"])
+        if Path(members[-1]).suffix.lower() != ".pdf":
+            raise ValueError("Nested source is not a PDF")
+        result = resolve_retained_version(store, target["path"], target["source_key"])
+        pdf = result["path"]
+        if pdf.stat().st_size > 128 * 1024**2:
+            raise ValueError("Nested PDF exceeds OCR limit")
+        digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+        yield pdf, digest
+        if hashlib.sha256(pdf.read_bytes()).hexdigest() != digest:
+            raise RuntimeError("Retained nested PDF changed during OCR")
+        return
     path = Path(target["path"]).resolve()
     root = Path(root).resolve()
     if not path.is_relative_to(root) or path.is_symlink():
@@ -186,7 +203,10 @@ def run_pdf_ocr(
             with tempfile.TemporaryDirectory(
                 prefix="pdf-ocr-", dir=store.root
             ) as temporary:
-                with pdf_source(source, target, temporary) as (pdf, digest):
+                with pdf_source(source, target, temporary, store=store) as (
+                    pdf,
+                    digest,
+                ):
                     if target["page"] is None:
                         from pypdf import PdfReader
 

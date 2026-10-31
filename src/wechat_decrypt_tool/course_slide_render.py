@@ -56,7 +56,23 @@ def validate_deck(path):
 
 
 @contextmanager
-def slide_source(source, target, temporary):
+def slide_source(source, target, temporary, *, store=None):
+    if target["source_key"].startswith("archive-chain "):
+        if store is None:
+            raise ValueError("Retained store required for nested slide source")
+        from .course_attachments import resolve_retained_version, archive_members
+
+        members = archive_members(target["source_key"])
+        if Path(members[-1]).suffix.lower() != ".pptx":
+            raise ValueError("Nested source is not a PPTX")
+        result = resolve_retained_version(store, target["path"], target["source_key"])
+        deck = result["path"]
+        validate_deck(deck)
+        raw = digest(deck)
+        yield deck, raw
+        if digest(deck) != raw:
+            raise RuntimeError("Retained nested deck changed during rendering")
+        return
     root = Path(source).resolve()
     path = Path(target["path"]).resolve()
     key = target["source_key"]
@@ -168,7 +184,9 @@ def render_slides(store, reports, source, *, limit=0, open_deck=native_powerpoin
             with tempfile.TemporaryDirectory(
                 prefix="slide-render-", dir=store.root
             ) as temporary:
-                with slide_source(source, target, Path(temporary).resolve()) as (
+                with slide_source(
+                    source, target, Path(temporary).resolve(), store=store
+                ) as (
                     deck,
                     raw,
                 ):

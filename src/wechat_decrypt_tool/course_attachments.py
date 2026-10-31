@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import shutil
 import tempfile
 import zipfile
+from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 MAX_MEMBER_BYTES = 512 * 1024**2
 CACHE_BUDGET = 2 * 1024**3
 RESERVE_BYTES = 32 * 1024**3
+MAX_ARCHIVE_CHAIN = 6
+MAX_NESTED_ZIP_BYTES = 64 * 1024**2
+NESTED_ZIP_BUDGET = 256 * 1024**2
 
 
 class SourceVersionUnavailable(LookupError):
@@ -49,6 +54,97 @@ def safe_member(name):
     return normalized
 
 
+def archive_members(locator):
+    if locator.startswith("archive-chain "):
+        try:
+            if len(locator) > 16384:
+                raise ValueError()
+            members = json.loads(locator[len("archive-chain ") :])
+            if (
+                not isinstance(members, list)
+                or not 2 <= len(members) <= MAX_ARCHIVE_CHAIN
+            ):
+                raise ValueError()
+            if any(not isinstance(name, str) for name in members):
+                raise ValueError()
+        except ValueError:
+            raise AttachmentIntegrityError(
+                "Invalid nested archive source locator"
+            ) from None
+        return [safe_member(name) for name in members]
+    if locator.startswith("archive "):
+        return [safe_member(locator[len("archive ") :])]
+    return []
+
+
+def archive_locator(members):
+    if (
+        not isinstance(members, (list, tuple))
+        or not 1 <= len(members) <= MAX_ARCHIVE_CHAIN
+    ):
+        raise AttachmentIntegrityError("Invalid archive source depth")
+    members = [safe_member(name) for name in members]
+    if len(members) == 1:
+        return "archive " + members[0]
+    value = "archive-chain " + json.dumps(
+        members, ensure_ascii=False, separators=(",", ":")
+    )
+    archive_members(value)
+    return value
+
+
+@contextmanager
+def open_archive_member(path, members, *, checkpoint=lambda: None):
+    """Stream a leaf through bounded in-memory ZIP containers; never extract paths."""
+    members = archive_members(archive_locator(members))
+    with ExitStack() as stack:
+        archive = stack.enter_context(zipfile.ZipFile(path))
+        expanded = 0
+        for index, member in enumerate(members):
+            checkpoint()
+            matches = [
+                entry
+                for entry in archive.infolist()
+                if entry.filename.replace("\\", "/") == member
+            ]
+            if len(matches) != 1:
+                raise SourceVersionUnavailable(
+                    "Source archive member missing or ambiguous"
+                )
+            entry = matches[0]
+            if entry.is_dir() or entry.flag_bits & 1:
+                raise SourceVersionUnavailable(
+                    "Source archive member is not an accessible file"
+                )
+            if entry.file_size > MAX_MEMBER_BYTES:
+                raise SourceVersionUnavailable(
+                    "Source archive member exceeds bounded download limit"
+                )
+            if index == len(members) - 1:
+                yield entry, stack.enter_context(archive.open(entry))
+                return
+            expanded += entry.file_size
+            if entry.file_size > MAX_NESTED_ZIP_BYTES or expanded > NESTED_ZIP_BUDGET:
+                raise SourceVersionUnavailable(
+                    "Nested archive memory budget exceeded; raw container retained"
+                )
+            buffer = stack.enter_context(io.BytesIO())
+            with archive.open(entry) as src:
+                copied = 0
+                for block in iter(lambda: src.read(8 * 1024**2), b""):
+                    checkpoint()
+                    copied += len(block)
+                    if copied > entry.file_size:
+                        raise AttachmentIntegrityError(
+                            "Nested archive exceeds declared size"
+                        )
+                    buffer.write(block)
+            if copied != entry.file_size:
+                raise AttachmentIntegrityError("Truncated nested archive member")
+            buffer.seek(0)
+            archive = stack.enter_context(zipfile.ZipFile(buffer))
+
+
 def source_reference(store, document_id):
     manifest = store.root / "resources-manifest.json"
     if not manifest.exists():
@@ -65,8 +161,17 @@ def source_reference(store, document_id):
         ).fetchone()
     if not re.fullmatch("[a-f0-9]{64}", row["raw_digest"] or ""):
         return None
+    context = json.loads(metadata[0]) if metadata else {}
+    key = context.get("parent_source_key", row["source_key"])
+    return retained_reference(store, row["path"], key, row["raw_digest"])
+
+
+def retained_reference(store, original_path, source_key, expected_digest):
+    manifest = store.root / "resources-manifest.json"
+    if not manifest.exists() or not re.fullmatch("[a-f0-9]{64}", expected_digest or ""):
+        return None
     value = json.loads(manifest.read_text(encoding="utf-8"))
-    target = normalized_original(row["path"])
+    target = normalized_original(original_path)
     resource = None
     for candidate in value["completed"]:
         relative = safe_member(candidate["relative_path"])
@@ -80,10 +185,9 @@ def source_reference(store, document_id):
     path = (store.root / resource["object"]).resolve()
     if not path.is_relative_to((store.root / "resources" / "objects").resolve()):
         raise AttachmentIntegrityError("Source object outside retained resources root")
-    context = json.loads(metadata[0]) if metadata else {}
-    key = context.get("parent_source_key", row["source_key"])
-    member = safe_member(key[len("archive ") :]) if key.startswith("archive ") else None
-    if member is None and row["raw_digest"] != resource["sha256"]:
+    members = archive_members(source_key)
+    member = members[-1] if members else None
+    if member is None and expected_digest != resource["sha256"]:
         # Never label a current source object as an older document's original.
         return None
     filename = PurePosixPath(
@@ -97,7 +201,8 @@ def source_reference(store, document_id):
             resource["relative_path"].replace("\\", "/")
         ).name,
         "member": member,
-        "expected_digest": row["raw_digest"],
+        "members": members,
+        "expected_digest": expected_digest,
         "filename": filename,
     }
 
@@ -112,6 +217,22 @@ def digest(path):
 
 def resolve_source(store, document_id, *, container=False):
     reference = source_reference(store, document_id)
+    return resolve_reference(store, reference, container=container)
+
+
+def resolve_retained_version(store, original_path, source_key):
+    with store.connect() as db:
+        row = db.execute(
+            "SELECT raw_digest FROM resource_revisions WHERE path=? AND source_key=?",
+            (str(original_path), source_key),
+        ).fetchone()
+    if row is None:
+        raise SourceVersionUnavailable("No indexed retained source revision")
+    reference = retained_reference(store, original_path, source_key, row[0])
+    return resolve_reference(store, reference)
+
+
+def resolve_reference(store, reference, *, container=False):
     if reference is None:
         raise SourceVersionUnavailable(
             "No hash-bound retained source for this document version"
@@ -144,28 +265,14 @@ def resolve_archive_member(store, reference, *, container=False):
     target = (cache / (expected + extension)).resolve()
     if not target.is_relative_to(cache.resolve()):
         raise AttachmentIntegrityError("Derived attachment outside cache root")
-    with zipfile.ZipFile(path) as archive:
-        matches = [
-            entry
-            for entry in archive.infolist()
-            if entry.filename.replace("\\", "/") == member
-        ]
-        if len(matches) != 1:
-            raise SourceVersionUnavailable("Source archive member missing or ambiguous")
-        entry = matches[0]
-        if entry.is_dir() or entry.flag_bits & 1:
-            raise SourceVersionUnavailable(
-                "Source archive member is not an accessible file"
-            )
-        if entry.file_size > MAX_MEMBER_BYTES:
-            raise SourceVersionUnavailable(
-                "Source archive member exceeds bounded download limit"
-            )
+    with open_archive_member(path, reference.get("members") or [member]) as (
+        entry,
+        src,
+    ):
         if container:
             member_hash = hashlib.sha256()
-            with archive.open(entry) as src:
-                for block in iter(lambda: src.read(8 * 1024**2), b""):
-                    member_hash.update(block)
+            for block in iter(lambda: src.read(8 * 1024**2), b""):
+                member_hash.update(block)
             if member_hash.hexdigest() != expected:
                 raise SourceVersionUnavailable(
                     "Retained archive member differs from cited revision"
@@ -192,15 +299,14 @@ def resolve_archive_member(store, reference, *, container=False):
                     temporary = Path(dst.name)
                     copied = 0
                     raw_hash = hashlib.sha256()
-                    with archive.open(entry) as src:
-                        for block in iter(lambda: src.read(8 * 1024**2), b""):
-                            copied += len(block)
-                            if copied > entry.file_size:
-                                raise AttachmentIntegrityError(
-                                    "Archive member exceeds declared size"
-                                )
-                            raw_hash.update(block)
-                            dst.write(block)
+                    for block in iter(lambda: src.read(8 * 1024**2), b""):
+                        copied += len(block)
+                        if copied > entry.file_size:
+                            raise AttachmentIntegrityError(
+                                "Archive member exceeds declared size"
+                            )
+                        raw_hash.update(block)
+                        dst.write(block)
                 if copied != entry.file_size or raw_hash.hexdigest() != expected:
                     raise SourceVersionUnavailable(
                         "Retained archive member differs from cited revision"
