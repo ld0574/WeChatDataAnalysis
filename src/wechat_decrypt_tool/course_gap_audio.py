@@ -275,6 +275,21 @@ def gap_evidence(store, key, *, rehash=False):
         seen.add(clip["file"])
         start = Fraction(*clip["source_frame_start_rational"])
         end = Fraction(*clip["source_frame_end_rational"])
+        working_start = Fraction(*clip["start_rational"])
+        working_end = Fraction(*clip["end_rational"])
+        if (
+            working_start != start
+            or working_end - working_start != Fraction(clip["samples"], RATE)
+            or abs(working_end - end) > Fraction(2, RATE)
+            or clip["samples"] <= 0
+            or clip["start"] != float(working_start)
+            or clip["end"] != float(working_end)
+            or abs(Fraction(*clip["resampler_first_output_rational"]) - start)
+            > Fraction(1, RATE)
+        ):
+            raise RuntimeError(
+                "Gap recovery working clock differs from source intervals"
+            )
         if start < cursor or end <= start:
             raise RuntimeError("Gap recovery source intervals overlap")
         if start > cursor:

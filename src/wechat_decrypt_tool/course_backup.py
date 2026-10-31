@@ -132,11 +132,14 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         gaps = gap_evidence(store, key, rehash=True)
         if gaps:
             add(f"lessons/{key}/audio-gap-recovery.json")
+            if (manifest.parent / "asr-gap-source.json").exists():
+                add(f"lessons/{key}/asr-gap-source.json")
             for asset in [gaps["original_packets"], *gaps["clips"]]:
                 add(f"lessons/{key}/{asset['file']}", asset["sha256"])
     for name in (
         "inventory.json",
         "inventory-unique.json",
+        "audio-preparation-plan.json",
         "video-hashes.json",
         "recovered-media.json",
         "partial-download-full-validation.json",
