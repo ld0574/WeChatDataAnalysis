@@ -2,7 +2,9 @@ import sqlite3
 
 import pytest
 
-from wechat_decrypt_tool.course_archive_integrity import audit_document_locations
+from wechat_decrypt_tool.course_archive_integrity import (
+    FTS_BINDINGS, audit_document_locations, audit_fts_indexes,
+)
 
 
 def fixture_db():
@@ -87,3 +89,101 @@ def test_readonly_wal_snapshot_stays_consistent_while_writer_appends(tmp_path):
     assert audit_document_locations(reader)['duplicate_active_document_locations'] == 1
     reader.close()
     writer.close()
+
+
+def fts_fixture():
+    db = sqlite3.connect(':memory:')
+    for index, source in FTS_BINDINGS:
+        db.execute(f'CREATE TABLE {source}(id INTEGER PRIMARY KEY,search_text TEXT)')
+        db.execute(f'CREATE VIRTUAL TABLE {index} USING fts5(search_text,content={source},content_rowid=id)')
+        db.execute(f'INSERT INTO {source} VALUES(1,?)', ('alpha beta 中文',))
+        db.execute(f'INSERT INTO {index}(rowid,search_text) VALUES(1,?)', ('alpha beta 中文',))
+    db.commit()
+    return db
+
+
+def test_native_fts_check_covers_all_indexes_without_changing_snapshot():
+    db = fts_fixture()
+    db.execute('BEGIN')
+    db.execute("INSERT INTO segments VALUES(2,'retained pending row')")
+    db.execute("INSERT INTO segment_fts(rowid,search_text) VALUES(2,'retained pending row')")
+    db.commit()
+    before = db.serialize()
+    events = []
+    assert audit_fts_indexes(db, progress=lambda **x: events.append(x)) == {
+        'segment_fts': 2, 'visual_fts': 1, 'document_fts': 1,
+    }
+    assert not db.in_transaction
+    assert db.serialize() == before
+    assert len(events) == 3
+    db.close()
+
+
+def test_native_fts_check_refuses_to_flush_a_callers_pending_transaction():
+    db = fts_fixture()
+    db.execute("INSERT INTO segments VALUES(2,'pending row')")
+    with pytest.raises(ValueError, match='committed snapshot'):
+        audit_fts_indexes(db)
+    assert db.in_transaction
+    db.rollback()
+    assert db.execute('SELECT count(*) FROM segments').fetchone()[0] == 1
+    db.close()
+
+
+@pytest.mark.parametrize('index,source', FTS_BINDINGS)
+def test_native_fts_check_rejects_wrong_non_probe_postings(index, source):
+    db = fts_fixture()
+    # The old alpha-only probe succeeds, yet beta's missing posting must fail.
+    db.execute(f"INSERT INTO {index}({index},rowid,search_text) VALUES('delete',1,'alpha beta 中文')")
+    db.execute(f"INSERT INTO {index}(rowid,search_text) VALUES(1,'alpha wrong 中文')")
+    db.commit()
+    assert db.execute(f'SELECT rowid FROM {index} WHERE {index} MATCH ?', ('alpha',)).fetchone()[0] == 1
+    before = db.serialize()
+    with pytest.raises(sqlite3.DatabaseError):
+        audit_fts_indexes(db)
+    assert db.serialize() == before
+    assert not db.in_transaction
+    db.close()
+
+
+@pytest.mark.parametrize('kind', ['missing_row', 'extra_row'])
+def test_native_fts_check_rejects_missing_and_extra_index_rows(kind):
+    db = fts_fixture()
+    if kind == 'missing_row':
+        db.execute("INSERT INTO documents VALUES(2,'unindexed source')")
+    else:
+        db.execute("INSERT INTO document_fts(rowid,search_text) VALUES(2,'orphan index')")
+    db.commit()
+    with pytest.raises(sqlite3.DatabaseError):
+        audit_fts_indexes(db)
+    db.close()
+
+
+def test_native_fts_check_honors_cancellation_and_releases_savepoint():
+    db = fts_fixture()
+
+    def cancel():
+        raise InterruptedError('cancelled')
+
+    with pytest.raises(InterruptedError):
+        audit_fts_indexes(db, checkpoint=cancel)
+    assert not db.in_transaction
+    db.close()
+
+
+@pytest.mark.parametrize('journal_mode', ['DELETE', 'WAL'])
+def test_native_fts_audit_leaves_file_database_bytes_unchanged(tmp_path, journal_mode):
+    path = tmp_path / 'isolated.sqlite3'
+    memory = fts_fixture()
+    disk = sqlite3.connect(path)
+    memory.backup(disk)
+    disk.execute('PRAGMA journal_mode=' + journal_mode)
+    disk.close()
+    memory.close()
+    before = path.read_bytes()
+    disk = sqlite3.connect(path)
+    try:
+        assert len(audit_fts_indexes(disk)) == 3
+    finally:
+        disk.close()
+    assert path.read_bytes() == before

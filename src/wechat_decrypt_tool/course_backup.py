@@ -205,6 +205,7 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "ready-note-production-validation.json",
         "answer-citation-only-deployment-validation.json",
         "qa-citation-validation.json",
+        "interim-backup-validation.json",
         "resources-plan.json",
         "goal-audit.json",
         "teaching-image-audit.json",

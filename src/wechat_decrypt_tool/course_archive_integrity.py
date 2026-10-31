@@ -3,6 +3,46 @@
 from __future__ import annotations
 
 import sys
+import sqlite3
+
+FTS_BINDINGS = (
+    ('segment_fts', 'segments'),
+    ('visual_fts', 'frames'),
+    ('document_fts', 'documents'),
+)
+
+
+def audit_fts_indexes(db, *, checkpoint=lambda: None, progress=lambda **kwargs: None):
+    """Check every FTS posting against every external-content search_text row.
+
+    Run on an isolated snapshot/restore connection: FTS5 expresses its native
+    check as an INSERT and therefore requires a writable handle. A savepoint
+    rolls back command side effects on success and failure. Rank=1 is essential:
+    without it FTS5 does not compare the index with external content. This
+    includes inactive document revisions; it proves index correspondence, not
+    source extraction accuracy or semantic retrieval quality.
+    """
+    if db.in_transaction:
+        raise ValueError('Full FTS audit requires an isolated committed snapshot')
+    counts = {}
+    db.execute('SAVEPOINT course_full_fts_check')
+    try:
+        for index, source in FTS_BINDINGS:
+            checkpoint()
+            progress(index=index, source_table=source)
+            db.execute(f"INSERT INTO {index}({index},rank) VALUES('integrity-check',1)")
+            counts[index] = db.execute(f'SELECT count(*) FROM {source}').fetchone()[0]
+            checkpoint()
+    except BaseException:
+        try:
+            db.execute('ROLLBACK TO course_full_fts_check')
+            db.execute('RELEASE course_full_fts_check')
+        except sqlite3.Error:
+            pass
+        raise
+    db.execute('ROLLBACK TO course_full_fts_check')
+    db.execute('RELEASE course_full_fts_check')
+    return counts
 
 
 def audit_document_locations(
