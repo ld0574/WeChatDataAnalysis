@@ -116,6 +116,17 @@ PDF 图像页使用本地 Poppler 渲染，再交给本地 GPU 模型转录和�
 
 所有课程模型请求在发送资料前检查 Ollama 模型确为本地安装的权重，拒绝远程模型标记；仅仅使用 localhost 地址不足以满足资料不外传的要求。
 
+已保留的独立教学图片和 ZIP 内图片可先盘点，再用本地视觉模型加入搜索。两个命令均只读取 `resources-manifest.json` 对应的归档对象，原课程目录缺失时仍可运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge image-audit
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_knowledge --root output/course-knowledge --model qwen3.5:9b image-ocr --audit output/course-knowledge/teaching-image-audit.json --wait
+```
+
+盘点分别列出静态候选、动画、矢量图、小尺寸资产和读取限制，静态候选不会被误报为已识别。相同字节的静态图片只推理一次，同时保留每处来源引用；重跑复用完整分区缓存和已有证据版本。识别前核对容器与图片 SHA-256，保留原始分辨率，按 EXIF 方向展示，并将透明背景合成白底便于阅读。生成图片预算 4 GiB，另留至少 32 GiB 空间。原文件仍在可下载附件中，模型解读明确标为待复核草稿。动画和矢量图保留原件，但此命令不声称已覆盖运动信息或完成矢量渲染。
+
+图片盘点只展开一层 ZIP；里面再次嵌套的 ZIP 会单列为未展开附件，不能把它们算作已完成图片覆盖。原始嵌套压缩包随容器保留。
+
 ## 原声证据
 
 当前课程清单中的有声视频均为单条 AAC 音轨。`audio-archive` 将其复制到每课的 `audio.m4a`，不重新编码，不再次降低音质。验证覆盖压缩包边界和完整哈希、编解码参数、全部解码 PCM 哈希、样本数及起止时间，并记录原视频完整哈希；新生成的第二版清单还验证每个解码帧的精确时间戳，不只比较首尾。已验证的音轨重跑时校验文件哈希后复用，不覆盖被改动的音轨。

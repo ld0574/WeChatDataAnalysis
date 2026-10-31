@@ -122,6 +122,10 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "model-manifest.json",
         "resources-plan.json",
         "goal-audit.json",
+        "teaching-image-audit.json",
+        "images-ocr-report.json",
+        "source-audio-error-audit.json",
+        "source-audio-ffmpeg-crosscheck.json",
     ):
         if (source / name).exists():
             add(name)

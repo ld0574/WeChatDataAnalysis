@@ -11,19 +11,58 @@ from .course_pdf_ocr import local_model_digest
 
 
 def describe_frame(store, frame, model, chat):
-    from PIL import Image
-
     path = (store.root / frame["path"]).resolve()
     if not path.is_relative_to(
         (store.root / "lessons" / frame["video"] / "frames").resolve()
     ):
         raise ValueError("Frame OCR image outside lesson evidence root")
+    return _describe_image(
+        store,
+        path,
+        store.root / "lessons" / frame["video"] / "frame-ocr-cache",
+        frame["path"],
+        "frame-vision-v2",
+        model,
+        chat,
+    )
+
+
+def describe_retained_image(store, image, model, chat, *, expected_model_digest=None):
+    path = (store.root / image).resolve()
+    if not path.is_relative_to((store.root / "document-visuals").resolve()):
+        raise ValueError("Teaching image outside retained visual evidence root")
+    return _describe_image(
+        store,
+        path,
+        store.root / "document-visuals" / "image-ocr-cache",
+        image,
+        "image-vision-v1",
+        model,
+        chat,
+        expected_model_digest,
+    )
+
+
+def _describe_image(
+    store,
+    path,
+    cache_root,
+    relative_path,
+    policy_kind,
+    model,
+    chat,
+    expected_model_digest=None,
+):
+    from PIL import Image
+
     raw = path.read_bytes()
     source_digest = hashlib.sha256(raw).hexdigest()
     model_digest = local_model_digest(model)
-    policy = "frame-vision-v2-overlap64-depth3/" + model + "@" + model_digest
+    if expected_model_digest is not None and model_digest != expected_model_digest:
+        raise RuntimeError("Local vision model changed during image archival")
+    policy = policy_kind + "-overlap64-depth3/" + model + "@" + model_digest
     identity = hashlib.sha256((source_digest + "\0" + policy).encode()).hexdigest()
-    cache = store.root / "lessons" / frame["video"] / "frame-ocr-cache" / identity
+    cache = cache_root / identity
     cache.mkdir(parents=True, exist_ok=True)
     with Image.open(io.BytesIO(raw)) as original:
         original = original.convert("RGB")
@@ -133,7 +172,7 @@ def describe_frame(store, frame, model, chat):
             "full_vertical_extent_covered": regions[0]["top"] == 0
             and regions[-1]["bottom"] == height
             and all(a["bottom"] >= b["top"] for a, b in zip(regions, regions[1:])),
-            "raw_image_retained": frame["path"],
+            "raw_image_retained": relative_path,
             "review_required": True,
         },
     )

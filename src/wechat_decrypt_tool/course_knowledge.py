@@ -428,6 +428,8 @@ class KnowledgeStore:
             "slides-ocr-progress",
             "silent-demo-progress",
             "pdf-ocr-progress",
+            "images-ocr-progress",
+            "teaching-image-audit-progress",
         ):
             path = self.root / (name + ".json")
             if path.exists():
@@ -2146,6 +2148,11 @@ def main():
     slide_ocr.add_argument("--render-report", type=Path, required=True)
     slide_ocr.add_argument("--limit", type=int, default=0)
     slide_ocr.add_argument("--wait", action="store_true")
+    sub.add_parser("image-audit")
+    images = sub.add_parser("image-ocr")
+    images.add_argument("--audit", type=Path, required=True)
+    images.add_argument("--limit", type=int, default=0)
+    images.add_argument("--wait", action="store_true")
     audio = sub.add_parser("audio-archive")
     audio.add_argument("--inventory", type=Path, required=True)
     audio.add_argument("--limit", type=int, default=0)
@@ -2303,6 +2310,35 @@ def main():
             json.dumps(
                 {
                     "processed": len(value["completed"]),
+                    "errors": len(value["errors"]),
+                    "deferred_gpu": value["deferred_gpu"],
+                }
+            )
+        )
+        return
+    if args.command == "image-audit":
+        from .course_image_audit import audit_images
+
+        with schema_lease(store.root / "images-audit.lock", timeout=0):
+            print(json.dumps(audit_images(store)))
+        return
+    if args.command == "image-ocr":
+        from .course_image_ocr import run_image_ocr
+
+        with schema_lease(store.root / "images-ocr.lock", timeout=0):
+            value = run_image_ocr(
+                store,
+                args.audit,
+                args.model,
+                local_chat,
+                gpu_lease,
+                limit=args.limit,
+                wait=args.wait,
+            )
+        print(
+            json.dumps(
+                {
+                    "completed": len(value["completed"]),
                     "errors": len(value["errors"]),
                     "deferred_gpu": value["deferred_gpu"],
                 }
