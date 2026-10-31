@@ -287,6 +287,19 @@ PDF 独立验收重新打开保留原件并核对真实页数，用本机 Popple
 
 运行期间的快照保留当前已完成数据，清单明确标记整个课程归档尚未验收；不能据此删除未完成课程。尚未提交的媒体不进入快照。离线复核页可在恢复后从数据库用 Review 重新生成，模型权重和 Python 运行环境需另行保留或安装，本命令不复制它们。
 
+GPU ASR 和本地 Ollama 模型可以单独制作离线权重包：
+
+```powershell
+$env:PYTHONPATH = (Join-Path $PWD 'src')
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_model_bundle create --destination '<备份根目录>\model-bundles\qwen-course' --asr-root '.\voice_models\qwen3-asr-06b-hf' --ollama-root '<实际 OLLAMA_MODELS 目录>' --model 'qwen3.5:9b' --expected-manifest '<本机 Ollama 已安装所选模型的完整 digest>'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_model_bundle verify --bundle '<权重包目录>'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_model_bundle restore --bundle '<权重包目录>' --destination '<空的模型恢复目录>'
+```
+
+权重包对照本项目固定的 ASR 资产清单和所选 Ollama 原生清单，复制并独立重算每个配置、分词器、投影器、模型、模板、许可证和参数对象的 SHA-256。新版 Ollama 标签可能包装平台清单；此时仅导出 digest 严格对应的原生已安装版本，按传统标签位置保存其原始字节及全部引用层，不下载其他平台变体。账户密钥、历史记录、其他模型、下载缓存和课程资料不进入权重包。中断后复用已验证对象，恢复不覆盖非空目录；创建和恢复均逐文件/分块检查空间，默认另留 32 GiB。
+
+恢复后的 `asr/qwen3-asr-06b-hf` 可传给 Run 的 `--asr-model`，`ollama` 子目录是恢复后的 `OLLAMA_MODELS`。迁移时保留相同项目版本及整个备份根目录中的 `model-bundles`，不要只复制课程快照的 `objects` 和 `snapshots`。`model-bundle-reference.json` 只记录外部权重包的相对位置与清单哈希，快照不会再次复制模型文件。包内记录基础 Python 与独立 GPU 组件的包版本，但不包含 Python、Ollama 可执行文件、GPU 驱动或渲染器；权重哈希和独立文件恢复通过不代表目标机器已经能进行 GPU 推理，完整迁移仍须安装运行组件并验证实际推理。
+
 恢复前会按目标路径估算数据库及证据文件的写入量，包括相同备份对象恢复到多个路径的副本。默认保留 32 GiB 空间，可通过恢复命令的 `--reserve-gib` 调整；空间不足时不创建恢复目录。逐个复制文件前还会检查余量，防止其他进程占用空间后继续写满磁盘。中途停止时保留已恢复部分供检查，原备份不变。
 
 ## 视频删除前的验收

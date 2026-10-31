@@ -190,6 +190,8 @@ def create_snapshot(store, destination, *, reserve_gib=64):
         "recovered-media.json",
         "partial-download-full-validation.json",
         "model-manifest.json",
+        "model-bundle-reference.json",
+        "model-bundle-validation.json",
         "resources-plan.json",
         "goal-audit.json",
         "teaching-image-audit.json",
