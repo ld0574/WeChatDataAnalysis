@@ -349,7 +349,10 @@ def create_app(store, model="qwen3.5:9b"):
         from .course_wiki import Wiki
 
         try:
-            return Wiki(store.root).catalog()
+            value = Wiki(store.root).catalog()
+            if getattr(store, "snapshot_info", None):
+                value = {**value, "published_snapshot": store.snapshot_info}
+            return value
         except (OSError, ValueError):
             raise HTTPException(503, "主题文章目录读取失败") from None
 
@@ -367,6 +370,8 @@ def create_app(store, model="qwen3.5:9b"):
     @app.get("/wiki/api/coverage")
     def wiki_coverage():
         # Read a published receipt only: HTTP requests must never scan the archive.
+        if getattr(store, "snapshot_info", None):
+            raise HTTPException(503, "已发布 Wiki 快照不包含实时全量整理进度；文章、图片和检索可离线使用")
         try:
             value = json.loads((store.root / "wiki" / "coverage.json").read_bytes())
             if value["policy"] != "wiki-whole-source-ledger-v1":

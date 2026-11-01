@@ -48,6 +48,9 @@ function save(key, value) {
 function notice(text) {
   return el("div", text, "notice");
 }
+function snapshotNotice(catalog) {
+  if (catalog.published_snapshot) main.append(notice("正在阅读已发布 Wiki 的独立快照。包含创建时的文章与引用图片，不含全部课程素材或实时整理进度。阅读和自测记录保存在当前浏览器，更换浏览器或端口需另行迁移。"));
+}
 function heading(title, eyebrow) {
   if (eyebrow) main.append(el("div", eyebrow, "eyebrow"));
   main.append(el("h1", title));
@@ -181,6 +184,7 @@ async function home(version) {
   ]);
   if (version !== routeVersion) return;
   heading("把知识读成文章", "本地课程 Wiki");
+  snapshotNotice(wiki);
   main.append(
     el(
       "p",
@@ -303,6 +307,7 @@ async function article(id, version, targetSection) {
   activeReading = id;
   main.append(link("← 返回主题文章", "#home"));
   heading(a.title, "主题文章 / 本地草稿");
+  snapshotNotice(versions);
   const metadata = versions.articles.find(r => r.id === id);
   if (metadata?.superseded_by) main.append(link("已有更新修订草稿 →", "#article=" + metadata.superseded_by));
   if (p.revision) main.append(link("查看修订前版本与其学习记录", "#article=" + p.revision.parent_article));
