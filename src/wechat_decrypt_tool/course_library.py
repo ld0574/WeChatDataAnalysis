@@ -403,6 +403,17 @@ def create_app(store, model="qwen3.5:9b"):
         except (OSError, ValueError, TypeError):
             raise HTTPException(503, "来源对照记录校验失败，文章仍可阅读") from None
 
+    @app.get("/wiki/api/completeness/{key}")
+    def wiki_completeness(key: str, job: str | None = None):
+        from .course_wiki_completeness import published_report
+
+        try:
+            return published_report(store.root, key, job=job)
+        except KeyError:
+            raise HTTPException(404, "未找到主题文章或遗漏检查记录") from None
+        except (OSError, ValueError, TypeError):
+            raise HTTPException(503, "遗漏检查记录校验失败，文章仍可阅读") from None
+
     @app.get("/wiki/api/search")
     def wiki_search(q: str):
         from .course_wiki import Wiki
@@ -417,7 +428,11 @@ def create_app(store, model="qwen3.5:9b"):
 
     @app.get("/")
     def home():
-        return FileResponse(resources / "course_library.html", media_type="text/html")
+        return FileResponse(
+            resources / "course_library.html",
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/library-assets/{name}")
     def asset(name: str):
@@ -427,7 +442,11 @@ def create_app(store, model="qwen3.5:9b"):
         }
         if name not in allowed:
             raise HTTPException(404)
-        return FileResponse(resources / name, media_type=allowed[name])
+        return FileResponse(
+            resources / name,
+            media_type=allowed[name],
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/library/api/catalog")
     def catalog():

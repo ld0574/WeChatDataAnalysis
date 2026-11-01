@@ -232,6 +232,7 @@ class DraftJob:
         *,
         pipeline=POLICY,
         recipe_extra=None,
+        job_directory="jobs",
     ):
         self.pipeline = pipeline
         self.store, self.packet, self.model, self.model_digest = (
@@ -253,7 +254,9 @@ class DraftJob:
         if recipe_extra is not None:
             recipe["extra"] = recipe_extra
         self.key = digest(canonical(recipe))[:32]
-        self.root = store.root / "wiki" / "jobs" / self.key
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", job_directory):
+            raise ValueError("wiki_invalid_job_directory")
+        self.root = store.root / "wiki" / job_directory / self.key
         self.root.mkdir(parents=True, exist_ok=True)
         self.completed = 0
         self.total = 6
@@ -417,6 +420,7 @@ class DraftJob:
                             "image_",
                             "code_",
                             "revision_",
+                            "omissions_",
                         )
                     )
                     else type(exc).__name__

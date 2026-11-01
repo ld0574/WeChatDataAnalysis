@@ -354,6 +354,48 @@ async function article(id, version, targetSection) {
     }
   }
   readCrosscheck();
+  const omissionBox = el("details", undefined, "source-omissions");
+  omissionBox.append(el("summary", "遗漏检查 · 原文是否讲进文章"));
+  const omissionStatus = el("p", "正在读取遗漏检查…", "meta");
+  omissionBox.append(omissionStatus);
+  main.append(omissionBox);
+  async function readOmissions() {
+    try {
+      const report = await api("/wiki/api/completeness/" + encodeURIComponent(id));
+      if (version !== routeVersion) return;
+      if (report.state === "model_omissions_complete") {
+        const c = report.summary;
+        omissionStatus.textContent = `本机 ${report.model} 判断：已讲到 ${c.covered} 段、部分讲到 ${c.partial} 段、遗漏 ${c.missing} 段、模型认为无需展开 ${c.not_essential} 段、无法判断 ${c.unclear} 段。只检查本篇选定原文；模型可能漏判或误判，不代表整门课程或主题完整。`;
+        if (report.unassigned_source_ids.length) omissionBox.append(notice(`另有 ${report.unassigned_source_ids.length} 份固定来源未进入本次章节检查，仍待补查。`));
+        if (c.missing || c.partial || c.unclear) omissionBox.before(notice("遗漏检查发现待补内容，请展开检查原文与章节；这篇文章仍是草稿。"));
+        const labels = { covered: "已讲到", missing: "遗漏", partial: "部分讲到", not_essential: "模型认为无需展开", unclear: "无法判断" };
+        for (const chapter of report.chapters) {
+          const chapterBox = el("details", undefined, "omission-chapter");
+          const pending = chapter.reviews.filter(r => ["missing", "partial", "unclear"].includes(r.coverage)).length;
+          chapterBox.append(el("summary", `${chapter.heading} · ${pending} 个范围待核查`));
+          for (const row of chapter.reviews) {
+            const result = el("div", undefined, "result");
+            result.append(link(`${chapter.heading} · ${labels[row.coverage]}`, "#article=" + id + "/section-" + chapter.stage.slice(8)), el("p", row.reason), el("blockquote", row.original.quote));
+            refs(result, [row.original.source], p);
+            for (const target of row.article_evidence) {
+              const section = /^section-\d+/.exec(target)?.[0] || (target.startsWith("quiz-") ? "quiz" : target.startsWith("pitfalls-") ? "pitfalls" : "objectives");
+              result.append(link("对照文章位置", "#article=" + id + "/" + section));
+            }
+            chapterBox.append(result);
+          }
+          omissionBox.append(chapterBox);
+        }
+      } else if (["waiting_gpu", "generating", "assembling"].includes(report.state)) {
+        omissionStatus.textContent = `遗漏检查${report.state === "waiting_gpu" ? "正在等待 GPU" : "正在进行"} · ${report.completed_stages}/${report.total_stages} 章已保存。`;
+        setTimeout(readOmissions, 10000);
+      } else {
+        omissionStatus.textContent = report.state === "not_started" ? "尚未检查原文中的知识是否被文章遗漏。已有句子有出处，不等于内容完整。" : "遗漏检查未完成，断点保留；不能当作完整性检查通过。";
+      }
+    } catch {
+      if (version === routeVersion) omissionStatus.textContent = "遗漏检查记录暂不可读取；正文仍可阅读，完整性待复核。";
+    }
+  }
+  readOmissions();
   const body = el("article", undefined, "article-body");
   const sections = [
     ["学习目标", "objectives"],
