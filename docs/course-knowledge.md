@@ -415,3 +415,17 @@ $env:PYTHONPATH = Join-Path $PWD 'src'
 “原文支持／原文不支持／证据不足”是个人复核草稿，只保存在本浏览器的本次输入和结果指纹下，可导出 JSON；保存失败会提示导出。图谱不自动访问网络，不向模型发送材料，不写回生产数据，也不把个人标记自动计为正式语义验收。完整图可显示不代表已具备替代视频的质量。
 
 可用空间低于 8 GiB 时暂停。全量耗时应依据本机课程样本和去重后的时长估算，不能用短微信语音的测速推算长课。未通过验收前，保留原视频和原位置的所有非视频资料。
+
+
+### SVG 渲染环境的独立本地备份
+
+`tools/course_svg_environment.py` 保留与原渲染记录一致的 Node、resvg 2.6.2 原生库和四份明确字体。它与主 Python／GPU 环境分开保存，不会改写正在复制的冻结环境计划。运行入口为 `python -m tools.course_svg_environment`；`create` 需要原运行目录、字体目录、原 SVG 渲染清单和新的目标目录，`restore` 要求新的空目录，两个操作均保留默认 32 GiB 空间。
+
+本机已验证的正式副本为 `C:\Users\Administrator\Documents\CourseKnowledgeBackups\extraction-environments\svg-resvg-20261102`。无需原 Node 安装或项目 Python 即可在 PowerShell 验证文件并执行合成渲染：
+
+```powershell
+$svgBundle = 'C:\Users\Administrator\Documents\CourseKnowledgeBackups\extraction-environments\svg-resvg-20261102'
+& (Join-Path $svgBundle 'node/node.exe') (Join-Path $svgBundle 'probe.js')
+```
+
+探测校验已登记文件哈希，约束 Node 模块来自副本，禁用系统字体加载，并比较合成 PNG 的固定哈希。此检查不证明全部图示语义或原作者字体布局一致。本机另外使用独立恢复副本重建全部 5 份已保留 SVG，逐像素与归档一致；证据位于 `wiki/svg-environment-20261102-validation.json`。该补充包不包含课程资料、Python、ASR 或其他提取依赖，不能作为删除原视频的依据。
