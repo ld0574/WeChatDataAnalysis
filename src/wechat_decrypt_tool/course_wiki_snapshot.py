@@ -6,6 +6,7 @@ import argparse
 import importlib.metadata
 import json
 import math
+import re
 import shutil
 import time
 import uuid
@@ -75,6 +76,112 @@ def revision_dependencies(root, value):
         raise ValueError("snapshot_revision_dependency_invalid") from None
 
 
+def writer_dependencies(root, publication):
+    """Follow frozen writer recipes, including unpublished reused checkpoints."""
+    primary = root / "wiki/jobs" / publication["id"]
+    if not (primary / "manifest.json").exists():
+        if publication["pipeline"] in {
+            "local-topic-wiki-staged-v1",
+            "wiki-chapter-scoped-synthesis-v1",
+            "wiki-source-bound-revision-v1",
+        }:
+            raise ValueError("snapshot_writer_manifest_missing")
+        return []
+    folders, visiting = {}, set()
+
+    def visit(key, parent=None):
+        if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{32}", key):
+            raise ValueError("snapshot_writer_dependency_invalid_id")
+        if key in visiting:
+            raise ValueError("snapshot_writer_dependency_cycle")
+        folder = inside(root, "wiki/jobs/" + key)
+        try:
+            manifest = json.loads((folder / "manifest.json").read_bytes())
+            recipe = manifest["recipe"]
+            sha = digest(canonical(recipe))
+            if (
+                manifest["id"] != key
+                or manifest["recipe_sha256"] != sha
+                or sha[:32] != key
+                or recipe["packet"] != publication["packet"]
+                or recipe["model_digest"] != publication["model_digest"]
+                or recipe["policy"] != publication["pipeline"]
+            ):
+                raise ValueError("snapshot_writer_binding_changed")
+            if parent is not None and any(
+                recipe[k] != parent[k] for k in ("packet", "model_digest", "policy")
+            ):
+                raise ValueError("snapshot_writer_reused_recipe_changed")
+            if key in folders:
+                return
+            visiting.add(key)
+            for path in sorted(folder.glob("*.json")):
+                saved = json.loads(path.read_bytes())
+                checkpoint = re.fullmatch(
+                    r"outline|exercises|introduction|(?:section|chapter|self-check)-\d+|repair-.+",
+                    path.stem,
+                )
+                if checkpoint and (
+                    digest(canonical(saved["data"])) != saved["data_sha256"]
+                    or not re.fullmatch(r"[a-f0-9]{64}", saved["input_sha256"])
+                ):
+                    raise ValueError("snapshot_writer_checkpoint_changed")
+            extra = recipe.get("extra", {})
+            for field in ("unchanged_body_job", "unchanged_claim_job"):
+                if field in extra:
+                    visit(extra[field], recipe)
+            if "unchanged_body_job" in extra:
+                body = inside(root, "wiki/jobs/" + extra["unchanged_body_job"])
+                stages = ["introduction"] + [
+                    f"chapter-{n}"
+                    for n in range(len(recipe["packet"]["chapter_scopes"]))
+                ]
+                if any(not (body / (stage + ".json")).is_file() for stage in stages):
+                    raise ValueError("snapshot_writer_reused_body_incomplete")
+            if "unchanged_claim_job" in extra:
+                from .course_wiki_review import batches
+                from .course_wiki_revision import omission_repairs, source_crosschecks
+
+                revision = recipe["packet"]["revision"]
+                parent_article = Wiki(root).article(revision["parent_article"])
+                report, _ = source_crosschecks(
+                    root,
+                    parent_article["id"],
+                    [b["job"] for b in revision.get("review_reports", [])],
+                )
+                targets = {
+                    t["target"]: t
+                    for _, group in batches(parent_article["article"])
+                    for t in group
+                }
+                _, findings, _ = omission_repairs(
+                    root,
+                    parent_article,
+                    [b["job"] for b in revision.get("omission_reports", [])],
+                    targets,
+                    source_scoped_additions=True,
+                )
+                required = {
+                    r["target"]
+                    for r in report["reviews"]
+                    if r["verdict"] != "supported"
+                } | set(findings)
+                claims = inside(root, "wiki/jobs/" + extra["unchanged_claim_job"])
+                if any(
+                    not (claims / ("repair-" + target + ".json")).is_file()
+                    for target in required
+                    if "-append-" not in target
+                ):
+                    raise ValueError("snapshot_writer_reused_claims_incomplete")
+            visiting.remove(key)
+            folders[key] = folder
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            raise ValueError("snapshot_writer_dependency_unreadable") from None
+
+    visit(publication["id"])
+    return list(folders.values())
+
+
 def assets(root):
     """Freeze publication pointers; never copy a live SQLite/WAL or GPU task."""
     root = Path(root).resolve()
@@ -105,8 +212,7 @@ def assets(root):
         add("wiki/objects/" + row["object"] + ".json", row["file_sha256"])
         all_images.extend(_images(value["packet"]["sources"]))
         # Preserve the published writer's provenance, not unrelated live jobs.
-        folder = root / "wiki/jobs" / row["id"]
-        if folder.exists():
+        for folder in writer_dependencies(root, value):
             for path in sorted(folder.rglob("*.json")):
                 add(path.relative_to(root).as_posix())
         for directory, reader in (
