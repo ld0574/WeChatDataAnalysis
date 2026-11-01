@@ -35,8 +35,10 @@ SYSTEM = """你是严格的课程来源核对员，只核对给定主张能否�
 每个输入 target 必须返回且只返回一个核对结果，target 原样保留。
 verdict 只能为 supported（整项有依据）、partial（部分有依据但有缺口）、
 unsupported（缺少依据或矛盾）、unclear（现有材料无法判断）。reason 简洁说明理由。
-supported 或 partial 必须提供至少一条来自本项 citations 指定 sources 的逐字原句，
-quote 不得改写、加省略号或拼接。不按引用数量给准确率。不修改文章，不声称通过独立复核。
+supported 或 partial 必须选择至少一个来自本项 citations 指定来源的 witness 编号。
+witnesses 是程序按原文顺序切分的连续原句片段；相邻片段可结合阅读，不能把片段边界当句意边界。
+只输出 witness 编号，原句由程序填回，不能自行改写、拼接或编造编号。
+不按引用数量给准确率。不修改文章，不声称通过独立复核。
 图中文字仅是 OCR 引用；不能据此确认原图内容、图文对应或代码实际可运行。只输出 JSON。"""
 SCHEMA = object_schema(
     {
@@ -52,13 +54,54 @@ SCHEMA = object_schema(
                     "reason": TEXT,
                     "evidence": {
                         "type": "array",
-                        "items": object_schema({"source": TEXT, "quote": TEXT}),
+                        "items": object_schema({"witness": TEXT}),
                     },
                 }
             ),
         }
     }
 )
+
+
+def review_request(targets, sources, *, selected_witnesses=True):
+    if not selected_witnesses:  # Frozen v1 reports remain independently readable.
+        return {"targets": targets, "sources": sources}
+    witnesses = {}
+    for ref, source in sorted(sources.items()):
+        text = source["text"]
+        # Partition, never summarize or silently omit characters. Keep short
+        # tails with the previous piece so a model need not retype long ASR text.
+        pieces = [text[n : n + 120] for n in range(0, len(text), 120)]
+        if len(pieces) > 1 and len(pieces[-1].strip()) < 4:
+            pieces[-2:] = [pieces[-2] + pieces[-1]]
+        for n, quote in enumerate(pieces):
+            if len(quote.strip()) >= 4:
+                witnesses[f"{ref}@{n}"] = {"source": ref, "quote": quote}
+    if not witnesses:
+        raise ValueError("review_no_readable_witnesses")
+    return {"targets": targets, "witnesses": witnesses}
+
+
+def selection_schema(request):
+    schema = json.loads(json.dumps(SCHEMA))
+    properties = schema["properties"]["reviews"]["items"]["properties"]
+    properties["target"]["enum"] = [t["target"] for t in request["targets"]]
+    properties["evidence"]["items"]["properties"]["witness"]["enum"] = sorted(
+        request["witnesses"]
+    )
+    return schema
+
+
+def resolve_witnesses(value, witnesses):
+    result = json.loads(json.dumps(value))
+    for row in result["reviews"]:
+        selected = []
+        for item in row["evidence"]:
+            if item["witness"] not in witnesses:
+                raise ValueError("review_invented_witness_id")
+            selected.append(dict(witnesses[item["witness"]]))
+        row["evidence"] = selected
+    return result
 
 
 def batches(article):
@@ -201,7 +244,7 @@ def review(store, article_id, model="qwen3.5:9b", *, wait_seconds=0):
                     for t in targets
                     for ref in t["citations"]
                 }
-                request = {"targets": targets, "sources": sources}
+                request = review_request(targets, sources)
                 if len(canonical(request).decode()) > 13500:
                     raise ValueError("review_batch_exceeds_bounded_context")
                 binding = digest(canonical(request))
@@ -238,10 +281,14 @@ def review(store, article_id, model="qwen3.5:9b", *, wait_seconds=0):
                             with slot(store, deadline, progress):
                                 if local_model_digest(model) != weights:
                                     raise ValueError("review_model_weights_changed")
-                                raw = local_chat(model, messages, schema=SCHEMA)
+                                raw = local_chat(
+                                    model, messages, schema=selection_schema(request)
+                                )
                                 if local_model_digest(model) != weights:
                                     raise ValueError("review_model_weights_changed")
-                            candidate = json.loads(raw)
+                            candidate = resolve_witnesses(
+                                json.loads(raw), request["witnesses"]
+                            )
                             validate(candidate, targets, sources)
                         except GpuBusyError:
                             raise
@@ -391,8 +438,14 @@ def published_review(root, article_id):
             for ref in t["citations"]
         }
         saved = json.loads((folder / (stage + ".json")).read_bytes())
+        selected = (
+            "witness"
+            in recipe["schema"]["properties"]["reviews"]["items"]["properties"][
+                "evidence"
+            ]["items"]["properties"]
+        )
         if saved["request_sha256"] != digest(
-            canonical({"targets": targets, "sources": sources})
+            canonical(review_request(targets, sources, selected_witnesses=selected))
         ) or saved["data_sha256"] != digest(canonical(saved["data"])):
             raise ValueError("review_checkpoint_changed")
         validate(saved["data"], targets, sources)

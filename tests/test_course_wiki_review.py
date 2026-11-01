@@ -13,6 +13,7 @@ from wechat_decrypt_tool import course_wiki_review as review
 from wechat_decrypt_tool import course_wiki_writer as writer
 from wechat_decrypt_tool.course_knowledge import GpuBusyError, ModelOutputTruncatedError
 from wechat_decrypt_tool.course_library import canonical, create_app
+from wechat_decrypt_tool.course_lesson_exports import digest
 from wechat_decrypt_tool.course_video_visual_audit import ReadOnlyArchive
 from wechat_decrypt_tool.course_wiki import Wiki
 
@@ -27,8 +28,8 @@ def setup(published, monkeypatch, intercept=None):
     calls = []
 
     def chat(model_name, messages, *, schema):
-        assert schema == review.SCHEMA
         context = json.loads(messages[1]["content"])
+        assert schema == review.selection_schema(context)
         calls.append(context)
         if intercept:
             custom = intercept(context, calls)
@@ -43,7 +44,13 @@ def setup(published, monkeypatch, intercept=None):
                     "verdict": "partial",
                     "reason": "Synthetic condition needs further review.",
                     "evidence": [
-                        {"source": ref, "quote": context["sources"][ref]["text"]}
+                        {
+                            "witness": next(
+                                k
+                                for k, w in context["witnesses"].items()
+                                if w["source"] == ref
+                            )
+                        }
                     ],
                 }
             )
@@ -237,3 +244,97 @@ def test_http_detects_dead_review_process(published, monkeypatch):
     value = review.published_review(store.root, article_id)
     assert value["state"] == "interrupted_or_failed"
     assert value["completed_batches"] == 0
+
+
+def test_witness_partition_retains_exact_source_characters_and_short_tail():
+    text = ('原文 "引号"\nMixed punctuation，和空格。' * 10) + "尾"
+    sources = {"source:1": {"text": text}}
+    targets = [{"target": "p", "text": "Claim", "citations": ["source:1"]}]
+    request = review.review_request(targets, sources)
+    assert "".join(w["quote"] for w in request["witnesses"].values()) == text
+    assert all(len(w["quote"].strip()) >= 4 for w in request["witnesses"].values())
+    schema = review.selection_schema(request)
+    fields = schema["properties"]["reviews"]["items"]["properties"]
+    assert fields["target"]["enum"] == ["p"]
+    assert (
+        "enum" not in fields["reason"]
+    )  # Shared TEXT aliases cannot leak constraints.
+    assert set(fields["evidence"]["items"]["properties"]["witness"]["enum"]) == set(
+        request["witnesses"]
+    )
+    assert review.SCHEMA["properties"]["reviews"]["items"]["properties"]["target"] == {
+        "type": "string"
+    }
+
+
+def test_selected_witness_is_resolved_by_program_and_cannot_change_source():
+    sources = {
+        "one": {"text": "Original source one."},
+        "two": {"text": "Original source two."},
+    }
+    targets = [{"target": "p", "text": "A claim", "citations": ["one"]}]
+    request = review.review_request(targets, sources)
+    row = {
+        "target": "p",
+        "verdict": "supported",
+        "reason": "Synthetic reason",
+        "evidence": [{"witness": "one@0"}],
+    }
+    normalized = review.resolve_witnesses({"reviews": [row]}, request["witnesses"])
+    assert normalized["reviews"][0]["evidence"] == [
+        {"source": "one", "quote": "Original source one."}
+    ]
+    review.validate(normalized, targets, sources)
+    row["evidence"] = [{"witness": "two@0"}]
+    normalized = review.resolve_witnesses({"reviews": [row]}, request["witnesses"])
+    with pytest.raises(ValueError, match="uncited_witness"):
+        review.validate(normalized, targets, sources)
+    row["evidence"] = [{"witness": "invented"}]
+    with pytest.raises(ValueError, match="invented_witness_id"):
+        review.resolve_witnesses({"reviews": [row]}, request["witnesses"])
+
+
+def test_legacy_literal_quote_reports_remain_readable(published, monkeypatch):
+    store, article_id, calls = setup(published, monkeypatch)
+    receipt = run(store, article_id)
+    article = Wiki(store.root).article(article_id)
+    legacy_schema = copy.deepcopy(review.SCHEMA)
+    legacy_schema["properties"]["reviews"]["items"]["properties"]["evidence"][
+        "items"
+    ] = {
+        "type": "object",
+        "properties": {"source": {"type": "string"}, "quote": {"type": "string"}},
+        "required": ["source", "quote"],
+        "additionalProperties": False,
+    }
+    recipe = {
+        k: receipt[k]
+        for k in ("policy", "article_sha256", "model_digest", "system", "schema")
+    }
+    recipe.update(system="Frozen legacy literal quote prompt.", schema=legacy_schema)
+    legacy_key = digest(canonical(recipe))[:32]
+    folder = store.root / "wiki" / "review-jobs" / legacy_key
+    folder.mkdir()
+    (folder / "manifest.json").write_bytes(canonical(recipe))
+    previous = store.root / "wiki" / "review-jobs" / receipt["job"]
+    for stage, targets in review.batches(article["article"]):
+        sources = {
+            ref: article["packet"]["sources"][ref]
+            for t in targets
+            for ref in t["citations"]
+        }
+        value = json.loads((previous / (stage + ".json")).read_bytes())
+        value["request_sha256"] = digest(
+            canonical({"targets": targets, "sources": sources})
+        )
+        (folder / (stage + ".json")).write_bytes(canonical(value))
+    receipt.update(recipe, job=legacy_key)
+    (store.root / "wiki" / "reviews" / (article_id + ".json")).write_bytes(
+        canonical(receipt)
+    )
+    n = len(calls)
+    assert (
+        review.published_review(store.root, article_id)["state"]
+        == "model_crosscheck_complete"
+    )
+    assert len(calls) == n
