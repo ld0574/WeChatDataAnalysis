@@ -269,6 +269,82 @@ def test_scoped_target_repairs_have_only_assigned_originals(long_plan):
     ) == [ref]
 
 
+@pytest.mark.parametrize("flagged", ["section-2-p-0", "quiz-3"])
+def test_long_article_revision_uses_assigned_sources_and_keeps_original_code(
+    long_plan, monkeypatch, flagged
+):
+    from wechat_decrypt_tool import course_wiki_review as review
+    from wechat_decrypt_tool import course_wiki_revision as revision
+
+    store, _ = long_plan
+    model(monkeypatch)
+    parent_id = run(long_plan)["id"]
+    parent = Wiki(store.root).article(parent_id)
+
+    def judgments(name, messages, *, schema):
+        context = json.loads(messages[1]["content"])
+        return json.dumps(
+            {
+                "reviews": [
+                    {
+                        "target": t["target"],
+                        "verdict": "partial" if t["target"] == flagged else "supported",
+                        "reason": "Synthetic evidence check.",
+                        "evidence": [
+                            {
+                                "witness": next(
+                                    k
+                                    for k, w in context["witnesses"].items()
+                                    if w["source"] == t["citations"][0]
+                                )
+                            }
+                        ],
+                    }
+                    for t in context["targets"]
+                ]
+            }
+        )
+
+    monkeypatch.setattr(review, "local_chat", judgments)
+    review.review(ReadOnlyArchive(store.root), parent_id, single_targets=True)
+    calls = []
+
+    def repair(name, messages, *, schema):
+        context = json.loads(messages[1]["content"])
+        calls.append(context)
+        assert len(context["sources"]) == 1
+        assert sum(len(s["text"]) for s in context["sources"].values()) < 3200
+        original = context["original"]
+        result = {
+            "action": "replace",
+            "references": original["citations"],
+            "gap": "",
+        }
+        if flagged.startswith("quiz-"):
+            question = parent["article"]["quiz"][int(flagged.split("-")[1])]
+            result.update(
+                {
+                    k: question[k]
+                    for k in ("question", "answer", "explanation", "criteria")
+                }
+            )
+            result["explanation"] += " Synthetic corrected condition."
+        else:
+            result["text"] = original["text"] + " Synthetic corrected condition."
+        return json.dumps(result)
+
+    monkeypatch.setattr(writer, "local_chat", repair)
+    child_id = revision.revise(ReadOnlyArchive(store.root), parent_id)["id"]
+    child = Wiki(store.root).article(child_id)
+    assert len(calls) == 1
+    assert child["packet"]["chapter_scopes"] == parent["packet"]["chapter_scopes"]
+    assert [s["code"] for s in child["article"]["sections"]] == [
+        s["code"] for s in parent["article"]["sections"]
+    ]
+    assert Wiki(store.root).article(parent_id) == parent
+    assert child["packet"]["revision"]["parent_article"] == parent_id
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
