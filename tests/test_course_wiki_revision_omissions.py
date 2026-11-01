@@ -215,6 +215,121 @@ def test_source_reference_and_duplicate_job_gates():
         )
 
 
+def test_source_scoped_additions_split_sources_but_keep_same_source_windows():
+    from unittest.mock import patch
+
+    rows = [
+        {"original": {"source": source}, "coverage": "missing", "article_evidence": []}
+        for source in ("a", "b", "a")
+    ]
+    with patch.object(
+        omissions,
+        "published_report",
+        return_value={
+            "state": "model_omissions_complete",
+            "chapters": [{"stage": "chapter-0-source-0", "reviews": rows}],
+        },
+    ):
+        targets, findings, _ = revision.omission_repairs(
+            None, {"id": "article"}, ["job"], {}, source_scoped_additions=True
+        )
+    assert targets["section-0-append-0"]["citations"] == ["a"]
+    assert targets["section-0-append-1"]["citations"] == ["b"]
+    assert len(findings["section-0-append-0"]) == 2
+    packet = {
+        "title": "Synthetic",
+        "sources": {"a": {"text": "Whole A"}, "b": {"text": "Whole B"}},
+    }
+    scoped, context, _, schema = revision.repair_request(
+        {"article": {"sections": [{"paragraphs": []}]}},
+        packet,
+        "section-0-append-0",
+        targets["section-0-append-0"],
+        {},
+        findings["section-0-append-0"],
+        source_scoped_additions=True,
+    )
+    assert scoped["sources"] == context["sources"] == {"a": {"text": "Whole A"}}
+    refs = schema["oneOf"][0]["properties"]["references"]
+    assert refs == {
+        "type": "array",
+        "items": {"type": "string", "enum": ["a"]},
+        "minItems": 1,
+        "maxItems": 1,
+    }
+
+
+def test_scoped_additions_reuse_legacy_claims_without_resetting_failed_budget(
+    published, monkeypatch
+):
+    def wrong_source(context, calls):
+        if "-append-" in context["original"]["target"] and len(context["sources"]) > 1:
+            required = context["original"]["citations"]
+            other = next(ref for ref in context["sources"] if ref not in required)
+            return json.dumps(
+                {
+                    "action": "replace",
+                    "text": "Wrong-source synthetic explanation.",
+                    "references": [other],
+                    "gap": "",
+                }
+            )
+
+    store, article_id, calls = setup(
+        published, monkeypatch, flagged=("overview",), intercept=wrong_source
+    )
+    job = report(store, article_id, monkeypatch, "missing")
+    with pytest.raises(ValueError, match="budget_exhausted"):
+        revision.revise(ReadOnlyArchive(store.root), article_id, omission_jobs=[job])
+    legacy = json.loads((store.root / "wiki/last-build.json").read_bytes())["id"]
+    attempts = store.root / "wiki/jobs" / legacy / "attempts"
+    before = {p.name: p.read_bytes() for p in attempts.glob("*.json")}
+    assert len(before) == 4
+    result = revision.revise(
+        ReadOnlyArchive(store.root),
+        article_id,
+        omission_jobs=[job],
+        source_scoped_additions=True,
+    )
+    assert result["state"] == "draft_published"
+    assert result["id"] != legacy
+    assert sum(c["original"]["target"] == "overview" for c in calls) == 1
+    assert {p.name: p.read_bytes() for p in attempts.glob("*.json")} == before
+    assert len(calls) == 5
+    assert (
+        revision.revise(
+            ReadOnlyArchive(store.root),
+            article_id,
+            omission_jobs=[job],
+            source_scoped_additions=True,
+        )["state"]
+        == "already_published"
+    )
+    assert len(calls) == 5
+
+
+def test_scoped_mode_does_not_reset_exhausted_unchanged_claims(published, monkeypatch):
+    def invalid(context, calls):
+        return json.dumps(
+            {
+                "action": "replace",
+                "text": "Synthetic",
+                "references": ["invented"],
+                "gap": "",
+            }
+        )
+
+    store, article_id, calls = setup(
+        published, monkeypatch, flagged=("overview",), intercept=invalid
+    )
+    for mode in (False, True):
+        with pytest.raises(ValueError, match="budget_exhausted"):
+            revision.revise(
+                ReadOnlyArchive(store.root), article_id, source_scoped_additions=mode
+            )
+        assert len(calls) == 3
+
+
 def test_prepare_freezes_real_requests_without_model_or_weight_calls(
     published, monkeypatch
 ):

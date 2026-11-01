@@ -232,7 +232,7 @@ def source_crosschecks(root, article_id, jobs):
     }, bindings
 
 
-def omission_repairs(root, parent, jobs, all_targets):
+def omission_repairs(root, parent, jobs, all_targets, *, source_scoped_additions=False):
     """Bind validated historical reports to prose edits, never editable code."""
     from .course_wiki_completeness import published_report
 
@@ -243,6 +243,7 @@ def omission_repairs(root, parent, jobs, all_targets):
     ):
         raise ValueError("revision_invalid_omission_jobs")
     targets, findings, bindings = dict(all_targets), {}, []
+    source_slots = {}
     for job in sorted(jobs):
         report = published_report(root, parent["id"], job=job)
         if report["state"] != "model_omissions_complete":
@@ -260,7 +261,11 @@ def omission_repairs(root, parent, jobs, all_targets):
                     if key.startswith(f"section-{n}-p-")
                 ]
                 # A missing explanation or a code-only finding needs new prose.
-                key = candidates[0] if candidates else f"section-{n}-append-0"
+                slot = 0
+                if not candidates and source_scoped_additions:
+                    chapter_slots = source_slots.setdefault(n, {})
+                    slot = chapter_slots.setdefault(source, len(chapter_slots))
+                key = candidates[0] if candidates else f"section-{n}-append-{slot}"
                 if key not in targets:
                     targets[key] = {"target": key, "text": "", "citations": []}
                 if not candidates and source not in targets[key]["citations"]:
@@ -282,10 +287,25 @@ def validate_omission_fix(value, packet, findings):
         raise ValueError("revision_omission_source_not_referenced")
 
 
-def repair_request(parent, packet, target, original, finding, omissions):
+def repair_request(
+    parent,
+    packet,
+    target,
+    original,
+    finding,
+    omissions,
+    *,
+    source_scoped_additions=False,
+):
     from .course_wiki_synthesis import target_packet
 
     scoped = target_packet(packet, target, original)
+    focused = source_scoped_additions and "-append-" in target and omissions
+    if focused:
+        refs = sorted({row["original"]["source"] for row in omissions})
+        if len(refs) != 1 or refs[0] not in scoped["sources"]:
+            raise ValueError("revision_addition_requires_one_chapter_source")
+        scoped = {**scoped, "sources": {ref: scoped["sources"][ref] for ref in refs}}
     quiz, code = target.startswith("quiz-"), target.endswith("-code")
     context = {
         "topic": packet["title"],
@@ -311,7 +331,15 @@ def repair_request(parent, packet, target, original, finding, omissions):
     )
     if finding.get("model_findings"):
         prompt += BOUND_REVIEW_PROMPT
+    if focused:
+        prompt += (
+            "\n本次只补写 sources 中这一个完整来源实际支持的遗漏内容。"
+            "existing_chapter 是待修订文章，只用于避免重复，不得借用其中的事实。"
+            "不能重新概括整章或补写其他来源；材料不足以解释线索时 omit 并保留缺口。"
+        )
     schema = fix_schema(QUIZ_FIX if quiz else CLAIM_FIX, scoped)
+    if focused:
+        schema["oneOf"][0]["properties"]["references"]["maxItems"] = 1
     return scoped, context, prompt, schema
 
 
@@ -324,6 +352,7 @@ def revise(
     review_jobs=(),
     omission_jobs=(),
     prepare_only=False,
+    source_scoped_additions=False,
 ):
     from .course_pdf_ocr import local_model_digest
 
@@ -344,7 +373,11 @@ def revise(
         if not set(problems) <= set(all_targets):
             raise ValueError("revision_review_target_mismatch")
         all_targets, omission_findings, omission_bindings = omission_repairs(
-            store.root, parent, omission_jobs, all_targets
+            store.root,
+            parent,
+            omission_jobs,
+            all_targets,
+            source_scoped_additions=source_scoped_additions,
         )
         for key in omission_findings:
             problems.setdefault(
@@ -377,6 +410,7 @@ def revise(
                 all_targets[target],
                 finding,
                 omission_findings.get(target, []),
+                source_scoped_additions=source_scoped_additions,
             )
             for target, finding in problems.items()
         }
@@ -416,7 +450,7 @@ def revise(
                 "model_weights_bound": False,
             }
         weights = local_model_digest(model)
-        job = DraftJob(
+        legacy_job = DraftJob(
             store,
             packet,
             model,
@@ -433,7 +467,29 @@ def revise(
                 ],
             },
         )
+        job = legacy_job
+        if source_scoped_additions:
+            # Unchanged claim requests retain their original checkpoints AND
+            # attempt budgets. Only the substantively different additions get
+            # a new recipe; never retry failed legacy additions in this mode.
+            extra = json.loads((legacy_job.root / "manifest.json").read_bytes())[
+                "recipe"
+            ]["extra"]
+            extra.update(
+                source_scoped_additions="one-complete-source-per-addition-v1",
+                unchanged_claim_job=legacy_job.key,
+            )
+            job = DraftJob(
+                store,
+                packet,
+                model,
+                weights,
+                wait_seconds,
+                pipeline=POLICY,
+                recipe_extra=extra,
+            )
         job.total = len(problems)
+        legacy_job.total = len(problems)
         if any(r["id"] == job.key for r in wiki.catalog()["articles"]):
             wiki.article(job.key)
             return {"id": job.key, "state": "already_published"}
@@ -443,7 +499,12 @@ def revise(
                 scoped, context, prompt, schema = requests[target]
                 quiz, code = target.startswith("quiz-"), target.endswith("-code")
                 omissions = omission_findings.get(target, [])
-                changes[target] = job.stage(
+                stage_job = (
+                    legacy_job
+                    if source_scoped_additions and "-append-" not in target
+                    else job
+                )
+                changes[target] = stage_job.stage(
                     "repair-" + target,
                     prompt,
                     schema,
@@ -455,6 +516,9 @@ def revise(
                     ),
                     evidence_packet=scoped,
                 )
+                if stage_job is not job:
+                    job.completed += 1
+                    job.progress("assembling", "repair-" + target)
             article = apply_fixes(parent["article"], changes)
             atomic_json(
                 job.root / "assembled-revision.json",
@@ -537,6 +601,7 @@ def main():
     parser.add_argument("--review-job", action="append", default=[])
     parser.add_argument("--omission-job", action="append", default=[])
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--source-scoped-additions", action="store_true")
     args = parser.parse_args()
     print(
         json.dumps(
@@ -548,6 +613,7 @@ def main():
                 review_jobs=args.review_job,
                 omission_jobs=args.omission_job,
                 prepare_only=args.prepare_only,
+                source_scoped_additions=args.source_scoped_additions,
             )
         )
     )
