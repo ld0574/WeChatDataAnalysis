@@ -1,6 +1,9 @@
 import copy
 import json
+import subprocess
+import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -13,12 +16,14 @@ from test_course_wiki_evidence import (
 from test_course_wiki_synthesis import model
 from wechat_decrypt_tool import course_wiki_allocation as allocation
 from wechat_decrypt_tool import course_wiki_planning as planning
+from wechat_decrypt_tool import course_wiki_snapshot as snapshot
 from wechat_decrypt_tool import course_wiki_synthesis as synthesis
+from wechat_decrypt_tool import course_wiki_writer as writer
 from wechat_decrypt_tool.course_knowledge import GpuBusyError, atomic_json
 from wechat_decrypt_tool.course_library import canonical
 from wechat_decrypt_tool.course_lesson_exports import digest
 from wechat_decrypt_tool.course_video_visual_audit import ReadOnlyArchive
-from wechat_decrypt_tool.course_wiki import Wiki
+from wechat_decrypt_tool.course_wiki import Wiki, validate_article
 
 archive = source_archive
 published = source_published
@@ -283,3 +288,138 @@ def test_rehashed_planning_recipe_cannot_silently_shorten_the_original_context(
             reader, lesson["id"], allocation=prepared["allocation"], allocation_scope=0
         )
     assert len(calls) == 1
+
+
+def planned_originals(long_evidence, monkeypatch):
+    reader, lesson, prepared, _ = setup(long_evidence, monkeypatch)
+    result = planning.propose(
+        reader, lesson["id"], allocation=prepared["allocation"], allocation_scope=0
+    )
+    plan = json.loads(
+        (reader.root / "wiki/planning-jobs" / result["job"] / "plan.json").read_bytes()
+    )
+    assert plan["structure_contract"] == synthesis.ALLOCATED_STRUCTURE
+    return reader, plan
+
+
+def test_new_allocated_contract_guides_structure_without_changing_default_schemas(
+    long_evidence, monkeypatch
+):
+    reader, plan = planned_originals(long_evidence, monkeypatch)
+    calls = model(monkeypatch)
+    draft = synthesis.generate(reader, plan)
+    chapters = [c for c in calls if c["stage"].startswith("Synthetic chapter")]
+    assert len(chapters) == 4
+    assert all(
+        c["schema"]["properties"]["paragraphs"]["minItems"] == 2 for c in chapters
+    )
+    exercises = [c for c in calls if c["stage"].startswith("quiz-")]
+    assert exercises[-1]["schema"]["properties"]["pitfalls"]["minItems"] == 1
+    assert all(
+        "minItems" not in c["schema"]["properties"]["pitfalls"] for c in exercises[:-1]
+    )
+    assert "minItems" not in synthesis.SECTION["properties"]["paragraphs"]
+    assert "minItems" not in synthesis.EXERCISE["properties"]["pitfalls"]
+    publication = Wiki(reader.root).article(draft["id"])
+    assert publication["packet"]["structure_contract"] == synthesis.ALLOCATED_STRUCTURE
+    changed = copy.deepcopy(publication["article"])
+    changed["sections"][0]["paragraphs"].pop()
+    with pytest.raises(
+        ValueError, match="section_requires_at_least_two_developed_paragraphs"
+    ):
+        validate_article(changed, publication["packet"])
+
+
+def test_missing_supported_limitation_is_rejected_at_its_stage_with_same_budget(
+    long_evidence, monkeypatch
+):
+    reader, plan = planned_originals(long_evidence, monkeypatch)
+    calls = model(monkeypatch)
+    original = writer.local_chat
+
+    def omit(name, messages, schema):
+        value = json.loads(original(name, messages, schema))
+        context = json.loads(messages[1]["content"])
+        if len(context.get("previous_questions", [])) == 3:
+            value["pitfalls"] = []
+        return json.dumps(value)
+
+    monkeypatch.setattr(writer, "local_chat", omit)
+    before = None
+    for _ in range(2):
+        with pytest.raises(ValueError, match="attempt_budget_exhausted_self-check-3"):
+            synthesis.generate(reader, plan)
+        attempts = list(reader.root.glob("wiki/jobs/*/attempts/self-check-3-*.json"))
+        current = {
+            p.relative_to(reader.root).as_posix(): p.read_bytes() for p in attempts
+        }
+        if before is not None:
+            assert current == before
+        before = current
+    assert sum(c["stage"] == "quiz-3" for c in calls) == 3
+    assert not Wiki(reader.root).catalog()["articles"]
+    assert len(attempts) == 3
+    assert all(
+        json.loads(p.read_bytes())["validation_error"]
+        == "requires_source_bound_limitation_in_final_self_check"
+        for p in attempts
+    )
+    assert len(calls) == 11
+
+
+def test_fixed_question_strategy_reuses_the_same_allocated_body_budget(
+    long_evidence, monkeypatch
+):
+    reader, plan = planned_originals(long_evidence, monkeypatch)
+    calls = model(monkeypatch)
+    original = writer.local_chat
+
+    def fixed(name, messages, schema):
+        value = json.loads(original(name, messages, schema))
+        if "fixed_question" in json.loads(messages[1]["content"]):
+            value["quiz"].pop("question")
+        return json.dumps(value)
+
+    monkeypatch.setattr(writer, "local_chat", fixed)
+    body = synthesis.generate(reader, plan)
+    assessment = synthesis.generate(reader, plan, fixed_assessments=True)
+    manifest = json.loads(
+        (reader.root / "wiki/jobs" / assessment["id"] / "manifest.json").read_bytes()
+    )
+    assert manifest["recipe"]["extra"]["unchanged_body_job"] == body["id"]
+    assert sum(c["stage"] == "intro" for c in calls) == 1
+    assert sum(c["stage"].startswith("Synthetic chapter") for c in calls) == 4
+    assert len(calls) == 13
+    backup = snapshot.create(
+        reader.root, reader.root.parent / "contract-backup", reserve_gib=0
+    )
+    restored = snapshot.restore(
+        backup, reader.root.parent / "contract-restored", reserve_gib=0
+    )
+    assert Wiki(restored).article(assessment["id"]) == Wiki(reader.root).article(
+        assessment["id"]
+    )
+    checked = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(Path(__file__).with_name("wiki_snapshot_isolated_reader.py")),
+            str(restored),
+            str(reader.root),
+            str(Path(snapshot.__file__).parent),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    assert json.loads(checked.stdout)["original_root_access_attempts"] == 0
+
+
+def test_structure_contract_requires_explicit_allocated_sources(
+    long_evidence, monkeypatch
+):
+    reader, plan = planned_originals(long_evidence, monkeypatch)
+    plan["structure_contract"] = "unrecognized"
+    with pytest.raises(ValueError, match="invalid_allocated_structure_contract"):
+        synthesis.prepare_plan(reader.root, plan)

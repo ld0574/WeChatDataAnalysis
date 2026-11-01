@@ -17,7 +17,7 @@ from .course_pdf_ocr import local_model_digest
 from .course_video_visual_audit import ReadOnlyArchive
 from .course_wiki import TEXT, Wiki, object_schema, prepare
 from .course_wiki_review import slot
-from .course_wiki_synthesis import prepare_plan
+from .course_wiki_synthesis import ALLOCATED_STRUCTURE, prepare_plan
 
 POLICY = "local-theme-fixed-chapter-assessments-v1"
 PAGE_POLICY = "local-theme-complete-directory-page-v1"
@@ -156,6 +156,7 @@ def make_plan(root, video, value, eligible, *, selections=None):
         ],
     }
     if selections is not None:
+        plan["structure_contract"] = ALLOCATED_STRUCTURE
         plan["scope_note"] = (
             "本篇只整理明确选中的连续原文范围，字符与分配页边界不是知识或代码边界。"
             "其余原文另行保留；不代表完整窗口、主题或课程已覆盖，代码未执行验证。"

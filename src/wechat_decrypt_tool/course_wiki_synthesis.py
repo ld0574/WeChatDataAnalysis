@@ -40,6 +40,7 @@ from .course_wiki_writer import (
 )
 
 POLICY = "wiki-chapter-scoped-synthesis-v1"
+ALLOCATED_STRUCTURE = "allocated-developed-chapters-and-limitations-v1"
 INTRO = object_schema(
     {
         "overview": CLAIM,
@@ -93,6 +94,21 @@ previous_questions 仅说明其他章已安排的任务，不能替代当前章�
 保留关键条件、步骤和限制；原文不能回答的部分明确写入 gaps，不虚构答案。
 根据本次原文列出有依据的易错点，没依据可为空。"""
 )
+LIMITATIONS_NOTICE = """
+本题还须给出至少一项由当前原文直接支持的易错点或适用限制，保留对应原文引用。
+不要以外部常识填补材料缺失，也不要为了满足结构虚构限制；来源支持仍将另外核对。"""
+
+
+def developed_schema(schema):
+    value = json.loads(json.dumps(schema))
+    value["properties"]["paragraphs"]["minItems"] = 2
+    return value
+
+
+def limitations_schema(schema):
+    value = json.loads(json.dumps(schema))
+    value["properties"]["pitfalls"]["minItems"] = 1
+    return value
 
 
 def bounded(value, maximum):
@@ -190,11 +206,20 @@ def prepare_plan(root, plan):
         packet["evidence_partitions"] = {
             key: sorted(pages) for key, pages in partitions.items()
         }
+    if "structure_contract" in plan:
+        if plan["structure_contract"] != ALLOCATED_STRUCTURE or not partitions:
+            raise ValueError("wiki_synthesis_invalid_allocated_structure_contract")
+        packet["structure_contract"] = plan["structure_contract"]
     return packet, intro, packets
 
 
 def validate_scopes(article, packet):
     """Enforced again at publication/read/revision, not only by model prompts."""
+    if "structure_contract" in packet:
+        if packet["structure_contract"] != ALLOCATED_STRUCTURE:
+            raise ValueError("wiki_synthesis_invalid_allocated_structure_contract")
+        if any(len(s["paragraphs"]) < 2 for s in article["sections"]):
+            raise ValueError("section_requires_at_least_two_developed_paragraphs")
 
     def check(ids, scope):
         if not set(ids) <= set(scope):
@@ -260,7 +285,7 @@ def introduction(value, packet):
         claim(item, packet)
 
 
-def exercise(value, packet, previous):
+def exercise(value, packet, previous, *, require_limitations=False):
     quiz = value["quiz"]
     for field in ("question", "answer", "explanation"):
         nonempty(quiz[field])
@@ -273,6 +298,8 @@ def exercise(value, packet, previous):
     references(quiz["citations"], packet)
     for item in value["pitfalls"]:
         claim(item, packet)
+    if require_limitations and not value["pitfalls"]:
+        raise ValueError("requires_source_bound_limitation_in_final_self_check")
 
 
 def fixed_exercise(value, question):
@@ -326,6 +353,29 @@ def generate(
                 },
             )
             raise
+        structured = packet.get("structure_contract") == ALLOCATED_STRUCTURE
+        section_schema = developed_schema(SECTION) if structured else SECTION
+        pinned_schema = (
+            developed_schema(PINNED_SECTION) if structured else PINNED_SECTION
+        )
+        last_schema = (
+            limitations_schema(FIXED_EXERCISE if fixed_assessments else EXERCISE)
+            if structured
+            else None
+        )
+        last_prompt = (
+            FIXED_EXERCISE_PROMPT if fixed_assessments else EXERCISE_PROMPT
+        ) + LIMITATIONS_NOTICE
+        contract_recipe = (
+            {
+                "structure_contract": ALLOCATED_STRUCTURE,
+                "unpinned_section_schema": section_schema,
+                "last_exercise_schema": limitations_schema(EXERCISE),
+                "last_exercise_prompt": EXERCISE_PROMPT + LIMITATIONS_NOTICE,
+            }
+            if structured
+            else {}
+        )
         legacy_job = DraftJob(
             store,
             packet,
@@ -335,7 +385,8 @@ def generate(
             pipeline=POLICY,
             recipe_extra={
                 "prompts": [INTRO_PROMPT, CHAPTER_PROMPT, EXERCISE_PROMPT],
-                "schemas": [INTRO, PINNED_SECTION, EXERCISE],
+                "schemas": [INTRO, pinned_schema, EXERCISE],
+                **contract_recipe,
             },
         )
         job = legacy_job
@@ -349,9 +400,18 @@ def generate(
                 pipeline=POLICY,
                 recipe_extra={
                     "prompts": [INTRO_PROMPT, CHAPTER_PROMPT, FIXED_EXERCISE_PROMPT],
-                    "schemas": [INTRO, PINNED_SECTION, FIXED_EXERCISE],
+                    "schemas": [INTRO, pinned_schema, FIXED_EXERCISE],
                     "fixed_assessments": "complete-learning-goal-task-v1",
                     "unchanged_body_job": legacy_job.key,
+                    **contract_recipe,
+                    **(
+                        {
+                            "last_exercise_schema": last_schema,
+                            "last_exercise_prompt": last_prompt,
+                        }
+                        if structured
+                        else {}
+                    ),
                 },
             )
         job.total = 1 + len(chapters) + len(plan["exercises"])
@@ -395,7 +455,7 @@ def generate(
                 value = body_stage(
                     f"chapter-{number}",
                     CHAPTER_PROMPT,
-                    PINNED_SECTION if selected else SECTION,
+                    pinned_schema if selected else section_schema,
                     bounded_context(
                         {
                             "topic": packet["title"],
@@ -427,15 +487,24 @@ def generate(
                 }
                 if question is not None:
                     context["fixed_question"] = question
+                exercise_prompt = (
+                    FIXED_EXERCISE_PROMPT if fixed_assessments else EXERCISE_PROMPT
+                )
+                exercise_schema = FIXED_EXERCISE if fixed_assessments else EXERCISE
+                if structured and number == len(plan["exercises"]) - 1:
+                    exercise_prompt, exercise_schema = last_prompt, last_schema
                 result = job.stage(
                     f"self-check-{number}",
-                    FIXED_EXERCISE_PROMPT if fixed_assessments else EXERCISE_PROMPT,
-                    FIXED_EXERCISE if fixed_assessments else EXERCISE,
+                    exercise_prompt,
+                    exercise_schema,
                     bounded_context(context),
-                    lambda value, s=scoped, q=question: exercise(
-                        fixed_exercise(value, q) if q is not None else value,
-                        s,
-                        previous,
+                    lambda value, s=scoped, q=question, required=(structured and number == len(plan["exercises"]) - 1): (
+                        exercise(
+                            fixed_exercise(value, q) if q is not None else value,
+                            s,
+                            previous,
+                            require_limitations=required,
+                        )
                     ),
                     evidence_packet=scoped,
                 )
