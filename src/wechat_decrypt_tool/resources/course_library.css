@@ -35,6 +35,24 @@ textarea {
   font: inherit;
   color: inherit;
 }
+select {
+  font: inherit;
+  color: inherit;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  padding: 0.4rem;
+  max-width: 100%;
+}
+.coverage-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+.coverage-filters input {
+  flex: 1 1 220px;
+  min-width: 0;
+  width: 100%;
+}
 button,
 .button {
   cursor: pointer;
@@ -100,6 +118,7 @@ button:active {
 }
 nav {
   display: flex;
+  flex-wrap: wrap;
   gap: 1.2rem;
 }
 nav a {

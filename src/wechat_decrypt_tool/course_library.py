@@ -352,6 +352,45 @@ def create_app(store, model="qwen3.5:9b"):
         except (OSError, ValueError):
             raise HTTPException(503, "主题文章校验失败") from None
 
+    @app.get("/wiki/api/coverage")
+    def wiki_coverage():
+        # Read a published receipt only: HTTP requests must never scan the archive.
+        try:
+            value = json.loads((store.root / "wiki" / "coverage.json").read_bytes())
+            if value["policy"] != "wiki-whole-source-ledger-v1":
+                raise ValueError("unknown_coverage_policy")
+            stale = []
+
+            def safe_path(relative):
+                path = (store.root / relative).resolve()
+                if not path.is_relative_to(store.root.resolve()):
+                    raise ValueError("unsafe_coverage_input")
+                return path
+
+            for relative, expected in value["input_sha256"].items():
+                path = safe_path(relative)
+                if not path.is_file() or digest(path.read_bytes()) != expected:
+                    stale.append(relative)
+            for relative in value["observed_absent_inputs"]:
+                if safe_path(relative).exists():
+                    stale.append(relative)
+            return {**value, "stale_inputs": stale, "snapshot_only": True}
+        except (OSError, ValueError, KeyError, TypeError):
+            raise HTTPException(
+                503, "整理进度快照尚未就绪或校验失败，原有阅读与检索仍可用"
+            ) from None
+
+    @app.get("/wiki/api/review/{key}")
+    def wiki_review(key: str):
+        from .course_wiki_review import published_review
+
+        try:
+            return published_review(store.root, key)
+        except KeyError:
+            raise HTTPException(404, "未找到主题文章或对照记录不完整") from None
+        except (OSError, ValueError, TypeError):
+            raise HTTPException(503, "来源对照记录校验失败，文章仍可阅读") from None
+
     @app.get("/wiki/api/search")
     def wiki_search(q: str):
         from .course_wiki import Wiki

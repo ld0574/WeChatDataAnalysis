@@ -295,6 +295,47 @@ async function article(id, version, targetSection) {
     ),
   );
   main.append(claim(a.overview, p));
+  const reviewBox = el("details", undefined, "source-crosscheck");
+  reviewBox.append(el("summary", "来源对照 · 本机模型辅助检查"));
+  const reviewStatus = el("p", "正在读取对照记录…", "muted");
+  reviewBox.append(reviewStatus);
+  main.append(reviewBox);
+  async function readCrosscheck() {
+    try {
+      const checked = await api("/wiki/api/review/" + encodeURIComponent(id));
+      if (version !== routeVersion) return;
+      if (checked.state === "model_crosscheck_complete") {
+        const counts = checked.summary;
+        if (counts.unsupported || counts.partial) {
+          const warning = notice(`来源对照提示：${counts.unsupported} 项依据不足或矛盾、${counts.partial} 项只有部分支持。这篇草稿需要修订，请展开下方对照并核对原文。`);
+          reviewBox.before(warning);
+        }
+        reviewStatus.textContent = `模型判断：有原文支持 ${counts.supported} 项、部分支持 ${counts.partial} 项、依据不足或矛盾 ${counts.unsupported} 项、无法判断 ${counts.unclear} 项。逐字引句已核对，但判断仍可能错误；这不是独立语义验收，也未核对原图。`;
+        const labels = { supported: "有原文支持", partial: "部分支持", unsupported: "依据不足或矛盾", unclear: "无法判断" };
+        for (const r of checked.reviews) {
+          const row = el("div", undefined, "result");
+          const sectionMatch = /^section-(\d+)/.exec(r.target);
+          const target = sectionMatch ? "section-" + sectionMatch[1] : r.target.startsWith("quiz-") ? "quiz" : r.target.startsWith("pitfalls-") ? "pitfalls" : "objectives";
+          const title = sectionMatch ? a.sections[Number(sectionMatch[1])].heading : r.target.startsWith("quiz-") ? "自测题 " + (Number(r.target.slice(5)) + 1) : r.target.startsWith("pitfalls-") ? "易错点" : "概述与前置知识";
+          const jump = link(`${title} · ${labels[r.verdict]}`, "#article=" + id + "/" + target);
+          row.append(jump, el("p", r.reason));
+          for (const witness of r.evidence) {
+            row.append(el("blockquote", witness.quote));
+            refs(row, [witness.source], p);
+          }
+          reviewBox.append(row);
+        }
+      } else if (["waiting_gpu", "crosschecking", "batch_complete", "preparing"].includes(checked.state)) {
+        reviewStatus.textContent = `来源对照正在${checked.state === "waiting_gpu" ? "等待 GPU" : "进行"}，已完成 ${checked.completed_batches}/${checked.total_batches} 批。文章仍待复核。`;
+        if (version === routeVersion) setTimeout(readCrosscheck, 10000);
+      } else {
+        reviewStatus.textContent = checked.state === "not_started" ? "尚未生成来源对照记录，文章准确性仍待复核。" : "来源对照已中断或失败，未完成的检查不能当作通过。";
+      }
+    } catch {
+      if (version === routeVersion) reviewStatus.textContent = "对照记录暂不可读，正文与自测仍可使用；文章准确性待复核。";
+    }
+  }
+  readCrosscheck();
   const body = el("article", undefined, "article-body");
   const sections = [
     ["学习目标", "objectives"],
@@ -627,6 +668,120 @@ async function search(query, version) {
     main.append(el("p", "未找到匹配，请尝试更短的主题或术语。", "empty"));
   toc([["检索结果", "content"]]);
 }
+async function coverage(version) {
+  const d = await api("/wiki/api/coverage");
+  if (version !== routeVersion) return;
+  heading("整理进度", "全部来源 · 覆盖快照");
+  const date = new Date(d.database_snapshot_observed * 1000).toLocaleString(
+    "zh-CN", { timeZone: "Asia/Shanghai", hour12: false },
+  );
+  main.append(
+    el("p", `数据库快照：${date}（北京时间）。后台仍可能继续处理，本页数字不是实时进度。`, "muted"),
+  );
+  const refresh = el("button", "重新读取快照");
+  refresh.addEventListener("click", route);
+  main.append(refresh);
+  if (d.stale_inputs.length)
+    main.append(notice("来源或文章目录已更新，这份快照已过期；需后台重新生成覆盖清单。重新读取按钮不会触发统计任务。"));
+  const summary = el("section");
+  summary.id = "coverage-summary";
+  summary.append(el("h2", "分别看提取、发布与引用"));
+  summary.append(list([
+    `课程范围：${d.scope.canonical_audio_courses} 节有声课；另有 ${d.scope.excluded_no_audio_sources} 节无声来源。`,
+    `转写：${d.summary.transcribed_courses} 节；已发布来源笔记：${d.summary.source_notes_published} 节。`,
+    `主题草稿：${d.summary.draft_articles} 篇；引用涉及 ${d.summary.courses_with_draft_citations} 节课，还有 ${d.summary.courses_without_draft_citations} 节未被文章引用。`,
+    `课件与附件：清单保留 ${d.scope.retained_resource_paths} 个路径，待处理 ${d.scope.pending_resource_paths ?? "未知"} 个；其中 ${d.summary.retained_paths_with_some_indexed_chunks} 个有部分检索片段。`,
+  ]));
+  summary.append(notice("提取成功、已被文章引用都不能证明知识完整。主题文章仍待语义复核，课件证据尚未接入文章；原视频继续保留。"));
+  if (d.summary.source_identity_mismatches || d.issues.length)
+    summary.append(notice(`需核对：${d.summary.source_identity_mismatches} 节来源身份不一致，${d.issues.length} 项引用问题。`));
+  main.append(summary);
+  const courses = el("section");
+  courses.id = "coverage-courses";
+  courses.append(el("h2", "逐课查看缺口"));
+  const filters = el("form", undefined, "coverage-filters");
+  const query = el("input");
+  query.type = "search";
+  query.placeholder = "筛选课程名称或原目录";
+  query.setAttribute("aria-label", "筛选课程名称或原目录");
+  const state = el("select");
+  state.setAttribute("aria-label", "课程整理状态");
+  for (const [value, label] of [
+    ["all", "全部课程"], ["unpublished", "还没有来源笔记"],
+    ["uncited", "尚未被文章引用"], ["cited", "已有草稿引用"],
+  ]) {
+    const o = el("option", label);
+    o.value = value;
+    state.append(o);
+  }
+  filters.append(query, state);
+  filters.addEventListener("submit", (event) => event.preventDefault());
+  const results = el("div");
+  const count = el("p", "", "muted");
+  count.setAttribute("role", "status");
+  const more = el("button", "再显示 40 节");
+  let limit = 40;
+  const states = {
+    not_registered: "尚未入库", pending: "待转写", transcribed: "已转写",
+    transcribed_with_gaps: "转写有缺口", failed: "处理失败", visual_only: "仅画面",
+  };
+  function render() {
+    const q = query.value.trim().toLocaleLowerCase();
+    const rows = d.courses.filter((r) =>
+      `${r.relative_path} ${r.title}`.toLocaleLowerCase().includes(q) &&
+      (state.value === "all" ||
+        (state.value === "unpublished" && !r.source_notes_published) ||
+        (state.value === "uncited" && !r.draft_articles.length) ||
+        (state.value === "cited" && r.draft_articles.length)),
+    );
+    results.replaceChildren();
+    count.textContent = `匹配 ${rows.length} 节，显示 ${Math.min(limit, rows.length)} 节`;
+    for (const r of rows.slice(0, limit)) {
+      const row = el("article", undefined, "result");
+      row.append(el("h3", r.title), el("p", r.relative_path, "muted"));
+      row.append(el("p", `${states[r.database_state] || r.database_state} · ${r.source_notes_published ? "来源笔记可读" : "来源笔记待发布"}`));
+      row.append(el("p", `已提取 ${r.extracted_speech_segments} 个语音片段；文章实际引用 ${r.draft_cited_speech_segments} 个片段、${r.draft_cited_frames} 张图。另有 ${r.unreferenced_extracted_speech_segments} 个已提取片段未被引用。`));
+      if (r.source_notes_published)
+        row.append(link("阅读来源笔记", "#lesson=" + r.id));
+      r.draft_articles.forEach((id, i) => {
+        row.append(el("span", " · "), link(`主题草稿 ${i + 1}`, "#article=" + id));
+      });
+      results.append(row);
+    }
+    if (!rows.length) results.append(el("p", "没有匹配的课程。", "empty"));
+    more.hidden = rows.length <= limit;
+  }
+  [query, state].forEach((n) => n.addEventListener("input", () => { limit = 40; render(); }));
+  more.addEventListener("click", () => { limit += 40; render(); });
+  courses.append(filters, count, results, more);
+  main.append(courses);
+  render();
+  const gaps = el("section");
+  gaps.id = "coverage-gaps";
+  gaps.append(el("h2", "尚未完成的验收"), list([
+    "完整主题规划、长材料综合和课件图文引用仍需补齐。",
+    "引用数量不代表原文支持结论；文章准确性、条件遗漏与图文对应需要独立复核。",
+    "独立备份与恢复验收尚未由本清单证明，不能据此删除原视频。",
+  ]));
+  function detail(title, values) {
+    const box = el("details");
+    box.append(el("summary", `${title}（${values.length}）`));
+    box.append(list(values.map((r) => typeof r === "string" ? r :
+      [r.relative_path || r.path || "未命名来源", r.reason || r.error || r.code].filter(Boolean).join(" · "),
+    )));
+    gaps.append(box);
+  }
+  detail("待处理课件与附件", d.pending_resources);
+  detail("无声来源（仍保留在范围中）", d.no_audio_sources);
+  detail("来源读取排除项", d.excluded_source_errors);
+  const findings = d.recorded_index_findings;
+  gaps.append(el("p", "以下为早期课件提取记录；后续 OCR 可能已补齐，仍需核对当前结果，不能直接当作当前失败。", "muted"));
+  detail("历史提取错误", findings.errors);
+  detail("历史跳过项", findings.skipped);
+  detail("历史 PDF 警告", findings.pdf_warnings);
+  main.append(gaps);
+  toc([["范围与状态", summary.id], ["逐课缺口", courses.id], ["待验收项", gaps.id]]);
+}
 async function route() {
   const version = ++routeVersion;
   activeReading = null;
@@ -644,6 +799,7 @@ async function route() {
     if (mode === "article")
       await article(id.split("/")[0], version, id.split("/")[1]);
     else if (mode === "sources") await sources(version);
+    else if (mode === "coverage") await coverage(version);
     else if (mode === "lesson")
       await lesson(id.split("/")[0], version, id.split("/")[1]);
     else if (mode === "terms") await terms(id, version);

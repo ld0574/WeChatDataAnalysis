@@ -40,9 +40,9 @@ def model(monkeypatch, store, key, intercept=None):
         context = json.loads(messages[1]["content"])
         stage = (
             "outline"
-            if schema == writer.OUTLINE
+            if schema == writer.evidence_schema(writer.OUTLINE, packet)
             else "exercises"
-            if schema == writer.EXERCISES
+            if schema == writer.evidence_schema(writer.EXERCISES, packet)
             else context["current_section"]["heading"]
         )
         calls.append(stage)
@@ -50,11 +50,11 @@ def model(monkeypatch, store, key, intercept=None):
             custom = intercept(stage, calls, context)
             if custom is not None:
                 return custom
-        if schema == writer.OUTLINE:
+        if schema == writer.evidence_schema(writer.OUTLINE, packet):
             return json.dumps(outline)
-        if schema == writer.EXERCISES:
+        if schema == writer.evidence_schema(writer.EXERCISES, packet):
             return json.dumps({k: full[k] for k in ("quiz", "pitfalls", "gaps")})
-        assert schema == writer.SECTION
+        assert schema == writer.evidence_schema(writer.SECTION, packet)
         number = headings.index(stage)
         result = dict(full["sections"][number])
         result["heading"] = stage
@@ -291,7 +291,7 @@ def test_chinese_question_search_keeps_topic_keywords(published, monkeypatch):
 
     def chinese(model_name, messages, schema):
         value = json.loads(delegate(model_name, messages, schema))
-        if schema == writer.SECTION and value["heading"] == "Definition":
+        if "paragraphs" in schema["properties"] and value["heading"] == "Definition":
             value["paragraphs"][0]["text"] += " 索引更新必须核对已有记录。"
         return json.dumps(value)
 
@@ -318,3 +318,60 @@ def test_model_rejection_updates_status_before_any_content_call(published, monke
     assert calls == [] and Wiki(store.root).catalog()["articles"] == []
     assert Wiki(store.root).catalog()["build"]["state"] == "failed"
     assert Wiki(store.root).catalog()["build"]["stage"] == "preparing"
+
+
+def test_gpu_retry_can_catch_short_gaps_without_flooding_progress_files(
+    published, monkeypatch
+):
+    store, key = published
+    _, packet = model(monkeypatch, store, key)
+    clock = [0.0]
+    sleeps, attempts, progress = [], [], []
+    monkeypatch.setattr(writer.time, "monotonic", lambda: clock[0])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    @contextmanager
+    def occupied(_):
+        attempts.append(clock[0])
+        if clock[0] < 10.5:
+            raise GpuBusyError("busy")
+        yield
+
+    monkeypatch.setattr(writer.time, "sleep", sleep)
+    monkeypatch.setattr(writer, "gpu_lease", occupied)
+    job = writer.DraftJob(ReadOnlyArchive(store.root), packet, "local", "digest", 20)
+    monkeypatch.setattr(job, "progress", lambda state, *a, **k: progress.append(state))
+    with job.slot("outline"):
+        assert clock[0] == 10.5
+    assert len(attempts) == 43 and max(sleeps) == 0.25
+    assert progress == ["waiting_gpu", "waiting_gpu", "generating"]
+
+
+def test_decoding_schema_only_allows_this_packets_source_and_frame_ids(
+    published, monkeypatch
+):
+    store, key = published
+    _, packet = model(monkeypatch, store, key)
+    original = json.dumps(writer.ARTICLE, sort_keys=True)
+    bound = writer.evidence_schema(writer.ARTICLE, packet)
+    properties = bound["properties"]
+    assert set(
+        properties["overview"]["properties"]["citations"]["items"]["enum"]
+    ) == set(packet["sources"])
+    section = properties["sections"]["items"]["properties"]
+    assert set(section["image"]["enum"]) == {""} | {
+        ref for ref, source in packet["sources"].items() if source["kind"] == "frame"
+    }
+    assert "minItems" not in section["code_citations"]  # Empty code stays possible.
+    assert properties["objectives"] == writer.STRINGS  # Free text, not source IDs.
+    assert properties["quiz"]["items"]["properties"]["citations"]["minItems"] == 1
+    assert json.dumps(writer.ARTICLE, sort_keys=True) == original
+    # A different packet cannot inherit the previous topic's allowed citations.
+    other = {"sources": {"different:1": {"kind": "speech"}}}
+    next_schema = writer.evidence_schema(writer.ARTICLE, other)
+    assert next_schema["properties"]["overview"]["properties"]["citations"]["items"][
+        "enum"
+    ] == ["different:1"]
