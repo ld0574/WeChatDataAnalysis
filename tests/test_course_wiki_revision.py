@@ -57,7 +57,8 @@ def setup(published, monkeypatch, flagged=("section-0-p-0", "quiz-0"), intercept
                 return custom
         original = context["original"]
         refs = original["citations"]
-        assert set(schema["properties"]["references"]["items"]["enum"]) == set(
+        replacement = schema["oneOf"][0]
+        assert set(replacement["properties"]["references"]["items"]["enum"]) == set(
             context["sources"]
         )
         if original["target"].startswith("quiz-"):

@@ -63,12 +63,31 @@ QUIZ_FIX = object_schema(
 
 
 def fix_schema(schema, packet):
-    result = json.loads(json.dumps(schema))
-    result["properties"]["references"]["items"] = {
+    replacement = json.loads(json.dumps(schema))
+    replacement["properties"]["action"] = {"type": "string", "enum": ["replace"]}
+    replacement["properties"]["references"]["items"] = {
         "type": "string",
         "enum": sorted(packet["sources"]),
     }
-    return result
+    replacement["properties"]["references"]["minItems"] = 1
+    for name in ("text", "question", "answer", "explanation"):
+        if name in replacement["properties"]:
+            replacement["properties"][name]["minLength"] = 1
+    if "criteria" in replacement["properties"]:
+        replacement["properties"]["criteria"]["minItems"] = 1
+    omission = json.loads(json.dumps(schema))
+    omission["properties"]["action"] = {"type": "string", "enum": ["omit"]}
+    omission["properties"]["gap"]["minLength"] = 1
+    for name, value in omission["properties"].items():
+        if name in {"action", "gap"}:
+            continue
+        if value["type"] == "array":
+            value["maxItems"] = 0
+        else:
+            value["enum"] = [""]
+    # Complete alternative objects let the decoder enforce the action's shape.
+    # Retain validate_fix as a second check on cached or malformed responses.
+    return {"oneOf": [replacement, omission]}
 
 
 def validate_fix(value, packet, *, quiz=False, code=False):
