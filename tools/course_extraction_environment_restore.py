@@ -198,6 +198,7 @@ def restore(
                         "original_installation_access_attempts",
                         "network_connection_attempts",
                         "outside_module_count",
+                        "original_installation_native_mapping_count",
                     ]
                 )
                 or result.get("gpu_context_initialized") is not False

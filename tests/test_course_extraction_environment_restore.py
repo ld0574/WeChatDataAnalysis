@@ -47,6 +47,7 @@ def probe_result(count):
         "original_installation_access_attempts": 0,
         "network_connection_attempts": 0,
         "outside_module_count": 0,
+        "original_installation_native_mapping_count": 0,
         "gpu_context_initialized": False,
         "gpu_inference_verified": False,
     }
@@ -143,6 +144,8 @@ def test_authority_failure_leaves_destination_absent(bundle, tmp_path, change):
     [
         ("network_connection_attempts", 1),
         ("gpu_context_initialized", True),
+        ("original_installation_native_mapping_count", 1),
+        ("original_installation_native_mapping_count", None),
         ("files_verified", 0),
     ],
 )
