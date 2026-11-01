@@ -55,12 +55,13 @@ def stop_worker(worker, root):
         owned = [(p, p.create_time()) for p in [*owner.children(recursive=True), owner]]
     except psutil.NoSuchProcess:
         owned = []
-    try:
-        subprocess.run(
-            ["ollama", "stop", "qwen3.5:9b"], capture_output=True, timeout=15
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    # Model inference runs in Ollama's server, outside our worker process tree.
+    # Both local course models can own the shared GPU slot during a review.
+    for model in ("qwen3.5:9b", "course-defiant:q4"):
+        try:
+            subprocess.run(["ollama", "stop", model], capture_output=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     try:
         worker.wait(timeout=15)
     except subprocess.TimeoutExpired:

@@ -139,6 +139,32 @@ def test_timeout_stops_only_owned_process(root, monkeypatch):
             process.wait(timeout=5)
 
 
+@pytest.mark.parametrize("first_stop_fails", [False, True])
+def test_pause_unloads_both_course_models_even_if_first_stop_fails(
+    root, monkeypatch, first_stop_fails
+):
+    stopped = []
+
+    def stop(command, **kwargs):
+        stopped.append(command)
+        if first_stop_fails and len(stopped) == 1:
+            raise subprocess.TimeoutExpired(command, 15)
+
+    def absent(pid):
+        raise guard.psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(guard.subprocess, "run", stop)
+    monkeypatch.setattr(guard.psutil, "Process", absent)
+    worker = SimpleNamespace(pid=123, wait=lambda **kwargs: 0)
+    guard.stop_worker(worker, root)
+    assert stopped == [
+        ["ollama", "stop", "qwen3.5:9b"],
+        ["ollama", "stop", "course-defiant:q4"],
+    ]
+    assert (root / "pause.flag").exists()
+    assert (root / "supervisor-stop.flag").exists()
+
+
 def test_revision_monitor_has_independent_lock_and_status(root):
     worker = SimpleNamespace(pid=123, poll=lambda: 0, returncode=0)
 
