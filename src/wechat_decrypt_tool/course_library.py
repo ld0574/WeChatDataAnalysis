@@ -352,6 +352,18 @@ def create_app(store, model="qwen3.5:9b"):
         except (OSError, ValueError):
             raise HTTPException(503, "主题文章校验失败") from None
 
+    @app.get("/wiki/api/search")
+    def wiki_search(q: str):
+        from .course_wiki import Wiki
+
+        try:
+            return {
+                "method": "local_article_keyword_search",
+                "items": Wiki(store.root).search(q),
+            }
+        except (OSError, ValueError, KeyError):
+            raise HTTPException(503, "主题正文检索暂不可用") from None
+
     @app.get("/")
     def home():
         return FileResponse(resources / "course_library.html", media_type="text/html")

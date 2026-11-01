@@ -135,7 +135,12 @@ function image(ref, caption) {
 function articleRow(row) {
   const r = el("div", undefined, "row");
   const h = el("h3");
-  h.append(link(row.title, "#article=" + row.id));
+  h.append(
+    link(
+      row.title,
+      "#article=" + row.id + (row.section ? "/" + row.section : ""),
+    ),
+  );
   const state = stored(row.id);
   r.append(
     h,
@@ -154,6 +159,11 @@ function articleRow(row) {
         "meta",
       ),
     );
+  if (row.excerpt)
+    r.append(
+      el("p", row.excerpt),
+      el("p", `命中：${row.heading} · 本地关键词匹配`, "meta"),
+    );
   return r;
 }
 async function home(version) {
@@ -170,44 +180,78 @@ async function home(version) {
       "lead",
     ),
   );
-  main.append(
-    el(
-      "p",
-      `${wiki.articles.length} 篇主题草稿 · ${catalog.published} / ${catalog.requested} 节课程已发布来源笔记`,
-      "meta",
-    ),
-  );
+  const counts = el("p", "", "meta");
+  const status = el("p", "", "meta");
+  status.setAttribute("role", "status");
+  main.append(counts);
   main.append(
     notice(
       "当前文章为本地模型草稿。引用编号与结构已检查，概念、图文对应和答案仍待语义复核；当前资料不足以替代或删除原视频。",
     ),
   );
-  if (wiki.build) {
+  function updateStatus() {
+    counts.textContent = `${wiki.articles.length} 篇主题草稿 · ${catalog.published} / ${catalog.requested} 节课程已发布来源笔记`;
+    if (!wiki.build) {
+      status.textContent = "";
+      return;
+    }
     const names = {
       waiting_gpu: "主题试点正在等待现有 GPU 任务让出时隙",
       generating: "正在本机生成主题试点",
+      assembling: "正在合并与检查章节",
+      paused: "文章整理已暂停，断点已保留",
       deferred_gpu: "GPU 等待已结束，试点尚未生成",
       interrupted: "主题试点进程已退出，任务需要续跑",
       failed: "试点生成失败，未发布半成品",
       draft_published: "主题试点草稿已发布，等待内容复核",
     };
-    main.append(
-      el("p", names[wiki.build.state] || "主题试点状态待核对", "meta"),
-    );
+    const step = wiki.build.stage;
+    const labels = {
+      outline: "提纲",
+      exercises: "自测与易错点",
+      complete: "合并校验",
+      interrupted: "当前步骤",
+    };
+    const stageName =
+      labels[step] ||
+      (step?.startsWith("section-")
+        ? `正文第 ${Number(step.slice(8)) + 1} 节`
+        : "");
+    const completed = wiki.build.completed_stages;
+    status.textContent =
+      (names[wiki.build.state] || "主题试点状态待核对") +
+      (stageName ? ` · ${stageName}` : "") +
+      (Number.isInteger(completed)
+        ? ` · ${completed}/${wiki.build.total_stages} 步已保存`
+        : "");
   }
+  main.append(status);
+  updateStatus();
   const results = el("div");
-  const render = (q) => {
+  let query = "";
+  const render = async (q) => {
+    query = q;
     results.replaceChildren();
-    const rows = wiki.articles.filter((a) =>
-      a.title.toLocaleLowerCase().includes(q.toLocaleLowerCase()),
-    );
+    let rows = wiki.articles;
+    if (q.trim()) {
+      results.append(el("p", "正在本地检索主题正文…", "meta"));
+      try {
+        rows = (await api("/wiki/api/search?q=" + encodeURIComponent(q))).items;
+      } catch (error) {
+        if (version === routeVersion && query === q)
+          results.replaceChildren(el("p", error.message, "error"));
+        return;
+      }
+      if (version !== routeVersion || query !== q) return;
+      results.replaceChildren();
+    }
     for (const row of rows) results.append(articleRow(row));
     if (!rows.length)
       results.append(
         el(
           "p",
           q
-            ? "没有匹配的主题文章。可以到来源课程中检索原始笔记。"
+            ? "没有匹配的主题正文或自测。可以到来源课程中检索原始笔记。"
             : "主题文章尚未发布。来源笔记正在整理，不能将片段摘要当作完整 Wiki。",
           "empty",
         ),
@@ -216,8 +260,27 @@ async function home(version) {
   main.append(searchForm("搜索主题文章", render), results);
   render("");
   toc([["主题文章", "content"]]);
+  async function poll() {
+    if (version !== routeVersion) return;
+    try {
+      const next = await api("/wiki/api/catalog");
+      if (version !== routeVersion) return;
+      const changed =
+        JSON.stringify(next.articles) !== JSON.stringify(wiki.articles);
+      wiki.articles = next.articles;
+      wiki.build = next.build;
+      updateStatus();
+      if (changed) render(query);
+    } catch {
+      if (version === routeVersion)
+        status.textContent =
+          "进度暂时无法更新，已显示的内容仍可阅读；稍后自动重试。";
+    }
+    if (version === routeVersion) setTimeout(poll, 10000);
+  }
+  setTimeout(poll, 10000);
 }
-async function article(id, version) {
+async function article(id, version, targetSection) {
   const value = await api("/wiki/api/article/" + encodeURIComponent(id));
   if (version !== routeVersion) return;
   const a = value.article,
@@ -407,6 +470,10 @@ async function article(id, version) {
     );
     main.insertBefore(b, body);
   }
+  if (targetSection)
+    document
+      .getElementById(targetSection)
+      ?.scrollIntoView({ behavior: "auto" });
 }
 async function sources(version) {
   const c = await api("/library/api/catalog");
@@ -574,7 +641,8 @@ async function route() {
     const mode = pos < 0 ? hash : hash.slice(0, pos);
     const id = pos < 0 ? "" : decodeURIComponent(hash.slice(pos + 1));
     main.replaceChildren();
-    if (mode === "article") await article(id, version);
+    if (mode === "article")
+      await article(id.split("/")[0], version, id.split("/")[1]);
     else if (mode === "sources") await sources(version);
     else if (mode === "lesson")
       await lesson(id.split("/")[0], version, id.split("/")[1]);

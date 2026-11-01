@@ -317,51 +317,7 @@ def generate(store, plan, model="qwen3.5:9b", *, wait_seconds=0):
                 if local_model_digest(model) != model_digest:
                     raise ValueError("Local model revision changed during generation")
             article = json.loads(answer)
-            checks = validate_article(article, packet)
-            store.checkpoint()
-            value = {
-                "version": 1,
-                "id": key,
-                "policy": POLICY,
-                "article": article,
-                "packet": packet,
-                "model": model,
-                "model_digest": model_digest,
-                "checks": checks,
-                "state": "model_draft",
-                "updated": time.time(),
-            }
-            sha = digest(canonical(value))
-            objects = folder / "objects"
-            objects.mkdir(exist_ok=True)
-            atomic_json(objects / (sha + ".json"), value)
-            # atomic_json pretty prints; bind the actual bytes, not canonical ones.
-            final = objects / (sha + ".json")
-            file_sha = digest(final.read_bytes())
-            index = wiki.catalog()
-            index.pop("build", None)
-            index["articles"].append(
-                {
-                    "id": key,
-                    "title": article["title"],
-                    "object": sha,
-                    "file_sha256": file_sha,
-                    "state": "model_draft",
-                    "updated": value["updated"],
-                    "source_count": len(packet["bindings"]),
-                    "questions": len(article["quiz"]),
-                    "images": sum(bool(s["image"]) for s in article["sections"]),
-                    "gaps": len(article["gaps"]),
-                    "semantic_accuracy_verified": False,
-                }
-            )
-            index["updated"] = time.time()
-            atomic_json(folder / "catalog.json", index)
-            atomic_json(
-                folder / "last-build.json",
-                {"state": "draft_published", "id": key, "updated": time.time()},
-            )
-            return {"id": key, "state": "draft_published", **checks}
+            return publish_draft(store, article, packet, key, model, model_digest)
         except Exception as exc:
             atomic_json(
                 folder / "last-build.json",
@@ -375,6 +331,61 @@ def generate(store, plan, model="qwen3.5:9b", *, wait_seconds=0):
                 },
             )
             raise
+
+
+def publish_draft(
+    store, article, packet, key, model, model_digest, *, pipeline="single-v1"
+):
+    """Publish only an assembled, structurally valid draft; no semantic claim."""
+    checks = validate_article(article, packet)
+    store.checkpoint()
+    wiki = Wiki(store.root)
+    folder = wiki.root
+    folder.mkdir(exist_ok=True)
+    value = {
+        "version": 1,
+        "id": key,
+        "policy": POLICY,
+        "pipeline": pipeline,
+        "article": article,
+        "packet": packet,
+        "model": model,
+        "model_digest": model_digest,
+        "checks": checks,
+        "state": "model_draft",
+        "updated": time.time(),
+    }
+    sha = digest(canonical(value))
+    objects = folder / "objects"
+    objects.mkdir(exist_ok=True)
+    atomic_json(objects / (sha + ".json"), value)
+    # atomic_json pretty prints; bind the actual bytes, not canonical ones.
+    final = objects / (sha + ".json")
+    file_sha = digest(final.read_bytes())
+    index = wiki.catalog()
+    index.pop("build", None)
+    index["articles"].append(
+        {
+            "id": key,
+            "title": article["title"],
+            "object": sha,
+            "file_sha256": file_sha,
+            "state": "model_draft",
+            "updated": value["updated"],
+            "source_count": len(packet["bindings"]),
+            "questions": len(article["quiz"]),
+            "images": sum(bool(s["image"]) for s in article["sections"]),
+            "gaps": len(article["gaps"]),
+            "semantic_accuracy_verified": False,
+        }
+    )
+    index["updated"] = time.time()
+    atomic_json(folder / "catalog.json", index)
+    atomic_json(
+        folder / "last-build.json",
+        {"state": "draft_published", "id": key, "updated": time.time()},
+    )
+    return {"id": key, "state": "draft_published", **checks}
 
 
 class Wiki:
@@ -391,7 +402,11 @@ class Wiki:
         status = self.root / "last-build.json"
         if status.exists():
             value = json.loads(status.read_text("utf-8"))
-            if value.get("state") == "waiting_gpu" and value.get("pid"):
+            if value.get("state") in (
+                "waiting_gpu",
+                "generating",
+                "assembling",
+            ) and value.get("pid"):
                 import psutil
 
                 try:
@@ -403,7 +418,17 @@ class Wiki:
                 if not alive:
                     value = {**value, "state": "interrupted"}
             result["build"] = {
-                k: value[k] for k in ("state", "updated", "error_type") if k in value
+                k: value[k]
+                for k in (
+                    "state",
+                    "updated",
+                    "error_type",
+                    "error_code",
+                    "stage",
+                    "completed_stages",
+                    "total_stages",
+                )
+                if k in value
             }
         return result
 
@@ -425,6 +450,105 @@ class Wiki:
         validate_article(value["article"], value["packet"])
         return value
 
+    def search(self, query, limit=30):
+        """Search published article prose and self-checks without a model call."""
+        query = query.strip().casefold()[:300]
+        if len(query) < 2:
+            return []
+        anchors = [
+            w
+            for w in re.findall(r"[a-z][a-z0-9_+.-]+", query)
+            if w
+            not in {"how", "what", "why", "the", "is", "are", "to", "of", "does", "do"}
+        ]
+        plain = re.sub(
+            r"如何|怎么|为什么|什么是|是什么|请问|一下|的|了|吗|呢", " ", query
+        )
+        chunks = re.findall(r"[\u3400-\u9fff]{2,}", plain)
+        grams = {word[i : i + 2] for word in chunks for i in range(len(word) - 1)}
+        if not anchors and not grams:
+            return []
+
+        def score(text):
+            text = text.casefold()
+            return (
+                12 * (query in text)
+                + 4 * sum(w in text for w in anchors)
+                + sum(g in text for g in grams)
+            )
+
+        results = []
+        for row in self.catalog()["articles"]:
+            article = self.article(row["id"])["article"]
+            passages = [
+                {
+                    "section": "objectives",
+                    "heading": "概述",
+                    "text": article["overview"]["text"],
+                }
+            ]
+            for number, section in enumerate(article["sections"]):
+                passages.extend(
+                    {
+                        "section": "section-" + str(number),
+                        "heading": section["heading"],
+                        "text": p["text"],
+                    }
+                    for p in section["paragraphs"]
+                )
+                if section["code"]:
+                    passages.append(
+                        {
+                            "section": "section-" + str(number),
+                            "heading": section["heading"],
+                            "text": section["code"],
+                        }
+                    )
+            passages.extend(
+                {
+                    "section": "quiz",
+                    "heading": "自测与解析",
+                    "text": " ".join(
+                        q[k] for k in ("question", "answer", "explanation")
+                    ),
+                }
+                for q in article["quiz"]
+            )
+            passages.extend(
+                {"section": "pitfalls", "heading": "易错点", "text": p["text"]}
+                for p in article["pitfalls"]
+            )
+            text = (
+                article["title"]
+                + " "
+                + " ".join(p["heading"] + " " + p["text"] for p in passages)
+            ).casefold()
+            if anchors and not all(word in text for word in anchors):
+                continue
+            if (
+                grams
+                and not anchors
+                and sum(g in text for g in grams) < min(2, len(grams))
+            ):
+                continue
+            total = score(text) + 2 * score(article["title"])
+            if not total:
+                continue
+            best = max(passages, key=lambda p: score(p["heading"] + " " + p["text"]))
+            results.append(
+                {
+                    **row,
+                    "section": best["section"],
+                    "heading": best["heading"],
+                    "excerpt": best["text"][:240]
+                    + ("…" if len(best["text"]) > 240 else ""),
+                    "score": total,
+                }
+            )
+        return sorted(results, key=lambda r: (-r["score"], r["title"]))[
+            : max(1, min(50, limit))
+        ]
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -432,8 +556,12 @@ def main():
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--model", default="qwen3.5:9b")
     parser.add_argument("--wait-gpu-seconds", type=int, default=0)
+    parser.add_argument("--strategy", choices=("staged", "single"), default="staged")
     args = parser.parse_args()
-    result = generate(
+    writer = generate
+    if args.strategy == "staged":
+        from .course_wiki_writer import generate as writer
+    result = writer(
         ReadOnlyArchive(args.root),
         json.loads(args.plan.read_text("utf-8")),
         args.model,
