@@ -364,6 +364,11 @@ def published_report(root, article_id, *, job=None):
         digest(canonical(c)) for _, c in contexts
     ] or recipe["extra"]["schemas"] != [selection_schema(c) for _, c in contexts]:
         raise ValueError("omissions_frozen_requests_changed")
+    from .course_wiki_evidence import RANGE_NOTICE
+
+    range_notice = RANGE_NOTICE if article["packet"].get("evidence_partitions") else ""
+    if recipe.get("original_range_notice", "") != range_notice:
+        raise ValueError("omissions_original_range_notice_changed")
     chapters = []
     for saved, (name, context) in zip(receipt["chapters"], contexts, strict=True):
         data = {"reviews": saved["reviews"]}
@@ -372,7 +377,7 @@ def published_report(root, article_id, *, job=None):
         binding = digest(
             canonical(
                 {
-                    "prompt": recipe["extra"]["system"],
+                    "prompt": recipe["extra"]["system"] + range_notice,
                     "schema": selection_schema(context),
                     "context": context,
                     "model_digest": recipe["model_digest"],

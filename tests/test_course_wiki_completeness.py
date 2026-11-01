@@ -173,6 +173,44 @@ def test_per_source_batches_retain_entire_chapter_and_partition_every_window(dra
     omissions.validate(data, unreferenced)
 
 
+@pytest.mark.parametrize("per_source", [False, True])
+def test_partitioned_original_prompt_binding_reads_without_rerunning_model(
+    drafted, monkeypatch, per_source
+):
+    store, article_id = drafted
+    original = Wiki(store.root).article(article_id)
+    original["packet"]["evidence_partitions"] = {"synthetic": "frozen-partition"}
+
+    class FrozenWiki:
+        def __init__(self, root):
+            self.root = root / "wiki"
+
+        def article(self, key):
+            assert key == article_id
+            return copy.deepcopy(original)
+
+    monkeypatch.setattr(omissions, "Wiki", FrozenWiki)
+    calls = fake_model(monkeypatch)
+    result = omissions.review(ReadOnlyArchive(store.root), article_id, per_source=per_source)
+    folder = store.root / "wiki/completeness-jobs" / result["job"]
+    before = {p.name: p.read_bytes() for p in folder.glob("*.json")}
+    saved = omissions.published_report(store.root, article_id, job=result["job"])
+    assert saved["summary"] == result["summary"]
+    count = len(calls)
+    omissions.review(ReadOnlyArchive(store.root), article_id, per_source=per_source)
+    assert len(calls) == count
+    assert {p.name: p.read_bytes() for p in folder.glob("*.json")} == before
+    client = TestClient(create_app(ReadOnlyArchive(store.root)))
+    response = client.get("/wiki/api/completeness/" + article_id, params={"job": result["job"]})
+    assert response.status_code == 200 and response.json() == saved
+    checkpoint = next(p for p in folder.glob("chapter-*.json"))
+    value = json.loads(checkpoint.read_bytes())
+    value["input_sha256"] = "tampered"
+    checkpoint.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="omissions_checkpoint_changed"):
+        omissions.published_report(store.root, article_id, job=result["job"])
+
+
 def test_per_source_recipe_is_separate_and_old_reports_remain_verifiable(
     drafted, monkeypatch
 ):
