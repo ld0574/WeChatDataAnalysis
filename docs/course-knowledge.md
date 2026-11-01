@@ -391,4 +391,17 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 
 删除前需要：所有可读课程处理完成；逐项处置不可读视频和索引错误；复核专业名词、摘要和引用；对关键代码/操作密集课程补充视觉资料；确认有可恢复的知识库备份。需要保留再转写能力时，应另外保留压缩音频。PDF 提取超限或扫描页面不会被当成完整文本。
 
+可以用隔离的小样本对照评估本地文本模型，保持生产模型和笔记不变：
+
+```powershell
+$env:PYTHONPATH = Join-Path $PWD 'src'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_model_trial --root output/course-knowledge --prepare-only
+# 候选权重须先导入本机 Ollama；此命令不会下载或调用云模型。
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_model_trial --root output/course-knowledge --models qwen3.5:9b course-defiant:q4
+```
+
+样本由一个只读数据库快照固定：最多四个已有笔记窗口，侧重已有可疑关系、代码术语和不同课程，并加入三组有固定答案的合成事实题。两边调用相同生产摘要函数、提示词和参数，交替运行顺序，逐对申请现有 GPU 锁，结束后卸载试验模型，避免影响后续 ASR 显存。`model-trials/defiant-q4` 保存输入、模型摘要与代码指纹、断点结果、请求哈希、耗时、结构指标和本地 `review.html`。恢复时拒绝输入、模型摘要或生成代码变更；新配置应指定新的 `--name`。真实课程证据和结果仅保存在忽略目录中，不提交 Git。
+
+该对照只测试已有 ASR/OCR 文本上的摘要及少量事实提取，不测试候选模型的图像识别或语音转写。固定答案题、引用存在性、可疑关系标签和耗时均不能证明真实课程的语义准确性；报告不会自动宣布优胜者或切换生产模型。模型模板和推理引擎也应随实际部署另行记录。
+
 可用空间低于 8 GiB 时暂停。全量耗时应依据本机课程样本和去重后的时长估算，不能用短微信语音的测速推算长课。未通过验收前，保留原视频和原位置的所有非视频资料。
