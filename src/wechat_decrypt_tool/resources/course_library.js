@@ -374,13 +374,19 @@ async function article(id, version, targetSection) {
         if (report.unassigned_source_ids.length) omissionBox.append(notice(`另有 ${report.unassigned_source_ids.length} 份固定来源未进入本次章节检查，仍待补查。`));
         if (c.missing || c.partial || c.unclear) omissionBox.before(notice("遗漏检查发现待补内容，请展开检查原文与章节；这篇文章仍是草稿。"));
         const labels = { covered: "已讲到", missing: "遗漏", partial: "部分讲到", not_essential: "模型认为无需展开", unclear: "无法判断" };
-        for (const chapter of report.chapters) {
+        const chapters = new Map();
+        for (const batch of report.chapters) {
+          const section = "section-" + /^chapter-(\d+)/.exec(batch.stage)[1];
+          if (!chapters.has(section)) chapters.set(section, {heading: batch.heading, section, reviews: []});
+          chapters.get(section).reviews.push(...batch.reviews);
+        }
+        for (const chapter of chapters.values()) {
           const chapterBox = el("details", undefined, "omission-chapter");
           const pending = chapter.reviews.filter(r => ["missing", "partial", "unclear"].includes(r.coverage)).length;
           chapterBox.append(el("summary", `${chapter.heading} · ${pending} 个范围待核查`));
           for (const row of chapter.reviews) {
             const result = el("div", undefined, "result");
-            result.append(link(`${chapter.heading} · ${labels[row.coverage]}`, "#article=" + id + "/section-" + chapter.stage.slice(8)), el("p", row.reason), el("blockquote", row.original.quote));
+            result.append(link(`${chapter.heading} · ${labels[row.coverage]}`, "#article=" + id + "/" + chapter.section), el("p", row.reason), el("blockquote", row.original.quote));
             refs(result, [row.original.source], p);
             for (const target of row.article_evidence) {
               const section = /^section-\d+/.exec(target)?.[0] || (target.startsWith("quiz-") ? "quiz" : target.startsWith("pitfalls-") ? "pitfalls" : "objectives");
@@ -391,7 +397,7 @@ async function article(id, version, targetSection) {
           omissionBox.append(chapterBox);
         }
       } else if (["waiting_gpu", "generating", "assembling"].includes(report.state)) {
-        omissionStatus.textContent = `遗漏检查${report.state === "waiting_gpu" ? "正在等待 GPU" : "正在进行"} · ${report.completed_stages}/${report.total_stages} 章已保存。`;
+        omissionStatus.textContent = `遗漏检查${report.state === "waiting_gpu" ? "正在等待 GPU" : "正在进行"} · ${report.completed_stages}/${report.total_stages} 项检查已保存。`;
         setTimeout(readOmissions, 10000);
       } else {
         omissionStatus.textContent = report.state === "not_started" ? "尚未检查原文中的知识是否被文章遗漏。已有句子有出处，不等于内容完整。" : "遗漏检查未完成，断点保留；不能当作完整性检查通过。";

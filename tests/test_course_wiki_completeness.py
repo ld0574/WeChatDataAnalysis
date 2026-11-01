@@ -125,6 +125,120 @@ def test_every_original_character_is_assigned_without_summary_or_article_mutatio
     )
 
 
+def test_per_source_batches_retain_entire_chapter_and_partition_every_window(drafted):
+    store, article_id = drafted
+    value = Wiki(store.root).article(article_id)
+    first = value["packet"]["chapter_scopes"][0][0]
+    value["packet"]["sources"]["synthetic-uncited-source"] = copy.deepcopy(
+        value["packet"]["sources"][first]
+    )
+    value["packet"]["chapter_scopes"][0].append("synthetic-uncited-source")
+    frozen = canonical(value)
+    original = dict(omissions.stages(value))
+    focused = list(omissions.stages(value, per_source=True))
+    assert len(focused) > len(original)
+    for chapter, context in original.items():
+        batches = [c for name, c in focused if name.startswith(chapter + "-source-")]
+        windows = {}
+        for batch in batches:
+            assert batch["sources"] == context["sources"]
+            assert {w["source"] for w in batch["windows"].values()} == {
+                batch["source_focus"]
+            }
+            assert all(
+                batch["source_focus"] in t["citations"]
+                for t in batch["article_targets"].values()
+            )
+            assert not windows.keys() & batch["windows"].keys()
+            windows.update(batch["windows"])
+        assert windows == context["windows"]
+    assert canonical(value) == frozen
+    unreferenced = next(c for _, c in focused if not c["article_targets"])
+    schema = omissions.selection_schema(unreferenced)["properties"]["reviews"]["items"][
+        "properties"
+    ]
+    assert schema["article_evidence"] == {"type": "array", "maxItems": 0}
+    assert "covered" not in schema["coverage"]["enum"]
+    data = {
+        "reviews": [
+            {
+                "window": key,
+                "coverage": "missing",
+                "reason": "No corresponding explanation.",
+                "article_evidence": [],
+            }
+            for key in unreferenced["windows"]
+        ]
+    }
+    omissions.validate(data, unreferenced)
+
+
+def test_per_source_recipe_is_separate_and_old_reports_remain_verifiable(
+    drafted, monkeypatch
+):
+    store, article_id = drafted
+    calls = fake_model(monkeypatch)
+    first = check(drafted)
+    path = store.root / "wiki/completeness-jobs" / first["job"] / "receipt.json"
+    original = path.read_bytes()
+    first_report = canonical(
+        omissions.published_report(store.root, article_id, job=first["job"])
+    )
+    second = omissions.review(ReadOnlyArchive(store.root), article_id, per_source=True)
+    assert first["job"] != second["job"]
+    assert "source_batching" not in first
+    assert second["source_batching"] == omissions.SOURCE_BATCHING
+    assert len(calls) == 8
+    assert path.read_bytes() == original
+    assert (
+        canonical(omissions.published_report(store.root, article_id, job=first["job"]))
+        == first_report
+    )
+    assert omissions.published_report(store.root, article_id)["job"] == second["job"]
+    changed = json.loads(
+        (
+            store.root / "wiki/completeness-jobs" / second["job"] / "receipt.json"
+        ).read_bytes()
+    )
+    changed.pop("source_batching")
+    for target in (
+        store.root / "wiki/completeness-jobs" / second["job"] / "receipt.json",
+        store.root / "wiki/completeness" / (article_id + ".json"),
+    ):
+        target.write_text(json.dumps(changed), encoding="utf-8")
+    with pytest.raises(ValueError, match="omissions_source_batching_changed"):
+        omissions.published_report(store.root, article_id)
+
+
+def test_per_source_interruption_keeps_checkpoints_and_wrong_source_stays_invalid(
+    drafted, monkeypatch
+):
+    store, article_id = drafted
+    interrupted = []
+
+    def interrupt(context, calls):
+        if len(calls) == 2 and not interrupted:
+            interrupted.append(True)
+            raise GpuBusyError("Synthetic handoff")
+
+    calls = fake_model(monkeypatch, interrupt)
+    with pytest.raises(GpuBusyError):
+        omissions.review(ReadOnlyArchive(store.root), article_id, per_source=True)
+    folder = next((store.root / "wiki/completeness-jobs").iterdir())
+    path = folder / "chapter-0-source-0.json"
+    checkpoint = path.read_bytes()
+    result = omissions.review(ReadOnlyArchive(store.root), article_id, per_source=True)
+    assert result["state"] == "model_omissions_complete"
+    assert len(calls) == 5 and path.read_bytes() == checkpoint
+    context = calls[0]
+    data = response(context)
+    context["article_targets"][data["reviews"][0]["article_evidence"][0]][
+        "citations"
+    ] = ["foreign"]
+    with pytest.raises(ValueError, match="omissions_evidence_from_other_source"):
+        omissions.validate(data, context)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

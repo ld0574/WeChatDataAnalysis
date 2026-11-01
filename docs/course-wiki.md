@@ -139,6 +139,18 @@ $env:PYTHONPATH = 'D:\Project\WeChatDataAnalysis\src'
 覆盖清单区分当前主题草稿和保留版本数，课程引用仅汇总当前版本，避免把旧问题稿的引用
 冒充现用文章的覆盖情况。历史文章对象仍逐个校验，不因界面隐藏就跳过完整性检查。
 
+## 逐份来源的遗漏检查
+
+遗漏检查遇到同章多份原文互相串用证据时，可显式选择逐份来源检查：
+
+```powershell
+.venv\Scripts\python.exe -m wechat_decrypt_tool.course_wiki_completeness --root output/course-knowledge --article <文章ID> --model qwen3.5:9b --wait-gpu-seconds 3600 --per-source
+```
+
+每次仍读取完整章节原文，只检查其中一份来源的连续范围，文章证据限于实际引用该来源的解释。
+没有对应解释的来源仍逐字符检查，不能算作已覆盖。页面按原章节汇总，链接仍跳到该章。
+此策略有独立任务指纹与断点；旧配方、失败尝试、预算和历史报告不变，结果仍不代表语义验收。
+
 ## 学习记录与迁移
 
 作答、逐题自评、已读、复习标记、阅读位置存于当前浏览器的 `localStorage`。
