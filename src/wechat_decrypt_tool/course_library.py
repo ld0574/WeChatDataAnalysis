@@ -446,6 +446,7 @@ def create_app(store, model="qwen3.5:9b"):
     def asset(name: str):
         allowed = {
             "course_library.js": "text/javascript",
+            "course_learning.js": "text/javascript",
             "course_library.css": "text/css",
         }
         if name not in allowed:

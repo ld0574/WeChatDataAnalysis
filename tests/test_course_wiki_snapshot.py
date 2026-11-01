@@ -57,6 +57,7 @@ def test_restore_routes_without_original_archive(publication, tmp_path):
     assert client.get("/wiki/api/coverage").status_code == 503
     source = client.get("/library-assets/course_library.js").text
     assert "snapshotNotice(versions)" in source and "snapshotNotice(wiki)" in source
+    assert client.get("/library-assets/course_learning.js").status_code == 200
     process = subprocess.run(
         [
             sys.executable,
@@ -167,7 +168,15 @@ def test_bound_reports_survive_restore_and_cannot_be_omitted_from_manifest(
 
 @pytest.mark.parametrize(
     "mutation",
-    ["hash", "missing_manifest", "scope", "runtime", "escape", "missing_image"],
+    [
+        "hash",
+        "missing_manifest",
+        "scope",
+        "runtime",
+        "escape",
+        "missing_image",
+        "learning",
+    ],
 )
 def test_rejects_corrupt_or_incomplete_snapshot(publication, tmp_path, mutation):
     backup = snapshot.create(publication, tmp_path / "backup", reserve_gib=0)
@@ -183,6 +192,14 @@ def test_rejects_corrupt_or_incomplete_snapshot(publication, tmp_path, mutation)
         value["runtime_source_included"] = False
     elif mutation == "escape":
         value["files"][0]["path"] = "../escape"
+    elif mutation == "learning":
+        dependency = next(
+            r["path"]
+            for r in value["files"]
+            if r["path"].endswith("resources/course_learning.js")
+        )
+        (backup / dependency).unlink()
+        value["files"] = [r for r in value["files"] if r["path"] != dependency]
     else:
         next((backup / "wiki/media").glob("*.*")).unlink()
     atomic_json(path, value)
@@ -202,6 +219,38 @@ def test_refuses_existing_destination_and_overlapping_paths(publication, tmp_pat
     with pytest.raises(ValueError, match="overlaps"):
         snapshot.restore(backup, backup / "restore", reserve_gib=0)
     assert (target / "keep.txt").read_text() == "keep"
+
+
+def test_old_snapshot_without_learning_module_remains_verifiable(publication, tmp_path):
+    import hashlib
+
+    backup = snapshot.create(publication, tmp_path / "legacy", reserve_gib=0)
+    path = backup / snapshot.MANIFEST
+    value = json.loads(path.read_bytes())
+    dependency = next(
+        r["path"]
+        for r in value["files"]
+        if r["path"].endswith("resources/course_learning.js")
+    )
+    (backup / dependency).unlink()
+    value["files"] = [r for r in value["files"] if r["path"] != dependency]
+    html_row = next(
+        r for r in value["files"] if r["path"].endswith("resources/course_library.html")
+    )
+    html_path = backup / html_row["path"]
+    text = html_path.read_text("utf-8")
+    html_path.write_text(
+        "\n".join(
+            line
+            for line in text.splitlines()
+            if "/library-assets/course_learning.js" not in line
+        ),
+        encoding="utf-8",
+    )
+    html_row["bytes"] = html_path.stat().st_size
+    html_row["sha256"] = hashlib.sha256(html_path.read_bytes()).hexdigest()
+    atomic_json(path, value)
+    snapshot.verify(backup)
 
 
 def test_refuses_insufficient_space_and_changed_publication(

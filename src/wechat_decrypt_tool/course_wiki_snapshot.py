@@ -304,6 +304,9 @@ def verify(root):
             "resources/course_library.css",
         )
     }
+    html = inside(root, runtime + "resources/course_library.html").read_text("utf-8")
+    if "/library-assets/course_learning.js" in html:
+        essential.add(runtime + "resources/course_learning.js")
     if (
         not (set(required) | essential | {"README.md", "reader-requirements.txt"})
         <= paths

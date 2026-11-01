@@ -691,6 +691,111 @@ async function lesson(id, version, targetSection) {
       .getElementById(targetSection)
       ?.scrollIntoView({ behavior: "auto" });
 }
+function downloadLearning(text, name) {
+  const blob = new Blob([text], {type: "application/json"});
+  const url = URL.createObjectURL(blob);
+  const anchor = link("", url);
+  anchor.download = name;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function learningRecords(version) {
+  const catalog = await api("/wiki/api/catalog");
+  if (version !== routeVersion) return;
+  heading("学习记录", "本机备份与恢复");
+  main.append(el("p", "导出全部文章版本的作答、自评、已读、复习标记和阅读位置，换浏览器后可从 JSON 文件恢复。文件在本机读取，作答不上传服务器。", "lead"));
+  const summary = el("p", "", "meta");
+  const status = el("p", "", "meta");
+  status.setAttribute("role", "status");
+  const exportAll = el("button", "导出全部学习记录");
+  function updateSummary() {
+    try {
+      summary.textContent = `当前浏览器保存 ${CourseWikiLearning.collect(localStorage).records.length} 个文章版本的记录。旧版本与新版本分开保留。`;
+    } catch (error) { summary.textContent = error.message; }
+  }
+  exportAll.addEventListener("click", () => {
+    try {
+      const data = CourseWikiLearning.collect(localStorage);
+      downloadLearning(CourseWikiLearning.serialize(data), "course-wiki-learning.json");
+      status.textContent = `已导出 ${data.records.length} 个文章版本的记录。请保存下载的 JSON 文件；它不包含课程正文与图片。`;
+    } catch (error) { status.textContent = `导出失败：${error.message}`; }
+  });
+  main.append(summary, exportAll);
+  const box = el("section");
+  box.append(el("h2", "从备份恢复"));
+  const fileLabel = el("label", "选择学习记录备份");
+  const file = el("input");
+  file.type = "file";
+  file.accept = ".json,application/json";
+  file.id = "learning-backup";
+  fileLabel.htmlFor = file.id;
+  const modeLabel = el("label", "相同文章版本已有记录时");
+  const mode = el("select");
+  mode.id = "learning-conflict-mode";
+  modeLabel.htmlFor = mode.id;
+  for (const [value, text] of [["keep", "保留本机已有记录"], ["replace", "使用备份中的记录"]]) {
+    const option = el("option", text);
+    option.value = value;
+    mode.append(option);
+  }
+  const preview = el("p", "支持批量备份及原有的单篇学习记录 JSON；最大 16 MiB。选择文件后先预览，再确认导入。", "meta");
+  preview.setAttribute("role", "status");
+  const apply = el("button", "导入记录");
+  apply.disabled = true;
+  let data = null, plan = null, selection = 0;
+  function prepare() {
+    apply.disabled = true;
+    plan = null;
+    if (!data) return;
+    try {
+      plan = CourseWikiLearning.plan(data, localStorage, mode.value);
+      const known = new Set(catalog.articles.map(row => row.id));
+      const unknown = data.records.filter(row => !known.has(row.article)).length;
+      preview.textContent = `备份含 ${plan.total} 个文章版本；本机已有 ${plan.conflicts} 个，将${mode.value === "keep" ? "保留" : "覆盖"}这些版本的本机记录；本次导入 ${plan.changes.length} 个。` +
+        (unknown ? ` 其中 ${unknown} 个版本当前资料中未找到，记录仍会保留，之后可再次导出。` : "") +
+        " 记录只对应原文章编号，不会把旧版作答或自评迁移到新稿。";
+      apply.disabled = plan.changes.length === 0;
+    } catch (error) { preview.textContent = `无法预览：${error.message}`; }
+  }
+  file.addEventListener("change", async () => {
+    const request = ++selection;
+    data = null; plan = null; apply.disabled = true;
+    const chosen = file.files?.[0];
+    if (!chosen) { preview.textContent = "未选择备份文件。已有记录未改变。"; return; }
+    preview.textContent = "正在本机读取备份…";
+    try {
+      if (chosen.size > CourseWikiLearning.MAX_BYTES) throw new Error("文件超过 16 MiB 限制。");
+      const parsed = CourseWikiLearning.parse(await chosen.text());
+      if (version !== routeVersion || request !== selection) return;
+      data = parsed;
+      prepare();
+    } catch (error) {
+      if (version === routeVersion && request === selection) preview.textContent = `备份未导入：${error.message}`;
+    }
+  });
+  mode.addEventListener("change", prepare);
+  apply.addEventListener("click", () => {
+    if (version !== routeVersion || !plan || apply.disabled) return;
+    apply.disabled = true;
+    try {
+      const result = CourseWikiLearning.apply(plan, localStorage);
+      status.textContent = `已导入 ${result.imported} 个文章版本，保留本机已有记录 ${result.skipped} 个。已读与自评不代表自动认定掌握。`;
+      updateSummary();
+      prepare();
+    } catch (error) {
+      status.textContent = error.message;
+      // Require a fresh preview after any failure, including concurrent edits.
+      plan = null;
+      preview.textContent = "请重新选择备份文件或调整冲突选项，再预览导入。";
+    }
+  });
+  const fields = el("div", undefined, "learning");
+  fields.append(fileLabel, file, modeLabel, mode);
+  box.append(fields, preview, apply, status);
+  main.append(box);
+  updateSummary();
+  toc([["学习记录", "content"]]);
+}
 async function terms(query, version) {
   const data = await api("/library/api/terms?q=" + encodeURIComponent(query));
   if (version !== routeVersion) return;
@@ -921,6 +1026,7 @@ async function route() {
       await article(id.split("/")[0], version, id.split("/")[1]);
     else if (mode === "sources") await sources(version);
     else if (mode === "coverage") await coverage(version);
+    else if (mode === "learning") await learningRecords(version);
     else if (mode === "lesson")
       await lesson(id.split("/")[0], version, id.split("/")[1]);
     else if (mode === "terms") await terms(id, version);
