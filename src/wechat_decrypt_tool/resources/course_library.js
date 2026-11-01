@@ -411,6 +411,69 @@ async function article(id, version, targetSection) {
     }
   }
   readOmissions();
+  const visualBox = el("details", undefined, "source-visual");
+  visualBox.append(el("summary", "原图核对 · 图文是否对应"));
+  const visualStatus = el("p", "正在读取原图核对记录…", "meta");
+  visualBox.append(visualStatus);
+  const visualHistory = el("div");
+  visualBox.append(visualHistory);
+  main.append(visualBox);
+  async function readVisuals() {
+    try {
+      const history = await api("/wiki/api/visual/" + encodeURIComponent(id));
+      if (version !== routeVersion) return;
+      visualHistory.replaceChildren();
+      const completed = history.jobs.filter(j => j.state === "complete").length;
+      const invalid = history.jobs.filter(j => j.state === "invalid").length;
+      visualStatus.textContent = history.state === "not_applicable"
+        ? "本篇正文没有配图，无需进行图文关系核对。"
+        : history.state === "not_started"
+          ? "尚未核对正文配图。能显示图片不代表图文对应。"
+          : `保留 ${completed} 次完整核对、${history.jobs.length - completed - invalid} 次未完成记录、${invalid} 次不可读记录。各次判断分别列出，仍须人工核查；不代表整门课程的视觉信息完整。`;
+      const relevance = {relevant: "相关", partial: "部分相关", unrelated: "不相关", unreadable: "画面不可读", unclear: "无法判断"};
+      const support = {supported: "有画面支持", partial: "部分有支持", unsupported: "缺乏画面支持", unclear: "无法判断"};
+      for (const entry of history.jobs) {
+        const box = el("details", undefined, "visual-report");
+        box.dataset.job = entry.job;
+        const checkedAt = entry.state === "complete" ? new Date(entry.report.updated * 1000).toLocaleString("zh-CN") : "尚未完成";
+        box.append(el("summary", `${entry.model || "核对任务"} · ${checkedAt} · ${entry.state === "complete" ? "核对记录完整" : entry.state === "invalid" ? "记录校验失败" : entry.state === "waiting_gpu" ? "等待 GPU" : entry.state === "checking_images" ? "正在核对" : "未完成"}`));
+        if (entry.state !== "complete") {
+          box.append(el("p", entry.state === "invalid" ? "原图、文章或报告记录缺失或变化，本次结果不可采用；正文仍可阅读。" : "本次还没有完整报告，不能作为图文核对通过的依据。"));
+          visualHistory.append(box);
+          continue;
+        }
+        box.append(el("p", "以下为本机模型观察，区域坐标及判断尚未独立复核。", "meta"));
+        for (const result of entry.report.results) {
+          const n = Number(/^section-(\d+)$/.exec(result.target)[1]);
+          const section = a.sections[n];
+          const row = el("section", undefined, "visual-result");
+          row.append(link(`${section.heading} · ${relevance[result.relevance]} · 图注${support[result.caption_support]}`, "#article=" + id + "/" + result.target));
+          const source = p.sources[section.image];
+          const image = el("img", undefined, "visual-review-image");
+          image.src = source.kind === "document" ? `/wiki/image/${source.image_sha256}.${source.image_extension}` : "/library/frame/" + source.image_sha256;
+          image.alt = "核对所用保留原图；模型观察见下方";
+          image.loading = "lazy";
+          image.addEventListener("error", () => image.replaceWith(el("p", "核对所用原图暂不可读，请检查保留文件。", "error")), {once: true});
+          row.append(image, el("p", "文章图注：" + section.image_caption), el("p", result.reason));
+          refs(row, [section.image], p);
+          row.append(el("h4", "模型看到的内容"));
+          for (const observation of result.observations) {
+            row.append(el("p", observation.description));
+            if (observation.visible_text) row.append(el("blockquote", observation.visible_text));
+            row.append(el("p", `模型标记范围 [${observation.box.join(", ")}]，相对原图 0–1000；位置与内容均待核查。`, "meta"));
+          }
+          if (result.missing_visual_information.length) row.append(el("h4", "可能遗漏的画面信息"), list(result.missing_visual_information));
+          if (result.limitations.length) row.append(el("h4", "本次核对的限制"), list(result.limitations));
+          box.append(row);
+        }
+        visualHistory.append(box);
+      }
+      if (history.jobs.some(j => ["waiting_gpu", "checking_images"].includes(j.state))) setTimeout(readVisuals, 10000);
+    } catch {
+      if (version === routeVersion) visualStatus.textContent = "原图核对记录暂不可读，图文对应关系仍待核查；正文和自测仍可使用。";
+    }
+  }
+  readVisuals();
   const body = el("article", undefined, "article-body");
   const sections = [
     ["学习目标", "objectives"],

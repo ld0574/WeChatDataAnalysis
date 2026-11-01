@@ -184,7 +184,7 @@ def validate(value, target):
             raise ValueError("visual_review_invalid_limitations")
 
 
-def report(root, article, *, job):
+def bound_recipe(root, article, job):
     folder = root / "wiki/visual-review-jobs" / job_id(job)
     recipe = json.loads((folder / "manifest.json").read_bytes())
     published = Wiki(root).article(article)
@@ -199,6 +199,11 @@ def report(root, article, *, job):
         or recipe["requests"] != expected
     ):
         raise ValueError("visual_review_recipe_or_article_changed")
+    return folder, recipe, expected
+
+
+def report(root, article, *, job):
+    folder, recipe, expected = bound_recipe(root, article, job)
     results = []
     for request in expected:
         context = request["context"]
@@ -236,6 +241,76 @@ def report(root, article, *, job):
     ):
         raise ValueError("visual_review_receipt_changed")
     return saved
+
+
+def published_reports(root, article, *, job=None):
+    """Read all retained local observations; never start a model or pick a winner."""
+    root = Path(root)
+    published = Wiki(root).article(article)
+    images = sum(bool(s["image"]) for s in published["article"]["sections"])
+    jobs = set()
+    if job is not None:
+        jobs.add(job_id(job))
+    else:
+        for name in ("manifest.json", "receipt.json"):
+            for path in (root / "wiki/visual-review-jobs").glob("*/" + name):
+                try:
+                    saved = json.loads(path.read_bytes())
+                    if saved.get("article") == article:
+                        jobs.add(job_id(path.parent.name))
+                except (OSError, ValueError, TypeError, AttributeError):
+                    continue
+    progress = None
+    progress_path = root / "wiki/visual-reviews" / (job_id(article) + ".progress.json")
+    if progress_path.exists():
+        try:
+            progress = json.loads(progress_path.read_bytes())
+            if progress["article"] != article:
+                raise ValueError("visual_review_progress_wrong_article")
+            if job is None:
+                jobs.add(job_id(progress["job"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            progress = None
+    entries = []
+    for key in sorted(jobs):
+        entry = {"job": key}
+        try:
+            folder, recipe, expected = bound_recipe(root, article, key)
+            entry.update(model=recipe["model"], total_images=len(expected))
+            if (folder / "receipt.json").exists():
+                entry.update(state="complete", report=report(root, article, job=key))
+            else:
+                entry["state"] = "incomplete"
+                if progress and progress.get("job") == key:
+                    try:
+                        owner = psutil.Process(progress["pid"])
+                        alive = abs(owner.create_time() - progress["created"]) < 0.01
+                    except (psutil.Error, KeyError, TypeError):
+                        alive = False
+                    if alive and progress.get("state") in {
+                        "waiting_gpu",
+                        "checking_images",
+                    }:
+                        entry["state"] = progress["state"]
+        except (OSError, ValueError, KeyError, TypeError):
+            entry.update(
+                state="invalid", error_code="visual_report_unreadable_or_changed"
+            )
+        entries.append(entry)
+    return {
+        "state": "reports_available"
+        if entries
+        else "not_started"
+        if images
+        else "not_applicable",
+        "article": article,
+        "article_images": images,
+        "jobs": entries,
+        "independent_semantic_review": False,
+        "image_relevance_verified": False,
+        "semantic_accuracy_verified": False,
+        "source_deletion_allowed": False,
+    }
 
 
 def summary(results):

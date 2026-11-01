@@ -530,6 +530,13 @@ def smoke(root):
         if response.status_code != 200:
             raise ValueError("snapshot_article_route_failure")
         value = response.json()
+        visual = client.get("/wiki/api/visual/" + row["id"])
+        from .course_wiki_visual_review import published_reports
+
+        if visual.status_code != 200 or visual.json() != published_reports(
+            root, row["id"]
+        ):
+            raise ValueError("snapshot_visual_history_route_failure")
         if not row.get("superseded_by"):
             hits = client.get("/wiki/api/search", params={"q": row["title"]}).json()[
                 "items"
@@ -547,7 +554,9 @@ def smoke(root):
         if client.get(url).status_code != 200:
             raise ValueError("snapshot_image_route_failure")
     result.update(
-        reader_routes_verified=True, article_image_routes_verified=len(images)
+        reader_routes_verified=True,
+        article_image_routes_verified=len(images),
+        visual_history_routes_verified=len(Wiki(root).catalog()["articles"]),
     )
     return result
 

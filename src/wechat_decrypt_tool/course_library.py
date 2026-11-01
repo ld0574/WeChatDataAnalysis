@@ -411,6 +411,17 @@ def create_app(store, model="qwen3.5:9b"):
         except (OSError, ValueError, TypeError):
             raise HTTPException(503, "来源对照记录校验失败，文章仍可阅读") from None
 
+    @app.get("/wiki/api/visual/{key}")
+    def wiki_visual(key: str, job: str | None = None):
+        from .course_wiki_visual_review import published_reports
+
+        try:
+            return published_reports(store.root, key, job=job)
+        except KeyError:
+            raise HTTPException(404, "未找到主题文章或原图核对记录") from None
+        except (OSError, ValueError, TypeError):
+            raise HTTPException(503, "原图核对记录暂不可读，文章仍可阅读") from None
+
     @app.get("/wiki/api/completeness/{key}")
     def wiki_completeness(key: str, job: str | None = None):
         from .course_wiki_completeness import published_report
