@@ -182,6 +182,14 @@ def prepare_plan(root, plan):
         "chapter_plan": chapters,
         "exercise_plan": exercises,
     }
+    partitions = {}
+    for current in [intro, *packets]:
+        for key, pages in current.get("evidence_partitions", {}).items():
+            partitions.setdefault(key, set()).update(pages)
+    if partitions:
+        packet["evidence_partitions"] = {
+            key: sorted(pages) for key, pages in partitions.items()
+        }
     return packet, intro, packets
 
 

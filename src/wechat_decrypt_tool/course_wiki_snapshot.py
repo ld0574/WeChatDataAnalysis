@@ -210,6 +210,14 @@ def assets(root):
         value = wiki.article(row["id"])
         revision_dependencies(root, value)
         add("wiki/objects/" + row["object"] + ".json", row["file_sha256"])
+        for key in value["packet"].get("evidence_partitions", {}):
+            from .course_wiki_evidence import read as read_partition
+
+            partition = read_partition(root, key, current=False)
+            add(f"wiki/evidence-partitions/{key}/manifest.json")
+            sha = partition["lesson_sha256"]
+            add(f"library/objects/{sha}.json", sha)
+            all_images.extend(_images(library.object(sha)))
         all_images.extend(_images(value["packet"]["sources"]))
         # Preserve the published writer's provenance, not unrelated live jobs.
         for folder in writer_dependencies(root, value):

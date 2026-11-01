@@ -92,7 +92,7 @@ def prepare(root, title, selections):
     if not isinstance(title, str) or not title.strip() or len(title) > 160:
         raise ValueError("A bounded topic title is required")
     library = Library(root)
-    sources, bindings = {}, {}
+    sources, bindings, partitions = {}, {}, {}
     if not selections:
         raise ValueError("Select source sections for this topic")
     documents = [s for s in selections if "document" in s]
@@ -118,6 +118,27 @@ def prepare(root, title, selections):
             "artifact": digest(canonical(lesson)),
             "source_export_sha256": lesson["source_export_sha256"],
         }
+        if "evidence_partition" in selection or "evidence_page" in selection:
+            from .course_wiki_evidence import page
+
+            if set(selection) != {
+                "video",
+                "sections",
+                "evidence_partition",
+                "evidence_page",
+            }:
+                raise ValueError("wiki_evidence_invalid_selection_fields")
+            partition_id, number = (
+                selection["evidence_partition"],
+                selection["evidence_page"],
+            )
+            selected = page(root, partition_id, number, key, wanted)
+            for ref, source in selected.items():
+                if ref in sources and sources[ref] != source:
+                    raise ValueError("wiki_evidence_selected_sources_conflict")
+                sources[ref] = source
+            partitions.setdefault(partition_id, set()).add(number)
+            continue
         for section in sections:
             ids = list(section["context"])
             ids.extend(
@@ -139,7 +160,7 @@ def prepare(root, title, selections):
         raise ValueError(
             "Topic packet exceeds bounded context; select a narrower topic"
         )
-    return {
+    result = {
         "policy": POLICY,
         "title": title.strip(),
         "selections": selections,
@@ -148,6 +169,12 @@ def prepare(root, title, selections):
         "scope": "explicit_selected_source_sections",
         "full_topic_coverage_verified": False,
     }
+    if partitions:
+        result["evidence_partitions"] = {
+            key: sorted(pages) for key, pages in partitions.items()
+        }
+        result["scope"] = "explicit_complete_original_evidence_pages"
+    return result
 
 
 def validate_article(article, packet):
@@ -360,6 +387,9 @@ def publish_draft(
 ):
     """Publish only an assembled, structurally valid draft; no semantic claim."""
     checks = validate_article(article, packet)
+    from .course_wiki_evidence import validate as validate_evidence
+
+    validate_evidence(store.root, packet)
     store.checkpoint()
     wiki = Wiki(store.root)
     folder = wiki.root
@@ -514,6 +544,9 @@ class Wiki:
         ):
             raise ValueError("Wiki revision parent mismatch")
         validate_article(value["article"], value["packet"])
+        from .course_wiki_evidence import validate as validate_evidence
+
+        validate_evidence(self.root.parent, value["packet"])
         return value
 
     def search(self, query, limit=30):

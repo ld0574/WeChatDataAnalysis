@@ -111,7 +111,11 @@ function refs(node, ids, packet) {
   node.append(span);
 }
 function sourceLocation(source) {
-  if (source.kind !== "document") return `${time(source.start)}–${time(source.end)}`;
+  if (source.kind !== "document") {
+    const origin = source.text_origin;
+    const range = origin ? ` · 原文字符 ${origin.start}–${origin.end}/${origin.characters}（分配范围，非语义边界）` : "";
+    return `${time(source.start)}–${time(source.end)}${range}`;
+  }
   if (source.page) return `课件第 ${source.page} 页`;
   if (source.slide) return `课件第 ${source.slide} 张`;
   return "课件片段 " + source.id;

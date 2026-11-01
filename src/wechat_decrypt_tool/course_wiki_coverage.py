@@ -197,9 +197,13 @@ def _build(store):
                     )
                 continue
             key, number = ref.split(":", 1)
+            identity = str(source["id"])
+            if "text_origin" in source:
+                origin = source["text_origin"]
+                identity += f"@{origin['start']}-{origin['end']}"
             if (
                 not re.fullmatch(r"[a-f0-9]{24}", key)
-                or int(number) != source["id"]
+                or number != identity
                 or source["video"] != key
             ):
                 raise ValueError("article_source_identity_mismatch")

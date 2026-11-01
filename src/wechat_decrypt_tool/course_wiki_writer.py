@@ -253,6 +253,12 @@ class DraftJob:
         }
         if recipe_extra is not None:
             recipe["extra"] = recipe_extra
+        self.range_notice = ""
+        if packet.get("evidence_partitions"):
+            from .course_wiki_evidence import RANGE_NOTICE
+
+            self.range_notice = RANGE_NOTICE
+            recipe["original_range_notice"] = RANGE_NOTICE
         self.key = digest(canonical(recipe))[:32]
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", job_directory):
             raise ValueError("wiki_invalid_job_directory")
@@ -325,6 +331,7 @@ class DraftJob:
         from .course_pdf_ocr import local_model_digest
 
         self.store.checkpoint()
+        prompt += self.range_notice
         scoped = self.packet if evidence_packet is None else evidence_packet
         if not scoped["sources"] or any(
             self.packet["sources"].get(ref) != source
