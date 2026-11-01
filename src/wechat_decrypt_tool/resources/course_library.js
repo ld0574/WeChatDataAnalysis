@@ -190,7 +190,7 @@ async function home(version) {
     ),
   );
   function updateStatus() {
-    counts.textContent = `${wiki.articles.length} 篇主题草稿 · ${catalog.published} / ${catalog.requested} 节课程已发布来源笔记`;
+    counts.textContent = `${wiki.articles.filter(r => !r.superseded_by).length} 篇当前主题草稿 · ${wiki.articles.length} 个保留版本 · ${catalog.published} / ${catalog.requested} 节课程已发布来源笔记`;
     if (!wiki.build) {
       status.textContent = "";
       return;
@@ -204,6 +204,7 @@ async function home(version) {
       interrupted: "主题试点进程已退出，任务需要续跑",
       failed: "试点生成失败，未发布半成品",
       draft_published: "主题试点草稿已发布，等待内容复核",
+      needs_more_sources: "本次修订未能从现有来源完成文章，未发布不完整草稿",
     };
     const step = wiki.build.stage;
     const labels = {
@@ -216,7 +217,7 @@ async function home(version) {
       labels[step] ||
       (step?.startsWith("section-")
         ? `正文第 ${Number(step.slice(8)) + 1} 节`
-        : "");
+        : step?.startsWith("repair-") ? "修订已标记的内容" : "");
     const completed = wiki.build.completed_stages;
     status.textContent =
       (names[wiki.build.state] || "主题试点状态待核对") +
@@ -232,7 +233,7 @@ async function home(version) {
   const render = async (q) => {
     query = q;
     results.replaceChildren();
-    let rows = wiki.articles;
+    let rows = wiki.articles.filter(r => !r.superseded_by);
     if (q.trim()) {
       results.append(el("p", "正在本地检索主题正文…", "meta"));
       try {
@@ -281,7 +282,9 @@ async function home(version) {
   setTimeout(poll, 10000);
 }
 async function article(id, version, targetSection) {
-  const value = await api("/wiki/api/article/" + encodeURIComponent(id));
+  const [value, versions] = await Promise.all([
+    api("/wiki/api/article/" + encodeURIComponent(id)), api("/wiki/api/catalog"),
+  ]);
   if (version !== routeVersion) return;
   const a = value.article,
     p = value.packet,
@@ -289,6 +292,9 @@ async function article(id, version, targetSection) {
   activeReading = id;
   main.append(link("← 返回主题文章", "#home"));
   heading(a.title, "主题文章 / 本地草稿");
+  const metadata = versions.articles.find(r => r.id === id);
+  if (metadata?.superseded_by) main.append(link("已有更新修订草稿 →", "#article=" + metadata.superseded_by));
+  if (p.revision) main.append(link("查看修订前版本与其学习记录", "#article=" + p.revision.parent_article));
   main.append(
     notice(
       "模型草稿 · 来源结构与引用编号已检查 · 语义、图片相关性和主题完整性待复核。自测为自评，不自动认定掌握。",
@@ -689,7 +695,7 @@ async function coverage(version) {
   summary.append(list([
     `课程范围：${d.scope.canonical_audio_courses} 节有声课；另有 ${d.scope.excluded_no_audio_sources} 节无声来源。`,
     `转写：${d.summary.transcribed_courses} 节；已发布来源笔记：${d.summary.source_notes_published} 节。`,
-    `主题草稿：${d.summary.draft_articles} 篇；引用涉及 ${d.summary.courses_with_draft_citations} 节课，还有 ${d.summary.courses_without_draft_citations} 节未被文章引用。`,
+    `主题草稿：${d.summary.draft_articles} 篇（保留 ${d.summary.draft_article_versions ?? d.summary.draft_articles} 个版本）；引用涉及 ${d.summary.courses_with_draft_citations} 节课，还有 ${d.summary.courses_without_draft_citations} 节未被文章引用。`,
     `课件与附件：清单保留 ${d.scope.retained_resource_paths} 个路径，待处理 ${d.scope.pending_resource_paths ?? "未知"} 个；其中 ${d.summary.retained_paths_with_some_indexed_chunks} 个有部分检索片段。`,
   ]));
   summary.append(notice("提取成功、已被文章引用都不能证明知识完整。主题文章仍待语义复核，课件证据尚未接入文章；原视频继续保留。"));

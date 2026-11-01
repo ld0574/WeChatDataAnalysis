@@ -17,7 +17,7 @@ from .course_knowledge import atomic_json, schema_lease
 from .course_library import Library, canonical, natural_key, source_folders
 from .course_lesson_exports import digest
 from .course_video_visual_audit import ReadOnlyArchive
-from .course_wiki import Wiki
+from .course_wiki import Wiki, versioned_articles
 
 POLICY = "wiki-whole-source-ledger-v1"
 
@@ -143,6 +143,7 @@ def _build(store):
     wiki_catalog = load("wiki/catalog.json", optional=True)
     if wiki_catalog is None:
         wiki_catalog = {"articles": []}
+    article_versions = versioned_articles(wiki_catalog["articles"])
     wiki = Wiki(store.root)
     cited_speech, cited_frames, article_ids = (
         defaultdict(set),
@@ -150,9 +151,11 @@ def _build(store):
         defaultdict(set),
     )
     issues = []
-    for article in wiki_catalog["articles"]:
+    for article in article_versions:
         store.checkpoint()
         value = wiki.article(article["id"])
+        if article.get("superseded_by"):
+            continue
         for ref in citations(value["article"]):
             source = value["packet"]["sources"][ref]
             key, number = ref.split(":", 1)
@@ -275,7 +278,8 @@ def _build(store):
                 for r in courses
             ),
             "source_notes_published": len(source_notes),
-            "draft_articles": len(wiki_catalog["articles"]),
+            "draft_articles": sum(not a.get("superseded_by") for a in article_versions),
+            "draft_article_versions": len(article_versions),
             "courses_with_draft_citations": sum(
                 bool(r["draft_articles"]) for r in courses
             ),

@@ -377,6 +377,11 @@ def publish_draft(
             "images": sum(bool(s["image"]) for s in article["sections"]),
             "gaps": len(article["gaps"]),
             "semantic_accuracy_verified": False,
+            **(
+                {"revision_of": packet["revision"]["parent_article"]}
+                if packet.get("revision")
+                else {}
+            ),
         }
     )
     index["updated"] = time.time()
@@ -386,6 +391,33 @@ def publish_draft(
         {"state": "draft_published", "id": key, "updated": time.time()},
     )
     return {"id": key, "state": "draft_published", **checks}
+
+
+def versioned_articles(rows):
+    """One current draft per revision family; immutable older IDs stay readable."""
+    values = [{k: v for k, v in row.items() if k != "superseded_by"} for row in rows]
+    by_id = {row["id"]: row for row in values}
+    if len(by_id) != len(values):
+        raise ValueError("Duplicate Wiki article identity")
+    families = {}
+    for row in values:
+        current, seen = row, set()
+        while current.get("revision_of"):
+            if current["id"] in seen or current["revision_of"] not in by_id:
+                raise ValueError("Invalid Wiki revision ancestry")
+            seen.add(current["id"])
+            current = by_id[current["revision_of"]]
+        families.setdefault(current["id"], []).append(row)
+    for family in families.values():
+        parents = {r["revision_of"] for r in family if r.get("revision_of")}
+        latest = max(
+            (r for r in family if r["id"] not in parents),
+            key=lambda r: (r["updated"], r["id"]),
+        )
+        for row in family:
+            if row["id"] != latest["id"]:
+                row["superseded_by"] = latest["id"]
+    return values
 
 
 class Wiki:
@@ -399,6 +431,7 @@ class Wiki:
             if path.exists()
             else {"version": 1, "articles": [], "source_deletion_allowed": False}
         )
+        result["articles"] = versioned_articles(result["articles"])
         status = self.root / "last-build.json"
         if status.exists():
             value = json.loads(status.read_text("utf-8"))
@@ -447,6 +480,10 @@ class Wiki:
         value = json.loads(raw)
         if value["id"] != key or digest(canonical(value)) != row["object"]:
             raise ValueError("Wiki object identity mismatch")
+        if row.get("revision_of") != value["packet"].get("revision", {}).get(
+            "parent_article"
+        ):
+            raise ValueError("Wiki revision parent mismatch")
         validate_article(value["article"], value["packet"])
         return value
 
@@ -479,6 +516,8 @@ class Wiki:
 
         results = []
         for row in self.catalog()["articles"]:
+            if row.get("superseded_by"):
+                continue
             article = self.article(row["id"])["article"]
             passages = [
                 {

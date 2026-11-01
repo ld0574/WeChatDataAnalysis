@@ -222,7 +222,18 @@ def validate_exercises(value, packet):
 
 
 class DraftJob:
-    def __init__(self, store, packet, model, model_digest, wait_seconds):
+    def __init__(
+        self,
+        store,
+        packet,
+        model,
+        model_digest,
+        wait_seconds,
+        *,
+        pipeline=POLICY,
+        recipe_extra=None,
+    ):
+        self.pipeline = pipeline
         self.store, self.packet, self.model, self.model_digest = (
             store,
             packet,
@@ -230,7 +241,7 @@ class DraftJob:
             model_digest,
         )
         recipe = {
-            "policy": POLICY,
+            "policy": pipeline,
             "packet": packet,
             "model_digest": model_digest,
             "prompts": [OUTLINE_PROMPT, SECTION_PROMPT, EXERCISES_PROMPT],
@@ -239,6 +250,8 @@ class DraftJob:
                 for s in (OUTLINE, SECTION, EXERCISES, ARTICLE)
             ],
         }
+        if recipe_extra is not None:
+            recipe["extra"] = recipe_extra
         self.key = digest(canonical(recipe))[:32]
         self.root = store.root / "wiki" / "jobs" / self.key
         self.root.mkdir(parents=True, exist_ok=True)
@@ -267,7 +280,7 @@ class DraftJob:
                 "state": state,
                 "stage": stage,
                 "id": self.key,
-                "pipeline": POLICY,
+                "pipeline": self.pipeline,
                 "updated": time.time(),
                 "completed_stages": self.completed,
                 "total_stages": self.total,
@@ -397,6 +410,7 @@ class DraftJob:
                             "requires_",
                             "image_",
                             "code_",
+                            "revision_",
                         )
                     )
                     else type(exc).__name__
