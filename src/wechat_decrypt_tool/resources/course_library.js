@@ -733,24 +733,57 @@ async function search(query, version) {
   const d = await api("/library/api/search?q=" + encodeURIComponent(query));
   if (version !== routeVersion) return;
   heading("来源笔记检索", "本地关键词匹配");
+  const count = el("p", undefined, "meta");
+  const results = el("div");
+  const more = el("button", "继续加载结果");
+  const failure = el("p", undefined, "error");
+  failure.setAttribute("role", "status");
+  let shown = 0;
+  let next = null;
   main.append(
     searchForm("搜索原文笔记", (q) => {
       location.hash = "search=" + encodeURIComponent(q);
     }),
-    el("p", `${d.items.length} 条结果；检索结果不是模型回答。`, "meta"),
+    count, results, more, failure,
   );
-  for (const r of d.items) {
-    const row = el("div", undefined, "row");
-    row.append(
-      link(
-        `${r.title} · ${time(r.start)}`,
-        "#lesson=" + r.video + "/" + r.section,
-      ),
-      el("h3", r.heading),
-      el("p", r.summary),
-    );
-    main.append(row);
+  function appendPage(page) {
+    for (const r of page.items) {
+      const row = el("div", undefined, "row");
+      row.append(
+        link(
+          `${r.title} · ${time(r.start)}`,
+          "#lesson=" + r.video + "/" + r.section,
+        ),
+        el("h3", r.heading),
+        el("p", r.summary),
+      );
+      results.append(row);
+    }
+    shown += page.items.length;
+    next = page.next_offset;
+    count.textContent = `已发布来源笔记中匹配 ${page.total} 条，已显示 ${shown} 条；检索结果不是模型回答。`;
+    more.hidden = next === null;
   }
+  appendPage(d);
+  more.addEventListener("click", async () => {
+    if (more.disabled || next === null) return;
+    more.disabled = true;
+    more.textContent = "正在加载…";
+    results.setAttribute("aria-busy", "true");
+    failure.textContent = "";
+    try {
+      const page = await api("/library/api/search?q=" + encodeURIComponent(query) + "&offset=" + next);
+      if (version !== routeVersion) return;
+      appendPage(page);
+    } catch (error) {
+      if (version === routeVersion)
+        failure.textContent = `后续结果加载失败，已显示的结果仍可阅读。${error.message}；请重试。`;
+    } finally {
+      more.disabled = false;
+      more.textContent = "继续加载结果";
+      results.setAttribute("aria-busy", "false");
+    }
+  });
   if (!d.items.length)
     main.append(el("p", "未找到匹配，请尝试更短的主题或术语。", "empty"));
   toc([["检索结果", "content"]]);

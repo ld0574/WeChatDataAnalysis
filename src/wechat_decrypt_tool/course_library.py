@@ -371,7 +371,10 @@ def create_app(store, model="qwen3.5:9b"):
     def wiki_coverage():
         # Read a published receipt only: HTTP requests must never scan the archive.
         if getattr(store, "snapshot_info", None):
-            raise HTTPException(503, "已发布 Wiki 快照不包含实时全量整理进度；文章、图片和检索可离线使用")
+            raise HTTPException(
+                503,
+                "已发布 Wiki 快照不包含实时全量整理进度；文章、图片和检索可离线使用",
+            )
         try:
             value = json.loads((store.root / "wiki" / "coverage.json").read_bytes())
             if value["policy"] != "wiki-whole-source-ledger-v1":
@@ -498,9 +501,22 @@ def create_app(store, model="qwen3.5:9b"):
             raise HTTPException(503, "词条索引暂不可用") from None
 
     @app.get("/library/api/search")
-    def search(q: str, video: str | None = None):
+    def search(q: str, video: str | None = None, offset: int = 0, limit: int = 20):
         try:
-            return {"method": "local_keyword_search", "items": library.search(q, video)}
+            # Rank the complete match set before paging; the default top twenty
+            # must not make later source sections unreachable.
+            matches = library.search(q, video, limit=None)
+            start, size = max(0, offset), max(1, min(100, limit))
+            items = matches[start : start + size]
+            end = start + len(items)
+            return {
+                "method": "local_keyword_search",
+                "items": items,
+                "total": len(matches),
+                "offset": start,
+                "limit": size,
+                "next_offset": end if end < len(matches) else None,
+            }
         except (OSError, ValueError, KeyError):
             raise HTTPException(503, "知识笔记检索暂不可用") from None
 
