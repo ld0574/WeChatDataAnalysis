@@ -137,3 +137,29 @@ def test_timeout_stops_only_owned_process(root, monkeypatch):
             if process.poll() is None:
                 process.kill()
             process.wait(timeout=5)
+
+
+def test_revision_monitor_has_independent_lock_and_status(root):
+    worker = SimpleNamespace(pid=123, poll=lambda: 0, returncode=0)
+
+    def launch_main(*args, **kwargs):
+        # The main monitor still holds its lock when the revision monitor starts.
+        guard.run(
+            root,
+            [],
+            sampler=reading,
+            launch=lambda *a, **k: worker,
+            guard_name="wiki-revision-thermal-guard",
+        )
+        return worker
+
+    guard.run(root, [], resume=True, sampler=reading, launch=launch_main)
+    assert (root / "gpu-thermal-guard.json").exists()
+    assert (root / "wiki-revision-thermal-guard.json").exists()
+    assert (root / "thermal-wiki-revision.stdout.log").exists()
+
+
+def test_monitor_role_cannot_escape_archive(root):
+    with pytest.raises(ValueError, match="unknown_role"):
+        guard.run(root, [], guard_name="../outside")
+    assert (root / "pause.flag").exists()

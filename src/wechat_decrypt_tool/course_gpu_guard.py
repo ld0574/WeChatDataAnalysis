@@ -86,12 +86,15 @@ def run(
     maximum_temperature=70,
     maximum_power=120,
     interval=5,
+    guard_name="gpu-thermal-guard",
     sampler=sample,
     launch=subprocess.Popen,
     stopper=stop_worker,
     sleep=time.sleep,
 ):
     root = Path(root).resolve()
+    if guard_name not in {"gpu-thermal-guard", "wiki-revision-thermal-guard"}:
+        raise ValueError("gpu_guard_unknown_role")
     if not (root / "knowledge.sqlite3").is_file():
         raise ValueError("gpu_guard_archive_missing")
     if not (
@@ -100,7 +103,7 @@ def run(
         and 1 <= interval <= 30
     ):
         raise ValueError("gpu_guard_invalid_limits")
-    with schema_lease(root / "gpu-thermal-guard.lock", timeout=0):
+    with schema_lease(root / (guard_name + ".lock"), timeout=0):
         reading = sampler()
         reason = violation(reading, maximum_temperature, maximum_power)
         if reason:
@@ -113,9 +116,14 @@ def run(
                 root / ("pause-before-resume-" + str(time.time_ns()) + ".flag")
             )
         environment = {**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
+        log_name = (
+            "thermal-worker"
+            if guard_name == "gpu-thermal-guard"
+            else "thermal-wiki-revision"
+        )
         with (
-            (root / "thermal-worker.stdout.log").open("ab") as stdout,
-            (root / "thermal-worker.stderr.log").open("ab") as stderr,
+            (root / (log_name + ".stdout.log")).open("ab") as stdout,
+            (root / (log_name + ".stderr.log")).open("ab") as stderr,
         ):
             try:
                 worker = launch(
@@ -131,7 +139,7 @@ def run(
 
             def progress(state, **extra):
                 atomic_json(
-                    root / "gpu-thermal-guard.json",
+                    root / (guard_name + ".json"),
                     {
                         "state": state,
                         "updated": time.time(),
@@ -175,11 +183,16 @@ def run(
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
-    parser.add_argument("--asr-model", required=True, type=Path)
+    role = parser.add_mutually_exclusive_group(required=True)
+    role.add_argument("--asr-model", type=Path)
+    role.add_argument("--revision-article")
+    parser.add_argument("--omission-job", action="append", default=[])
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--maximum-power", type=float, default=120)
     parser.add_argument("--maximum-temperature", type=float, default=70)
     args = parser.parse_args()
+    if args.omission_job and not args.revision_article:
+        parser.error("--omission-job requires --revision-article")
     command = [
         sys.executable,
         "-m",
@@ -192,19 +205,36 @@ def main():
         "--inventory",
         str(args.root.resolve() / "inventory-unique.json"),
         "--asr-model",
-        str(args.asr_model.resolve()),
+        str(args.asr_model.resolve()) if args.asr_model else "",
         "--limit",
         "0",
         "--enrich",
         "--asr-batch-size",
         "4",
     ]
+    guard_name = "gpu-thermal-guard"
+    if args.revision_article:
+        guard_name = "wiki-revision-thermal-guard"
+        command = [
+            sys.executable,
+            "-m",
+            "wechat_decrypt_tool.course_wiki_revision",
+            "--root",
+            str(args.root.resolve()),
+            "--article",
+            args.revision_article,
+            "--wait-gpu-seconds",
+            "1800",
+        ]
+        for job in args.omission_job:
+            command.extend(["--omission-job", job])
     run(
         args.root,
         command,
         resume=args.resume,
         maximum_power=args.maximum_power,
         maximum_temperature=args.maximum_temperature,
+        guard_name=guard_name,
     )
 
 
