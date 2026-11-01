@@ -13,7 +13,8 @@ from pathlib import Path
 
 from .course_backup import file_hash, inside
 from .course_knowledge import atomic_json
-from .course_library import Library, create_app
+from .course_library import Library, canonical, create_app
+from .course_lesson_exports import digest
 from .course_wiki import Wiki
 
 POLICY = "published-course-wiki-snapshot-v1"
@@ -43,6 +44,37 @@ def _images(value):
             yield from _images(child)
 
 
+def revision_dependencies(root, value):
+    """A self-consistent file manifest must not hide missing bound reports."""
+    revision = value["packet"].get("revision")
+    if not revision:
+        return
+    try:
+        parent = Wiki(root).article(revision["parent_article"])
+        if digest(canonical(parent)) != revision["parent_sha256"]:
+            raise ValueError("parent_changed")
+        if revision.get("review_reports"):
+            from .course_wiki_revision import source_crosschecks
+
+            report, bindings = source_crosschecks(
+                root, parent["id"], [b["job"] for b in revision["review_reports"]]
+            )
+            if (
+                bindings != revision["review_reports"]
+                or digest(canonical(report)) != revision["review_sha256"]
+            ):
+                raise ValueError("review_binding_changed")
+        if revision.get("omission_reports"):
+            from .course_wiki_completeness import published_report
+
+            for binding in revision["omission_reports"]:
+                report = published_report(root, parent["id"], job=binding["job"])
+                if digest(canonical(report)) != binding["sha256"]:
+                    raise ValueError("omission_binding_changed")
+    except (OSError, KeyError, ValueError, TypeError):
+        raise ValueError("snapshot_revision_dependency_invalid") from None
+
+
 def assets(root):
     """Freeze publication pointers; never copy a live SQLite/WAL or GPU task."""
     root = Path(root).resolve()
@@ -69,6 +101,7 @@ def assets(root):
     all_images = []
     for row in catalog["articles"]:
         value = wiki.article(row["id"])
+        revision_dependencies(root, value)
         add("wiki/objects/" + row["object"] + ".json", row["file_sha256"])
         all_images.extend(_images(value["packet"]["sources"]))
         # Preserve the published writer's provenance, not unrelated live jobs.

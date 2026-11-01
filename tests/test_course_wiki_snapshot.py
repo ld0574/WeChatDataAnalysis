@@ -76,6 +76,95 @@ def test_restore_routes_without_original_archive(publication, tmp_path):
     assert isolated["original_root_access_attempts"] == 0
 
 
+def test_bound_reports_survive_restore_and_cannot_be_omitted_from_manifest(
+    publication, tmp_path, monkeypatch
+):
+    import copy
+
+    from wechat_decrypt_tool import course_pdf_ocr
+    from wechat_decrypt_tool import course_wiki_review as review
+    from wechat_decrypt_tool.course_library import canonical
+    from wechat_decrypt_tool.course_lesson_exports import digest
+    from wechat_decrypt_tool.course_wiki_revision import source_crosschecks
+
+    parent_id = "e" * 32
+    parent = wiki.Wiki(publication).article(parent_id)
+    monkeypatch.setattr(course_pdf_ocr, "local_model_digest", lambda model: model)
+
+    def judge(model, messages, *, schema):
+        context = json.loads(messages[1]["content"])
+        return json.dumps(
+            {
+                "reviews": [
+                    {
+                        "target": t["target"],
+                        "verdict": "partial",
+                        "reason": "Synthetic gap.",
+                        "evidence": [
+                            {
+                                "witness": next(
+                                    k
+                                    for k, w in context["witnesses"].items()
+                                    if w["source"] == t["citations"][0]
+                                )
+                            }
+                        ],
+                    }
+                    for t in context["targets"]
+                ]
+            }
+        )
+
+    monkeypatch.setattr(review, "local_chat", judge)
+    jobs = [
+        review.review(ReadOnlyArchive(publication), parent_id, model)["job"]
+        for model in ("fixture-first", "fixture-second")
+    ]
+    combined, bindings = source_crosschecks(publication, parent_id, jobs)
+    p = copy.deepcopy(parent["packet"])
+    p["revision"] = {
+        "parent_article": parent_id,
+        "parent_sha256": digest(canonical(parent)),
+        "review_sha256": digest(canonical(combined)),
+        "review_reports": bindings,
+        "independent_semantic_review": False,
+    }
+    wiki.publish_draft(
+        ReadOnlyArchive(publication),
+        parent["article"],
+        p,
+        "d" * 32,
+        "fixture",
+        "fixture-digest",
+    )
+    backup = snapshot.create(publication, tmp_path / "bound-backup", reserve_gib=0)
+    restored = snapshot.restore(backup, tmp_path / "bound-restored", reserve_gib=0)
+    assert snapshot.smoke(restored)["complete_model_reports"] == 2
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(Path(__file__).with_name("wiki_snapshot_isolated_reader.py")),
+            str(restored),
+            str(publication),
+            str(Path(snapshot.__file__).parent),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    assert json.loads(process.stdout)["original_root_access_attempts"] == 0
+    receipt = f"wiki/review-jobs/{jobs[0]}/receipt.json"
+    (restored / receipt).unlink()
+    manifest_path = restored / snapshot.MANIFEST
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["files"] = [r for r in manifest["files"] if r["path"] != receipt]
+    atomic_json(manifest_path, manifest)
+    with pytest.raises(ValueError, match="revision_dependency_invalid"):
+        snapshot.verify(restored)
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["hash", "missing_manifest", "scope", "runtime", "escape", "missing_image"],
