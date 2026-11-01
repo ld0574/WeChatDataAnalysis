@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>课程图谱 · 模型对照与证据复核</title>
+<style>
+:root{color-scheme:light dark;--bg:#f6f5f1;--fg:#252a2e;--panel:#fff;--muted:#626b70;--line:#cdd2d4;--accent:#246a82;--soft:#e9f2f5;--warn:#94620b;--warnbg:#fff4db;--bad:#b13e45;--badbg:#fcebed;--good:#38734f}
+@media(prefers-color-scheme:dark){:root{--bg:#191d20;--fg:#edf0ee;--panel:#242a2e;--muted:#aeb9bd;--line:#465159;--accent:#8fc9df;--soft:#253e47;--warn:#edc47d;--warnbg:#3b3220;--bad:#f39ca0;--badbg:#42292d;--good:#9bcaaa}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.65 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1480px;margin:auto;padding:28px}h1{font-size:26px;line-height:1.3;margin:0 0 12px}h2{font-size:19px;margin:0}h3{font-size:16px;margin:12px 0}p{margin:8px 0}a{color:var(--accent)}button,select{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:8px 12px;cursor:pointer}button:hover{background:var(--soft)}button[aria-pressed=true]{border-color:var(--accent);background:var(--soft)}button:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:3px}select{max-width:100%}.muted{color:var(--muted)}.banner{padding:14px 18px;background:var(--warnbg);border-left:4px solid var(--warn);margin:16px 0}.toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:18px 0}.toolbar label{flex:1;min-width:0}.toolbar select{display:block;width:100%;margin-top:4px}.legend{display:flex;gap:18px;flex-wrap:wrap;margin:12px 0}.legend span{display:flex;gap:7px;align-items:center}.swatch{width:24px;border-top:2px solid var(--line)}.swatch.bad{border-color:var(--bad);border-top-style:dashed}.swatch.warn{border-color:var(--warn);border-top-style:dashed}.columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px}.panel{min-width:0;padding:18px;background:var(--panel);border:1px solid var(--line);border-radius:9px}.stats{font-variant-numeric:tabular-nums;margin-top:8px}.graph{display:block;width:100%;height:450px}.graph text{fill:var(--fg);font:14px system-ui,"Microsoft YaHei",sans-serif}.node rect{fill:var(--soft);stroke:var(--line)}.node.selected rect{stroke:var(--accent);stroke-width:3}.node{cursor:pointer}.edge{fill:none;stroke:var(--line);stroke-width:2}.edge.bad{stroke:var(--bad);stroke-dasharray:6 4}.edge.warn{stroke:var(--warn);stroke-dasharray:6 4}.edge.selected{stroke-width:4}.hit{fill:none;stroke:transparent;stroke-width:22;cursor:pointer}.edge-label{fill:var(--panel);stroke:var(--line)}.edge-number{pointer-events:none;text-anchor:middle;font-variant-numeric:tabular-nums}.claim-list{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.claim-list button{font-size:13px;overflow-wrap:anywhere;text-align:left}.relations{display:grid;gap:6px}.relations button{text-align:left;overflow-wrap:anywhere}.flag{font-size:12px;color:var(--bad);display:block}.flag.warn{color:var(--warn)}.inspection{margin-top:20px;border-top:1px solid var(--line);padding-top:12px}.explanation,.evidence pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}.evidence{border-top:1px solid var(--line);padding-top:10px;margin-top:12px}.evidence pre{margin:6px 0}.review{margin-top:14px}.review label{display:block}.review select{margin:5px 0}.review-message{font-size:13px;color:var(--muted)}.quality{margin-top:28px;border-top:1px solid var(--line);padding-top:18px}.quality li{margin:7px 0}.proof{overflow-wrap:anywhere;font-size:13px}details{margin-top:18px}footer{margin-top:28px;color:var(--muted)}[hidden]{display:none!important}@media(max-width:1000px){.columns{grid-template-columns:1fr}main{padding:18px}}@media(max-width:420px){main{padding:12px}.panel{padding:12px}.graph{height:440px}h1{font-size:22px}button,select{min-height:44px}}
+</style>
+<main id="trial-graph">
+<h1>课程图谱：原版与 Defiant 对照</h1>
+<p class="muted">同一份课程证据 · 同一生成参数 · 点击节点或关系，查看模型解释和实际引用。</p>
+<div class="banner"><strong>模型草稿 · 课程语义尚未验收</strong><br>4 个定向窗口不能代表全库准确率。引用存在、图谱可显示，均不证明结论正确。</div>
+<div class="toolbar"><label>选择课程窗口<select id="sample" aria-label="选择课程窗口"></select></label><button id="export" type="button">导出本机复核记录</button></div>
+<p id="scope" class="muted"></p>
+<div class="legend" aria-label="关系图例"><span><i class="swatch"></i>未触发结构筛查</span><span><i class="swatch bad"></i>概念自环 / 端点歧义</span><span><i class="swatch warn"></i>“无关系”标签候选</span></div>
+<div id="panels" class="columns"></div>
+<section class="quality"><h2>质量验收进度</h2><ul><li>本次 14 份输出已完成结构、输入绑定和引用编号核对。</li><li>图中概念解释、因果关系、代码含义及关键遗漏：<strong>未完成独立语义验收</strong>。</li><li>原转写与 OCR 自身可能有误；本页引用的是生成时冻结的文字证据。</li><li id="review-progress"></li></ul><p class="muted">复核选项只保存在本浏览器，是个人草稿，不写回生产数据库，不自动改变正式验收状态。</p></section>
+<details><summary>输入与模型来源</summary><div id="provenance" class="proof"></div></details>
+<footer><a href="review.html">完整原始对照报告</a> · <a href="../../corpus-graph.html">已完成课程的跨课程概念导航</a><p>生产模型保持原配置。原视频尚不具备删除条件。</p></footer>
+</main>
+<script id="trial-data" type="application/json">__TRIAL_GRAPH_DATA__</script>
+<script>
+(() => {
+  'use strict';
+  const data = JSON.parse(document.getElementById('trial-data').textContent);
+  const root = document.getElementById('trial-graph');
+  const $ = id => root.querySelector('#'+id);
+  const ns = 'http://www.w3.org/2000/svg';
+  const storageKey = 'course-trial-review-v1:'+data.plan_sha256+':'+data.results_sha256;
+  const verdicts = ['unreviewed','supported','unsupported','insufficient'];
+  const verdictNames = ['未复核','原文支持','原文不支持','证据不足'];
+  const flagNames = {self_edge:'结构疑点：概念指向自身',negative_label_candidate:'待复核：“无关系”标签',ambiguous_endpoint:'结构疑点：同名节点使端点有歧义'};
+  let reviews = {}, storageWorking = true, current = 0;
+  try {const saved=JSON.parse(localStorage.getItem(storageKey)||'{}');if(saved&&typeof saved==='object'&&!Array.isArray(saved))reviews=saved;}catch(_){storageWorking=false;}
+  const selections = new Map(), redraws=[];
+  function el(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
+  function svgEl(tag,attrs={}){const e=document.createElementNS(ns,tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,String(v));return e;}
+  function reviewKey(sample,model,kind,id){return JSON.stringify([sample.id,model,kind,id]);}
+  function validReview(value){return value&&verdicts.includes(value.verdict)&&value.verdict!=='unreviewed';}
+  function updateReviews(){let total=0,done=0;for(const s of data.samples)for(const m of data.models){const note=s.models[m];for(const [kind,items]of [['node',note.nodes],['edge',note.edges],['summary',[{id:'summary'}]]])for(const item of items){total++;if(validReview(reviews[reviewKey(s,m,kind,item.id)]))done++;}}$('review-progress').textContent='本浏览器已标记 '+done+' / '+total+' 项（个人复核草稿，非正式语义验收）';}
+  function saveReview(key,value){if(value==='unreviewed')delete reviews[key];else reviews[key]={verdict:value,updated:new Date().toISOString()};try{localStorage.setItem(storageKey,JSON.stringify(reviews));storageWorking=true;}catch(_){storageWorking=false;}updateReviews();}
+  function showInspection(panel,sample,model,kind,claim){
+    const area=panel.querySelector('.inspection');area.replaceChildren();area.dataset.kind=kind;area.dataset.claimId=claim.id;
+    const heading=kind==='edge'?claim.from+' → '+claim.to:kind==='node'?claim.name:'窗口摘要';
+    area.append(el('h3',heading),el('p',kind==='edge'?claim.relation:kind==='node'?claim.explanation:sample.models[model].summary,'explanation'));
+    for(const flag of claim.flags||[])area.append(el('p',flagNames[flag],'flag'+(flag==='negative_label_candidate'?' warn':'')));
+    const review=el('div',undefined,'review'),label=el('label','原文是否支持这项解释？'),select=el('select');select.setAttribute('aria-label','复核：'+heading);
+    verdicts.forEach((v,i)=>{const o=el('option',verdictNames[i]);o.value=v;select.append(o);});
+    const key=reviewKey(sample,model,kind,claim.id);select.value=validReview(reviews[key])?reviews[key].verdict:'unreviewed';
+    const message=el('p',storageWorking?'仅保存在本浏览器；可导出备份。':'本浏览器无法保存；请导出复核记录。','review-message');
+    select.onchange=()=>{saveReview(key,select.value);message.textContent=storageWorking?'已保存到本浏览器；未写回生产数据。':'保存失败；请导出复核记录。';};label.append(select);review.append(label,message);area.append(review);
+    const ids=kind==='summary'?Object.keys(sample.evidence).map(Number):claim.evidence;
+    if(kind==='summary')area.append(el('p','摘要没有逐句引用；以下是整个窗口的上下文，不能视为逐句证明。','muted'));
+    area.append(el('h3',kind==='summary'?'窗口上下文':'模型实际引用的证据'));
+    for(const id of ids){const e=sample.evidence[String(id)];const entry=el('article',undefined,'evidence');entry.dataset.evidenceId=String(id);entry.dataset.originalId=String(e.original_id);entry.append(el('strong','证据 '+id+' · '+e.time+' · '+(e.kind==='ocr'?'截图识别文字':'语音转写')));entry.append(el('pre',e.text));const a=el('a','在本机知识库打开原证据');a.href='http://127.0.0.1:3002/evidence/'+e.original_id;a.target='_blank';a.rel='noopener noreferrer';entry.append(a);area.append(entry);}
+  }
+  function makePanel(sample,model,index){
+    const note=sample.models[model], panel=el('section',undefined,'panel');panel.dataset.model=model;
+    panel.append(el('h2',model==='qwen3.5:9b'?'原版 Qwen3.5-9B':'Defiant Qwen3.5-9B'));
+    panel.append(el('p',note.nodes.length+' 个概念 · '+note.edges.length+' 条关系 · '+note.calls+' 次生成调用','stats'));
+    panel.append(el('p',note.metrics.self_edges+' 条自环 · '+note.metrics.negative_label_candidates+' 条“无关系”候选；均需结合原文复核','muted'));
+    if(note.duplicate_names)panel.append(el('p','存在同名概念，关系端点可能有歧义。','flag'));
+    const graph=svgEl('svg',{class:'graph','aria-label':model+' 的概念关系图',role:'img'});panel.append(graph);
+    const nodes=el('div',undefined,'claim-list'),edges=el('div',undefined,'relations');
+    panel.append(el('h3','概念'),nodes,el('h3','关系（编号对应图中连线）'),edges);
+    const summaryButton=el('button','查看窗口摘要');summaryButton.type='button';panel.append(summaryButton);
+    const area=el('section',undefined,'inspection');area.setAttribute('aria-live','polite');panel.append(area);
+    const key=sample.id+'|'+model;
+    if(!selections.has(key)){const suspicious=note.edges.find(e=>e.flags.length);selections.set(key,suspicious?{kind:'edge',claim:suspicious}:note.nodes.length?{kind:'node',claim:note.nodes[0]}:{kind:'summary',claim:{id:'summary'}});}
+    function choose(kind,claim){selections.set(key,{kind,claim});for(const b of panel.querySelectorAll('[data-claim]'))b.setAttribute('aria-pressed',String(b.dataset.claim===kind+':'+claim.id));showInspection(panel,sample,model,kind,claim);draw();}
+    for(const n of note.nodes){const b=el('button',n.name);b.type='button';b.dataset.claim='node:'+n.id;b.onclick=()=>choose('node',n);nodes.append(b);}
+    for(const [i,e]of note.edges.entries()){const b=el('button',(i+1)+'. '+e.from+' → '+e.to+'：'+e.relation);b.type='button';b.dataset.claim='edge:'+e.id;for(const f of e.flags)b.append(el('span',flagNames[f],'flag'+(f==='negative_label_candidate'?' warn':'')));b.onclick=()=>choose('edge',e);edges.append(b);}
+    if(!note.edges.length)edges.append(el('p','本窗口没有生成关系。','muted'));
+    summaryButton.dataset.claim='summary:summary';summaryButton.onclick=()=>choose('summary',{id:'summary'});
+    function draw(){
+      graph.replaceChildren();const w=Math.max(240,graph.getBoundingClientRect().width),h=450;graph.setAttribute('viewBox','0 0 '+w+' '+h);
+      const bw=Math.min(158,(w-90)/2),bh=58,positions=new Map(),selected=selections.get(key);
+      note.nodes.forEach((n,i)=>positions.set(n.id,{x:i%2===0?bw/2+30:w-bw/2-30,y:88+Math.floor(i/2)*140}));
+      const defs=svgEl('defs');for(const [label,color]of [['normal','var(--line)'],['bad','var(--bad)'],['warn','var(--warn)']]){const id='arrow-'+index+'-'+label;const marker=svgEl('marker',{id,viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto-start-reverse'});marker.append(svgEl('path',{d:'M0 0 L10 5 L0 10 Z',fill:color}));defs.append(marker);}graph.append(defs);
+      note.edges.forEach((e,i)=>{
+        const a=positions.get(e.source[0]),b=positions.get(e.target[0]);if(!a||!b)return;
+        const pair=[e.source[0],e.target[0]].sort().join('|'),peers=note.edges.filter(x=>[x.source[0],x.target[0]].sort().join('|')===pair),rank=peers.findIndex(x=>x.id===e.id);
+        let path,lx,ly;
+        if(e.source[0]===e.target[0]){path=`M${a.x-18} ${a.y-bh/2} C${a.x-60} ${a.y-99},${a.x+60} ${a.y-99},${a.x+18} ${a.y-bh/2}`;lx=a.x;ly=a.y-68;}
+        else if(Math.abs(a.x-b.x)<1){const side=a.x<w/2?-1:1;const x=a.x+side*(bw/2+8),outer=side<0?2+rank*7:w-2-rank*7;path=`M${x} ${a.y} C${outer} ${a.y},${outer} ${b.y},${x} ${b.y}`;lx=Math.max(14,Math.min(w-14,(x+3*outer)/4));ly=(a.y+b.y)/2+(rank-(peers.length-1)/2)*28;}
+        else{const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy),ux=dx/len,uy=dy/len;const cut=Math.min(bw/2/Math.max(Math.abs(ux),0.001),bh/2/Math.max(Math.abs(uy),0.001));const x1=a.x+ux*(cut+3),y1=a.y+uy*(cut+3),x2=b.x-ux*(cut+6),y2=b.y-uy*(cut+6);const bend=peers.length>1?(rank-(peers.length-1)/2)*64*(e.source[0]<e.target[0]?1:-1):(i%2?1:-1)*12;const cx=(x1+x2)/2-uy*bend,cy=(y1+y2)/2+ux*bend;path=`M${x1} ${y1} Q${cx} ${cy},${x2} ${y2}`;lx=(x1+2*cx+x2)/4;ly=(y1+2*cy+y2)/4;}
+        const severity=e.flags.some(f=>f!=='negative_label_candidate')?'bad':e.flags.length?'warn':'normal';
+        const group=svgEl('g',{'data-edge-id':e.id});const line=svgEl('path',{d:path,class:'edge '+(severity==='normal'?'':severity)+(selected.kind==='edge'&&selected.claim.id===e.id?' selected':''),'marker-end':'url(#arrow-'+index+'-'+severity+')'});const hit=svgEl('path',{d:path,class:'hit'});const title=svgEl('title');title.textContent=e.from+' → '+e.to+'：'+e.relation;group.append(title,line,hit,svgEl('circle',{cx:lx,cy:ly,r:11,class:'edge-label'}));const label=svgEl('text',{x:lx,y:ly+5,class:'edge-number'});label.textContent=i+1;group.append(label);group.onclick=()=>choose('edge',e);graph.append(group);
+      });
+      note.nodes.forEach(n=>{const p=positions.get(n.id);const g=svgEl('g',{class:'node'+(selected.kind==='node'&&selected.claim.id===n.id?' selected':''),'data-node-id':n.id});g.append(svgEl('rect',{x:p.x-bw/2,y:p.y-bh/2,width:bw,height:bh,rx:7}));const title=svgEl('title');title.textContent=n.name;g.append(title);const chars=[...n.name],perLine=Math.max(4,Math.floor((bw-18)/14)),lines=[];for(let i=0;i<chars.length;i+=perLine)lines.push(chars.slice(i,i+perLine).join(''));const shown=lines.slice(0,3);if(lines.length>3)shown[2]=shown[2].slice(0,-1)+'…';shown.forEach((line,i)=>{const t=svgEl('text',{x:p.x,y:p.y+(i-(shown.length-1)/2)*19+5,'text-anchor':'middle'});t.textContent=line;g.append(t);});g.onclick=()=>choose('node',n);graph.append(g);});
+    }
+    redraws.push(draw);requestAnimationFrame(()=>{const s=selections.get(key);choose(s.kind,s.claim);});return panel;
+  }
+  function render(){redraws.splice(0);const sample=data.samples[current];$('panels').replaceChildren(...data.models.map((m,i)=>makePanel(sample,m,i)));const times=Object.values(sample.evidence).map(e=>e.time);$('scope').textContent='窗口 '+(sample.window+1)+' · 证据起点 '+(times[0]||'未知')+' · '+data.samples.length+' 个定向样本之一；尚无全库语义准确率';updateReviews();}
+  data.samples.forEach((s,i)=>{const o=el('option',(i+1)+'. '+s.title+' · 窗口 '+(s.window+1));o.value=String(i);$('sample').append(o);});
+  $('sample').onchange=()=>{current=Number($('sample').value);render();};
+  $('export').onclick=()=>{const value={version:1,plan_sha256:data.plan_sha256,results_sha256:data.results_sha256,model_digests:data.model_digests,exported:new Date().toISOString(),reviews,formal_semantic_acceptance:false,production_changed:false};const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const a=el('a');a.href=url;a.download='course-trial-reviews.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+  $('provenance').append(el('p','输入计划 SHA-256：'+data.plan_sha256),el('p','结果 SHA-256：'+data.results_sha256));for(const m of data.models)$('provenance').append(el('p',m+' · '+data.model_digests[m]));
+  new ResizeObserver(()=>redraws.forEach(fn=>fn())).observe($('panels'));
+  render();
+})();
+</script>
+</html>
