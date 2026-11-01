@@ -327,6 +327,20 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 
 ## 视频删除前的验收
 
+跨课程概念导航可从已校验的完整逐课导出生成，不调用模型、不读取原视频，也不修改生产数据库：
+
+```powershell
+$env:PYTHONPATH = Join-Path $PWD 'src'
+.\.venv\Scripts\python.exe -m wechat_decrypt_tool.course_concepts --root output/course-knowledge
+Start-Process (Join-Path $PWD 'output/course-knowledge/corpus-graph.html')
+```
+
+`corpus-graph.html` 可直接离线打开，支持搜索概念及解释、课程筛选、跨课程同名概念筛选和关系导航，展开引用可阅读归档中的对应语音或截图文字。每种解释与关系都保留课程、摘要窗口及证据编号；只有名称完全相同才分组，不推断同义词或同名概念的语义等价。页面不请求外部网络。缺失音轨及替代录制来源单独提示；模型语义和完整音画覆盖仍须另行验收。
+
+生成器按完整规范音频清单逐课检查完整摘要窗口、窗口内引用及导出一致性。未处理、校验失败、导出读取前发生变化的课程列在 `corpus-graph.json` 的 `deferred` 及页面范围说明中，不能仅凭已收录子集宣称完成。`--require-complete` 会在仍有延期课程时返回 2；`full_inventory_graph_built` 只表示结构化图谱来源已齐全，不代表可以删除视频。不同课程分别观察，不是生产数据库的单一时刻快照。
+
+全局 JSON 与 HTML 是可重建视图；恢复备份后，使用恢复根目录重新执行上述命令，使它们来自恢复后的逐课结构化导出，不复制运行中可能超前的全局图谱。本课复核页链接指向 `lessons/<编号>/review.html`；若恢复目录没有该页，可用已有 `review` 命令重新生成，内嵌证据文字和结构化来源链接仍可直接查阅。生成时才刷新内容，批处理继续推进后可再次执行命令。
+
 逐课检查数据库中的完整摘要窗口、窗口内引用、`evidence.json` 和 `graph.json` 是否一致：
 
 ```powershell
