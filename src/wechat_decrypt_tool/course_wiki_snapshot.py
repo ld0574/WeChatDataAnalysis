@@ -16,7 +16,7 @@ from .course_backup import file_hash, inside
 from .course_knowledge import atomic_json
 from .course_library import Library, canonical, create_app
 from .course_lesson_exports import digest
-from .course_wiki import Wiki
+from .course_wiki import Wiki, versioned_articles
 
 POLICY = "published-course-wiki-snapshot-v1"
 MANIFEST = "wiki-snapshot.json"
@@ -189,19 +189,31 @@ def assets(root):
 
     def add(relative, expected=None, *, pointer=False):
         path = inside(root, relative)
-        actual = file_hash(path)
+        captured = path.read_bytes() if pointer else None
+        actual = digest(captured) if pointer else file_hash(path)
         if expected and actual != expected:
             raise ValueError("snapshot_source_hash_mismatch")
         if relative in files and files[relative][1] != actual:
             raise ValueError("snapshot_source_changed_during_collection")
         files[relative] = (path, actual)
         if pointer:
-            pointers[path] = actual
+            pointers[path] = captured
 
-    wiki, library = Wiki(root), Library(root)
     add("wiki/catalog.json", pointer=True)
     add("library/catalog.json", pointer=True)
     add("inventory-unique.json", pointer=True)
+
+    class FrozenWiki(Wiki):
+        def catalog(self):
+            value = json.loads(pointers[root / "wiki/catalog.json"])
+            value["articles"] = versioned_articles(value["articles"])
+            return value
+
+    class FrozenLibrary(Library):
+        def catalog(self):
+            return json.loads(pointers[root / "library/catalog.json"])
+
+    wiki, library = FrozenWiki(root), FrozenLibrary(root)
     catalog, sources = wiki.catalog(), library.catalog()
     if sources["inventory_sha256"] != files["inventory-unique.json"][1]:
         raise ValueError("snapshot_source_inventory_mismatch")
@@ -315,14 +327,15 @@ def create(root, destination, *, reserve_gib=32):
         _reserve(snapshot, source.stat().st_size, reserve_gib)
         target = inside(snapshot, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        if source in pointers:
+            target.write_bytes(pointers[source])
+        else:
+            shutil.copyfile(source, target)
         if file_hash(target) != expected:
             raise ValueError("snapshot_copied_file_changed")
         rows.append(
             {"path": relative, "bytes": target.stat().st_size, "sha256": expected}
         )
-    if any(file_hash(path) != expected for path, expected in pointers.items()):
-        raise ValueError("snapshot_publication_changed_during_copy")
     requirements = (
         "\n".join(
             name + "==" + importlib.metadata.version(name)
@@ -334,6 +347,7 @@ def create(root, destination, *, reserve_gib=32):
     readme = """# 已发布课程 Wiki 快照
 
 本快照只包括创建时已发布的主题文章、保留版本、来源笔记、原样代码、引用图片和完整检查报告。
+发布目录使用收集时捕获的固定字节；复制期间的新发布不会替换该集合。引用的不可变材料仍逐文件校验。
 不包含提取数据库、全部课程音频/视频、全部附件、模型权重、Python 环境或浏览器内的学习记录。
 它不证明课程覆盖、语义正确、备份全部素材或可以删除原视频。未发布课程仍显示未发布。
 
@@ -361,6 +375,7 @@ def create(root, destination, *, reserve_gib=32):
         "runtime_source_included": True,
         "python_environment_included": False,
         "browser_learning_records_included": False,
+        "publication_pointer_policy": "captured_bytes_with_verified_immutable_dependencies",
         "full_course_archive": False,
         "semantic_accuracy_verified": False,
         "source_deletion_allowed": False,

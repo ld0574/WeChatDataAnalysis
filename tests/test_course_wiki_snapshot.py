@@ -329,12 +329,20 @@ def test_old_snapshot_without_learning_module_remains_verifiable(publication, tm
     snapshot.verify(backup)
 
 
-def test_refuses_insufficient_space_and_changed_publication(
-    publication, tmp_path, monkeypatch
-):
+def test_refuses_insufficient_space(publication, tmp_path):
     with pytest.raises(InterruptedError, match="reserve"):
         snapshot.create(publication, tmp_path / "backup", reserve_gib=1e12)
+
+
+@pytest.mark.parametrize("relative", [
+    "wiki/catalog.json", "library/catalog.json", "inventory-unique.json",
+])
+def test_copies_captured_pointer_bytes_when_live_pointer_advances(
+    publication, tmp_path, monkeypatch, relative
+):
     original = snapshot.shutil.copyfile
+    pointer = publication / relative
+    captured = pointer.read_bytes()
     changed = False
 
     def change_pointer(source, target):
@@ -342,11 +350,71 @@ def test_refuses_insufficient_space_and_changed_publication(
         result = original(source, target)
         if not changed:
             changed = True
-            catalog = publication / "wiki/catalog.json"
-            catalog.write_bytes(catalog.read_bytes() + b"\n")
+            pointer.write_bytes(captured + b"\n")
         return result
 
     monkeypatch.setattr(snapshot.shutil, "copyfile", change_pointer)
-    with pytest.raises(ValueError, match="changed"):
+    backup = snapshot.create(publication, tmp_path / "backup", reserve_gib=0)
+    assert changed and pointer.read_bytes() != captured
+    assert (backup / relative).read_bytes() == captured
+    assert snapshot.smoke(backup)["article_versions"] == 1
+
+
+@pytest.mark.parametrize("phase", ["collection", "copy"])
+def test_new_article_publication_preserves_frozen_closure(
+    publication, tmp_path, monkeypatch, phase
+):
+    original = snapshot.shutil.copyfile
+    old_catalog = (publication / "wiki/catalog.json").read_bytes()
+    old_article = wiki.Wiki(publication).article("e" * 32)
+    published = False
+
+    def publish_once():
+        nonlocal published
+        if not published:
+            published = True
+            wiki.publish_draft(ReadOnlyArchive(publication), old_article["article"],
+                               old_article["packet"], "f" * 32, "fixture", "fixture-digest")
+
+    def publish_during_copy(source, target):
+        result = original(source, target)
+        publish_once()
+        return result
+
+    if phase == "copy":
+        monkeypatch.setattr(snapshot.shutil, "copyfile", publish_during_copy)
+    else:
+        original_hash = snapshot.file_hash
+
+        def publish_during_collection(path):
+            publish_once()
+            return original_hash(path)
+
+        monkeypatch.setattr(snapshot, "file_hash", publish_during_collection)
+    backup = snapshot.create(publication, tmp_path / "backup", reserve_gib=0)
+    assert published
+    assert len(wiki.Wiki(publication).catalog()["articles"]) == 2
+    assert (backup / "wiki/catalog.json").read_bytes() == old_catalog
+    assert snapshot.smoke(backup)["article_versions"] == 1
+    assert not snapshot.verify(backup)["semantic_accuracy_verified"]
+
+
+def test_changed_immutable_article_still_rejects_snapshot(
+    publication, tmp_path, monkeypatch
+):
+    original = snapshot.shutil.copyfile
+    row = wiki.Wiki(publication).catalog()["articles"][0]
+    article_path = publication / "wiki/objects" / (row["object"] + ".json")
+    changed = False
+
+    def corrupt_before_copy(source, target):
+        nonlocal changed
+        if not changed:
+            changed = True
+            article_path.write_bytes(article_path.read_bytes() + b"\n")
+        return original(source, target)
+
+    monkeypatch.setattr(snapshot.shutil, "copyfile", corrupt_before_copy)
+    with pytest.raises(ValueError, match="snapshot_copied_file_changed"):
         snapshot.create(publication, tmp_path / "backup", reserve_gib=0)
     assert not list((tmp_path / "backup").rglob(snapshot.MANIFEST))
