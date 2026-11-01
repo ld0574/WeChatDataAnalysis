@@ -87,7 +87,7 @@ def stages(value, *, per_source=False):
             "windows": windows,
             "article_targets": targets,
         }
-        if len(canonical(context).decode()) > 16000:
+        if not per_source and len(canonical(context).decode()) > 16000:
             raise ValueError("omissions_chapter_context_exceeds_bound")
         if not per_source:
             yield f"chapter-{n}", context
@@ -110,6 +110,8 @@ def stages(value, *, per_source=False):
                     if ref in target["citations"]
                 },
             }
+            if len(canonical(focused).decode()) > 16000:
+                raise ValueError("omissions_chapter_context_exceeds_bound")
             yield f"chapter-{n}-source-{number}", focused
 
 
