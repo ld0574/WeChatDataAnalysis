@@ -26,6 +26,7 @@ from .course_wiki_review import published_review, review
 from .course_wiki_synthesis import generate
 
 POLICY = "finite-first-topic-source-batch-v1"
+PAGED_POLICY = "finite-complete-directory-pages-batch-v1"
 TERMINAL = {"draft_checks_complete", "no_supported_topic", "needs_review"}
 
 
@@ -42,14 +43,18 @@ def manifest(root, key):
     if (
         value["id"] != key
         or digest(canonical(recipe))[:32] != key
-        or recipe["policy"] != POLICY
+        or recipe["policy"] not in {POLICY, PAGED_POLICY}
         or not recipe["fixed_assessments"]
     ):
         raise ValueError("wiki_batch_manifest_changed")
-    videos = [r["video"] for r in recipe["courses"]]
-    if len(videos) != len(set(videos)):
+    items = [item_key(r) for r in recipe["courses"]]
+    if len(items) != len(set(items)):
         raise ValueError("wiki_batch_duplicate_course")
     return folder, recipe
+
+
+def item_key(spec):
+    return spec.get("item", spec["video"])
 
 
 def completed_artifacts(store, row):
@@ -120,6 +125,60 @@ def prepare(store, *, limit=4, model="qwen3.5:9b"):
         return {"state": "prepared", "batch": key, "courses": len(courses)}
 
 
+def prepare_directories(store, videos, *, model="qwen3.5:9b"):
+    from .course_wiki_directory import create
+
+    if not videos or len(videos) != len(set(videos)):
+        raise ValueError("wiki_batch_invalid_directory_courses")
+    with schema_lease(store.root / "wiki-theme-batch.lock", timeout=0):
+        courses = []
+        for video in videos:
+            directory = create(store, video)
+            for page in range(directory["pages"]):
+                spec = {
+                    "video": video,
+                    "lesson_sha256": directory["lesson_sha256"],
+                    "directory": directory["directory"],
+                    "page": page,
+                }
+                spec["item"] = digest(canonical(spec))[:32]
+                courses.append(spec)
+        if not courses:
+            raise ValueError("wiki_batch_no_complete_directory_pages")
+        recipe = {
+            "policy": PAGED_POLICY,
+            "model": model,
+            "model_digest": local_model_digest(model),
+            "fixed_assessments": True,
+            "courses": courses,
+        }
+        key = digest(canonical(recipe))[:32]
+        folder = store.root / "wiki/theme-batches" / key
+        if folder.exists():
+            _, previous = manifest(store.root, key)
+            if previous != recipe:
+                raise ValueError("wiki_batch_directory_recipe_changed")
+            return {
+                "state": "already_prepared",
+                "batch": key,
+                "pages": len(courses),
+                "courses": len(videos),
+            }
+        requested = {r["item"] for r in courses}
+        for path in (store.root / "wiki/theme-batches").glob("*/manifest.json"):
+            _, previous = manifest(store.root, path.parent.name)
+            if requested & {r.get("item") for r in previous["courses"]}:
+                raise ValueError("wiki_batch_directory_page_already_reserved")
+        folder.mkdir(parents=True, exist_ok=False)
+        atomic_json(folder / "manifest.json", {"id": key, "recipe": recipe})
+        return {
+            "state": "prepared",
+            "batch": key,
+            "pages": len(courses),
+            "courses": len(videos),
+        }
+
+
 def run(store, key, *, wait_seconds=3600):
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
         raise ValueError("wiki_batch_invalid_gpu_wait")
@@ -127,7 +186,11 @@ def run(store, key, *, wait_seconds=3600):
         folder, recipe = manifest(store.root, key)
         path = folder / "progress.json"
         rows = {
-            r["video"]: {"video": r["video"], "state": "pending"}
+            item_key(r): {
+                "video": r["video"],
+                "state": "pending",
+                **{k: r[k] for k in ("directory", "page") if k in r},
+            }
             for r in recipe["courses"]
         }
         if path.exists():
@@ -156,7 +219,7 @@ def run(store, key, *, wait_seconds=3600):
 
         for spec in recipe["courses"]:
             video = spec["video"]
-            row = rows[video]
+            row = rows[item_key(spec)]
             try:
                 store.checkpoint()
                 if row["state"] == "draft_checks_complete":
@@ -178,8 +241,17 @@ def run(store, key, *, wait_seconds=3600):
                     raise ValueError("wiki_batch_model_revision_changed")
                 row["state"] = "planning"
                 progress("running", current_video=video)
-                planned = propose(store, video, model, wait_seconds=wait_seconds)
+                options = (
+                    {"directory": spec["directory"], "page_number": spec["page"]}
+                    if "directory" in spec
+                    else {}
+                )
+                planned = propose(
+                    store, video, model, wait_seconds=wait_seconds, **options
+                )
                 row["planning_job"] = job_id(planned["job"])
+                if "directory_page_sections" in planned:
+                    row["directory_page_sections"] = planned["directory_page_sections"]
                 if planned["state"] == "no_supported_topic_proposed":
                     row["state"] = "no_supported_topic"
                     progress("running", current_video=video)
@@ -271,6 +343,9 @@ def main():
     create = sub.add_parser("prepare")
     create.add_argument("--limit", type=int, default=4)
     create.add_argument("--model", default="qwen3.5:9b")
+    directories = sub.add_parser("prepare-directories")
+    directories.add_argument("--video", action="append", required=True)
+    directories.add_argument("--model", default="qwen3.5:9b")
     for name in ("run", "guard"):
         execute = sub.add_parser(name)
         execute.add_argument("--batch", required=True)
@@ -298,11 +373,12 @@ def main():
         )
         return
     store = ReadOnlyArchive(args.root)
-    result = (
-        prepare(store, limit=args.limit, model=args.model)
-        if args.command == "prepare"
-        else run(store, args.batch, wait_seconds=args.wait_gpu_seconds)
-    )
+    if args.command == "prepare":
+        result = prepare(store, limit=args.limit, model=args.model)
+    elif args.command == "prepare-directories":
+        result = prepare_directories(store, args.video, model=args.model)
+    else:
+        result = run(store, args.batch, wait_seconds=args.wait_gpu_seconds)
     print(json.dumps({k: v for k, v in result.items() if k in {"state", "batch"}}))
 
 

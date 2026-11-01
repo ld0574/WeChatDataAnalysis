@@ -41,8 +41,10 @@ def pipeline(tmp_path, monkeypatch):
 
     def propose(store, video, model, **kwargs):
         calls.append((video, "propose"))
-        job = digest(video.encode())[:32]
         plan = {"video": video}
+        if "directory" in kwargs:
+            plan.update(directory=kwargs["directory"], page=kwargs["page_number"])
+        job = digest(canonical(plan))[:32]
         (store.root / "wiki/planning-jobs" / job).mkdir(parents=True, exist_ok=True)
         atomic_json(store.root / f"wiki/planning-jobs/{job}/plan.json", plan)
         return {
@@ -56,7 +58,7 @@ def pipeline(tmp_path, monkeypatch):
     def generate(store, plan, model, **kwargs):
         assert kwargs["fixed_assessments"] is True
         calls.append((plan["video"], "generate"))
-        return {"id": digest(plan["video"].encode())[:32]}
+        return {"id": digest(canonical(plan))[:32]}
 
     def review(store, article, model, **kwargs):
         assert kwargs.get("single_targets") or kwargs.get("per_source")
@@ -265,3 +267,54 @@ def test_completed_rows_revalidate_publications_instead_of_trusting_status(
     result = batch.run(p.store, key)
     assert result["courses"]["video-0"]["state"] == "needs_review"
     assert p.calls == before
+
+
+def test_same_course_pages_are_distinct_resumable_items_and_reservation_is_idempotent(
+    pipeline, monkeypatch
+):
+    from wechat_decrypt_tool import course_wiki_directory as directory
+
+    p = pipeline
+    monkeypatch.setattr(
+        directory,
+        "create",
+        lambda store, video: {
+            "directory": "d" * 32,
+            "pages": 2,
+            "lesson_sha256": digest(canonical(p.lessons[video])),
+        },
+    )
+    first = batch.prepare_directories(p.store, ["video-0"])
+    assert first["pages"] == 2 and first["courses"] == 1
+    again = batch.prepare_directories(p.store, ["video-0"])
+    assert again["batch"] == first["batch"] and again["state"] == "already_prepared"
+    result = batch.run(p.store, first["batch"])
+    rows = list(result["courses"].values())
+    assert len(rows) == 2
+    assert [r["page"] for r in rows] == [0, 1]
+    assert len({r["article"] for r in rows}) == 2
+    assert all(r["state"] == "draft_checks_complete" for r in rows)
+    before = list(p.calls)
+    batch.run(p.store, first["batch"])
+    assert p.calls == before
+
+
+def test_directory_pages_cannot_get_fresh_budget_by_joining_another_batch(
+    pipeline, monkeypatch
+):
+    from wechat_decrypt_tool import course_wiki_directory as directory
+
+    p = pipeline
+    monkeypatch.setattr(
+        directory,
+        "create",
+        lambda store, video: {
+            "directory": digest(video.encode())[:32],
+            "pages": 2,
+            "lesson_sha256": digest(canonical(p.lessons[video])),
+        },
+    )
+    batch.prepare_directories(p.store, ["video-0"])
+    with pytest.raises(ValueError, match="page_already_reserved"):
+        batch.prepare_directories(p.store, ["video-0", "video-1"])
+    assert not p.calls
