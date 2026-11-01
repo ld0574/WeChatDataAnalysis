@@ -107,6 +107,16 @@ def activate():
     sys.path[:0] = [str(BUNDLE / "site-packages"), str(BUNDLE / "src")]
 
 
+def original_native_mappings(paths, roots):
+    return [
+        str(path)
+        for value in paths
+        if value
+        for path in [Path(value).resolve()]
+        if any(path.is_relative_to(root.resolve()) for root in roots)
+    ]
+
+
 def probe(manifest, plan):
     # Block reads of every original component and all Python network connections.
     original_roots = [Path(c["source_root"]).resolve() for c in plan["components"]]
@@ -215,7 +225,12 @@ def probe(manifest, plan):
             and not Path(origin).resolve().is_relative_to(BUNDLE)
         ):
             outside.append(name)
-    if outside or original_access or network_access:
+    import psutil
+
+    native_originals = original_native_mappings(
+        [row.path for row in psutil.Process().memory_maps()], original_roots
+    )
+    if outside or original_access or network_access or native_originals:
         raise ValueError("environment_probe_not_isolated")
     assert not torch.cuda.is_initialized()
     return {
@@ -229,6 +244,7 @@ def probe(manifest, plan):
         "original_installation_access_attempts": len(original_access),
         "network_connection_attempts": len(network_access),
         "outside_module_count": len(outside),
+        "original_installation_native_mapping_count": len(native_originals),
         "gpu_context_initialized": False,
         "gpu_inference_verified": False,
         "course_data_included": False,

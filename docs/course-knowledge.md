@@ -429,3 +429,14 @@ $svgBundle = 'C:\Users\Administrator\Documents\CourseKnowledgeBackups\extraction
 ```
 
 探测校验已登记文件哈希，约束 Node 模块来自副本，禁用系统字体加载，并比较合成 PNG 的固定哈希。此检查不证明全部图示语义或原作者字体布局一致。本机另外使用独立恢复副本重建全部 5 份已保留 SVG，逐像素与归档一致；证据位于 `wiki/svg-environment-20261102-validation.json`。该补充包不包含课程资料、Python、ASR 或其他提取依赖，不能作为删除原视频的依据。
+
+
+### 提取环境按收据独立恢复
+
+`tools/course_extraction_environment_restore.py` 从正式备份收据指定的清单 SHA 恢复到新目录；已拥有的同清单目标可续跑并复用重新校验的文件，其他现有目录不会被覆盖。默认保留 32 GiB 可用空间，源文件与复制文件分别校验。恢复后以副本自己的 Python 执行 `-I -B extraction_bootstrap.py probe`，核对依赖、CPU 张量、合成音频、PDF 页面及原生工具。探测还拒绝原安装目录的 Python 模块、文件打开或当前进程原生 DLL 映射；这不是 GPU 推理或完整语义验收。
+
+```powershell
+python -m tools.course_extraction_environment_restore --source 'X:\提取环境备份' --destination 'Y:\独立恢复目录' --manifest-sha256 '<正式备份收据中的 manifest_sha256>' --progress 'Y:\restore-progress.json'
+```
+
+传入 `--pause-flag` 可使用归档任务的暂停标志；恢复工具不会清除它。探测中暂停会停止其所属子进程，已复制文件保留供同清单续跑。进度、恢复收据或失败日志应分别检查，不能仅因文件复制结束就称为环境恢复成功。GPU 推理仍须共享租约和温控，并单独验收。

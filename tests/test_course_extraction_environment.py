@@ -190,6 +190,22 @@ def test_payload_path_never_escapes_the_bundle(bundle, relative):
         bootstrap.inside(relative)
 
 
+def test_native_dll_mapping_from_original_installation_is_detected(tmp_path):
+    original = tmp_path / "original-runtime"
+    restored = tmp_path / "restored-runtime"
+    paths = [original / "torch/lib/torch_cpu.dll", restored / "torch/lib/torch_cpu.dll"]
+    assert bootstrap.original_native_mappings(paths, [original]) == [
+        str(paths[0].resolve())
+    ]
+    assert bootstrap.original_native_mappings(paths[1:], [original]) == []
+
+
+def test_native_mapping_sibling_prefix_is_not_mistaken_for_original(tmp_path):
+    original = tmp_path / "python"
+    sibling = tmp_path / "python-restored/python311.dll"
+    assert bootstrap.original_native_mappings([sibling], [original]) == []
+
+
 def test_bootstrap_never_falls_back_to_the_original_python(bundle):
     with pytest.raises(ValueError, match="requires_bundled_interpreter"):
         bootstrap.activate()
