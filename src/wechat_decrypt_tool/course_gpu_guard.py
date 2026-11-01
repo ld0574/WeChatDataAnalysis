@@ -187,6 +187,7 @@ def main():
     role = parser.add_mutually_exclusive_group(required=True)
     role.add_argument("--asr-model", type=Path)
     role.add_argument("--revision-article")
+    parser.add_argument("--review-job", action="append", default=[])
     parser.add_argument("--omission-job", action="append", default=[])
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--maximum-power", type=float, default=120)
@@ -194,6 +195,8 @@ def main():
     args = parser.parse_args()
     if args.omission_job and not args.revision_article:
         parser.error("--omission-job requires --revision-article")
+    if args.review_job and not args.revision_article:
+        parser.error("--review-job requires --revision-article")
     command = [
         sys.executable,
         "-m",
@@ -229,6 +232,8 @@ def main():
         ]
         for job in args.omission_job:
             command.extend(["--omission-job", job])
+        for job in args.review_job:
+            command.extend(["--review-job", job])
     run(
         args.root,
         command,

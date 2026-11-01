@@ -122,6 +122,8 @@ $env:PYTHONPATH = 'D:\Project\WeChatDataAnalysis\src'
 .venv\Scripts\python.exe -m wechat_decrypt_tool.course_wiki_revision --root output/course-knowledge --article <原稿ID> --wait-gpu-seconds 3600
 ```
 
+有多份模型报告时，可重复加 `--review-job <历史报告ID>`，同时保留双方的非支持项与分歧，避免后运行的模型遮住先前问题。可再加 `--omission-job <遗漏报告ID>` 合并反向遗漏线索，或加 `--prepare-only` 先冻结请求而不调用模型。所有显式历史报告均在开始和发布前重新校验；它们只提供检查线索，不是新的知识来源或语义验收结论。
+
 修订冻结原稿及已校验报告的指纹，逐项重写有问题的说明、易错点、代码摘录和自测。
 模型只能使用原稿已冻结的来源。核对意见可能错误，不能被当作额外事实或指令。
 无法从原文修订的项可以省略，但必须记录资料缺口；省略后概述、章节或自测不完整时，

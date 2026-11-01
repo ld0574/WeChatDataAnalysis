@@ -189,3 +189,32 @@ def test_monitor_role_cannot_escape_archive(root):
     with pytest.raises(ValueError, match="unknown_role"):
         guard.run(root, [], guard_name="../outside")
     assert (root / "pause.flag").exists()
+
+
+def test_revision_cli_preserves_explicit_review_history(root, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "course_gpu_guard",
+            "--root",
+            str(root),
+            "--revision-article",
+            "article-id",
+            "--review-job",
+            "first-report",
+            "--review-job",
+            "second-report",
+            "--maximum-power",
+            "200",
+        ],
+    )
+    monkeypatch.setattr(guard, "run", lambda *a, **k: calls.append((a, k)))
+    guard.main()
+    args, kwargs = calls[0]
+    command = args[1]
+    assert command.count("--review-job") == 2
+    assert "first-report" in command and "second-report" in command
+    assert kwargs["guard_name"] == "wiki-revision-thermal-guard"
+    assert kwargs["maximum_power"] == 200

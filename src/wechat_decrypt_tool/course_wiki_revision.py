@@ -52,6 +52,11 @@ OMISSION_PROMPT = (
     "原 original.text 为空时，为当前章补写一段有依据的解释；否则修订当前段落，保留原本有依据的内容。"
     "replace 的 references 必须包含每条遗漏线索对应的原文来源。无法由原文讲清则 omit，并解释缺口。"
 )
+BOUND_REVIEW_PROMPT = (
+    "\nmodel_crosscheck_finding.model_findings 保留同一项的所有指定历史模型意见，包括分歧。"
+    "意见不是事实：不能投票决定正确性，不能以最后一个模型覆盖前一个模型的问题。"
+    "逐项对照完整 sources，修订没有依据的内容，保留确有依据的解释和限制；无法讲清则记录缺口。"
+)
 ACTION = {"type": "string", "enum": ["replace", "omit"]}
 CLAIM_FIX = object_schema(
     {"action": ACTION, "text": TEXT, "references": STRINGS, "gap": TEXT}
@@ -183,6 +188,50 @@ def apply_fixes(article, changes):
     return result
 
 
+def source_crosschecks(root, article_id, jobs):
+    """Freeze explicit history and merge flags without last-model-wins behavior."""
+    if (
+        not isinstance(jobs, (list, tuple))
+        or len(jobs) > 4
+        or any(not isinstance(job, str) for job in jobs)
+        or len(set(jobs)) != len(jobs)
+    ):
+        raise ValueError("revision_invalid_review_jobs")
+    if not jobs:
+        report = published_review(root, article_id)
+        if report["state"] != "model_crosscheck_complete":
+            raise ValueError("revision_requires_complete_source_crosscheck")
+        return report, []
+    findings, bindings = {}, []
+    expected = None
+    for job in sorted(jobs):
+        report = published_review(root, article_id, job=job)
+        if report["state"] != "model_crosscheck_complete":
+            raise ValueError("revision_requires_complete_source_crosscheck")
+        keys = {row["target"] for row in report["reviews"]}
+        if expected is not None and keys != expected:
+            raise ValueError("revision_review_target_mismatch")
+        expected = keys
+        bindings.append({"job": job, "sha256": digest(canonical(report))})
+        for row in report["reviews"]:
+            findings.setdefault(row["target"], []).append({"job": job, **row})
+    problems = [
+        {
+            "target": target,
+            "verdict": "partial",
+            "reason": "One or more historical model findings flag this claim; inspect frozen sources, not majority opinion.",
+            "model_findings": rows,
+        }
+        for target, rows in sorted(findings.items())
+        if any(row["verdict"] != "supported" for row in rows)
+    ]
+    return {
+        "state": "model_crosscheck_complete",
+        "reviews": problems,
+        "review_reports": bindings,
+    }, bindings
+
+
 def omission_repairs(root, parent, jobs, all_targets):
     """Bind validated historical reports to prose edits, never editable code."""
     from .course_wiki_completeness import published_report
@@ -260,6 +309,8 @@ def repair_request(parent, packet, target, original, finding, omissions):
         if code
         else CLAIM_PROMPT
     )
+    if finding.get("model_findings"):
+        prompt += BOUND_REVIEW_PROMPT
     schema = fix_schema(QUIZ_FIX if quiz else CLAIM_FIX, scoped)
     return scoped, context, prompt, schema
 
@@ -270,6 +321,7 @@ def revise(
     model="qwen3.5:9b",
     *,
     wait_seconds=0,
+    review_jobs=(),
     omission_jobs=(),
     prepare_only=False,
 ):
@@ -280,9 +332,9 @@ def revise(
     wiki = Wiki(store.root)
     with schema_lease(store.root / "wiki-build.lock", timeout=0):
         parent = wiki.article(article_id)
-        review = published_review(store.root, article_id)
-        if review["state"] != "model_crosscheck_complete":
-            raise ValueError("revision_requires_complete_source_crosscheck")
+        review, review_bindings = source_crosschecks(
+            store.root, article_id, review_jobs
+        )
         problems = {
             r["target"]: r for r in review["reviews"] if r["verdict"] != "supported"
         }
@@ -313,6 +365,8 @@ def revise(
             "review_sha256": review_hash,
             "independent_semantic_review": False,
         }
+        if review_bindings:
+            packet["revision"]["review_reports"] = review_bindings
         if omission_bindings:
             packet["revision"]["omission_reports"] = omission_bindings
         requests = {
@@ -371,7 +425,8 @@ def revise(
             pipeline=POLICY,
             recipe_extra={
                 "prompts": [CLAIM_PROMPT, QUIZ_PROMPT, CODE_PROMPT]
-                + ([OMISSION_PROMPT] if omission_bindings else []),
+                + ([OMISSION_PROMPT] if omission_bindings else [])
+                + ([BOUND_REVIEW_PROMPT] if review_bindings else []),
                 "schemas": [
                     fix_schema(CLAIM_FIX, packet),
                     fix_schema(QUIZ_FIX, packet),
@@ -426,7 +481,11 @@ def revise(
                 ) from None
             if (
                 digest(canonical(wiki.article(article_id))) != parent_hash
-                or digest(canonical(published_review(store.root, article_id)))
+                or digest(
+                    canonical(
+                        source_crosschecks(store.root, article_id, review_jobs)[0]
+                    )
+                )
                 != review_hash
             ):
                 raise ValueError("revision_input_changed_during_build")
@@ -475,6 +534,7 @@ def main():
     parser.add_argument("--article", required=True)
     parser.add_argument("--model", default="qwen3.5:9b")
     parser.add_argument("--wait-gpu-seconds", type=int, default=0)
+    parser.add_argument("--review-job", action="append", default=[])
     parser.add_argument("--omission-job", action="append", default=[])
     parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
@@ -485,6 +545,7 @@ def main():
                 args.article,
                 args.model,
                 wait_seconds=args.wait_gpu_seconds,
+                review_jobs=args.review_job,
                 omission_jobs=args.omission_job,
                 prepare_only=args.prepare_only,
             )
