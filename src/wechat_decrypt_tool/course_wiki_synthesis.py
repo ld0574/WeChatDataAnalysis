@@ -81,6 +81,18 @@ EXERCISE_PROMPT = (
 根据本次原文列出有依据的易错点，没依据可为空，缺少的条件写入 gaps。
 不要重复 previous_questions；其他章节标题与题目不是事实证据，不使用它们补造答案。"""
 )
+FIXED_EXERCISE = json.loads(json.dumps(EXERCISE))
+FIXED_EXERCISE["properties"]["quiz"]["properties"].pop("question")
+FIXED_EXERCISE["properties"]["quiz"]["required"].remove("question")
+FIXED_EXERCISE_PROMPT = (
+    COMMON
+    + """
+本次只回答 fixed_question 中程序固定的完整章节学习任务，不生成或修改题干。
+只输出有原文依据的答案、解释和判断标准，并列出来源；不能借用 previous_questions 的事实。
+previous_questions 仅说明其他章已安排的任务，不能替代当前章任务或其 sources。
+保留关键条件、步骤和限制；原文不能回答的部分明确写入 gaps，不虚构答案。
+根据本次原文列出有依据的易错点，没依据可为空。"""
+)
 
 
 def bounded(value, maximum):
@@ -255,6 +267,14 @@ def exercise(value, packet, previous):
         claim(item, packet)
 
 
+def fixed_exercise(value, question):
+    if "question" in value["quiz"]:
+        raise ValueError("wiki_synthesis_fixed_question_must_not_be_generated")
+    result = json.loads(json.dumps(value))
+    result["quiz"]["question"] = question
+    return result
+
+
 def attach_code(value, selected):
     result = json.loads(json.dumps(value))
     if selected:
@@ -264,12 +284,24 @@ def attach_code(value, selected):
     return result
 
 
-def generate(store, plan, model="qwen3.5:9b", *, wait_seconds=0):
+def generate(
+    store, plan, model="qwen3.5:9b", *, wait_seconds=0, fixed_assessments=False
+):
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
         raise ValueError("GPU wait must be bounded to 0..3600 seconds")
     with schema_lease(store.root / "wiki-build.lock", timeout=0):
         try:
             packet, intro_packet, chapters = prepare_plan(store.root, plan)
+            assigned = (
+                [
+                    "请根据本章原文完成以下任务：" + e["focus"].strip()
+                    for e in plan["exercises"]
+                ]
+                if fixed_assessments
+                else []
+            )
+            if fixed_assessments and len(set(assigned)) != len(assigned):
+                raise ValueError("wiki_synthesis_fixed_assessments_need_distinct_goals")
             weights = local_model_digest(model)
         except Exception as exc:
             (store.root / "wiki").mkdir(exist_ok=True)
@@ -286,7 +318,7 @@ def generate(store, plan, model="qwen3.5:9b", *, wait_seconds=0):
                 },
             )
             raise
-        job = DraftJob(
+        legacy_job = DraftJob(
             store,
             packet,
             model,
@@ -298,13 +330,39 @@ def generate(store, plan, model="qwen3.5:9b", *, wait_seconds=0):
                 "schemas": [INTRO, PINNED_SECTION, EXERCISE],
             },
         )
+        job = legacy_job
+        if fixed_assessments:
+            job = DraftJob(
+                store,
+                packet,
+                model,
+                weights,
+                wait_seconds,
+                pipeline=POLICY,
+                recipe_extra={
+                    "prompts": [INTRO_PROMPT, CHAPTER_PROMPT, FIXED_EXERCISE_PROMPT],
+                    "schemas": [INTRO, PINNED_SECTION, FIXED_EXERCISE],
+                    "fixed_assessments": "complete-learning-goal-task-v1",
+                    "unchanged_body_job": legacy_job.key,
+                },
+            )
         job.total = 1 + len(chapters) + len(plan["exercises"])
+        legacy_job.total = job.total
         if any(a["id"] == job.key for a in Wiki(store.root).catalog()["articles"]):
             Wiki(store.root).article(job.key)
             return {"id": job.key, "state": "already_published"}
         navigation = [{"heading": c["heading"]} for c in plan["chapters"]]
+
+        def body_stage(name, *args, **kwargs):
+            job.current = name
+            value = legacy_job.stage(name, *args, **kwargs)
+            if legacy_job is not job:
+                job.completed += 1
+                job.progress("assembling", name)
+            return value
+
         try:
-            intro = job.stage(
+            intro = body_stage(
                 "introduction",
                 INTRO_PROMPT,
                 INTRO,
@@ -326,7 +384,7 @@ def generate(store, plan, model="qwen3.5:9b", *, wait_seconds=0):
                 previous = [
                     p["text"].strip() for s in sections for p in s["paragraphs"]
                 ]
-                value = job.stage(
+                value = body_stage(
                     f"chapter-{number}",
                     CHAPTER_PROMPT,
                     PINNED_SECTION if selected else SECTION,
@@ -352,21 +410,29 @@ def generate(store, plan, model="qwen3.5:9b", *, wait_seconds=0):
             for number, spec in enumerate(plan["exercises"]):
                 scoped = chapters[spec["chapter"]]
                 previous = [q["question"].strip() for q in quizzes]
+                question = assigned[number] if fixed_assessments else None
+                context = {
+                    "topic": packet["title"],
+                    "focus": spec["focus"],
+                    "previous_questions": previous,
+                    "sources": scoped["sources"],
+                }
+                if question is not None:
+                    context["fixed_question"] = question
                 result = job.stage(
                     f"self-check-{number}",
-                    EXERCISE_PROMPT,
-                    EXERCISE,
-                    bounded_context(
-                        {
-                            "topic": packet["title"],
-                            "focus": spec["focus"],
-                            "previous_questions": previous,
-                            "sources": scoped["sources"],
-                        }
+                    FIXED_EXERCISE_PROMPT if fixed_assessments else EXERCISE_PROMPT,
+                    FIXED_EXERCISE if fixed_assessments else EXERCISE,
+                    bounded_context(context),
+                    lambda value, s=scoped, q=question: exercise(
+                        fixed_exercise(value, q) if q is not None else value,
+                        s,
+                        previous,
                     ),
-                    lambda value, s=scoped: exercise(value, s, previous),
                     evidence_packet=scoped,
                 )
+                if question is not None:
+                    result = fixed_exercise(result, question)
                 quizzes.append(result["quiz"])
                 pitfalls.extend(result["pitfalls"])
                 gaps.extend(result["gaps"])
@@ -406,12 +472,14 @@ def main():
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--model", default="qwen3.5:9b")
     parser.add_argument("--wait-gpu-seconds", type=int, default=0)
+    parser.add_argument("--fixed-assessments", action="store_true")
     args = parser.parse_args()
     result = generate(
         ReadOnlyArchive(args.root),
         json.loads(args.plan.read_text("utf-8")),
         args.model,
         wait_seconds=args.wait_gpu_seconds,
+        fixed_assessments=args.fixed_assessments,
     )
     print(json.dumps(result))
 

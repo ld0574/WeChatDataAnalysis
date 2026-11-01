@@ -159,6 +159,86 @@ def run(fixture):
     return synthesis.generate(ReadOnlyArchive(store.root), plan)
 
 
+def test_fixed_assessments_preserve_body_checkpoints_and_failed_question_budget(
+    long_plan, monkeypatch
+):
+    def answers(stage, context):
+        if not stage.startswith("quiz-"):
+            return None
+        if "fixed_question" not in context and stage != "quiz-1":
+            return None
+        ref = next(iter(context["sources"]))
+        quiz = {
+            "answer": "Synthetic answer from current full chapter.",
+            "explanation": "Synthetic explanation of the explicit condition.",
+            "criteria": ["Identify the chapter condition."],
+            "citations": [ref],
+        }
+        if "fixed_question" not in context:
+            quiz["question"] = context["previous_questions"][0]
+        return json.dumps(
+            {
+                "quiz": quiz,
+                "pitfalls": [{"text": "Synthetic condition.", "citations": [ref]}],
+                "gaps": [],
+            }
+        )
+
+    calls = model(monkeypatch, answers)
+    store, plan = long_plan
+    with pytest.raises(ValueError, match="budget_exhausted_self-check-1"):
+        run(long_plan)
+    legacy = json.loads((store.root / "wiki/last-build.json").read_bytes())["id"]
+    attempts = store.root / "wiki/jobs" / legacy / "attempts"
+    before = {p.name: p.read_bytes() for p in attempts.glob("*.json")}
+    assert len(calls) == 9
+    result = synthesis.generate(
+        ReadOnlyArchive(store.root), plan, fixed_assessments=True
+    )
+    child = Wiki(store.root).article(result["id"])
+    assert result["id"] != legacy
+    assert [q["question"] for q in child["article"]["quiz"]] == [
+        "请根据本章原文完成以下任务：" + e["focus"] for e in plan["exercises"]
+    ]
+    assert {p.name: p.read_bytes() for p in attempts.glob("*.json")} == before
+    assert (
+        sum(
+            call["stage"] in {"intro", "Part 0", "Part 1", "Part 2", "Part 3"}
+            for call in calls
+        )
+        == 5
+    )
+    assert len(calls) == 13
+    assert (
+        synthesis.generate(ReadOnlyArchive(store.root), plan, fixed_assessments=True)[
+            "state"
+        ]
+        == "already_published"
+    )
+    with pytest.raises(ValueError, match="budget_exhausted_self-check-1"):
+        run(long_plan)
+    assert len(calls) == 13
+
+
+def test_fixed_assessments_reject_repeated_learning_goals_before_generation(
+    long_plan, monkeypatch
+):
+    calls = model(monkeypatch)
+    store, plan = long_plan
+    plan["exercises"][1]["focus"] = plan["exercises"][0]["focus"]
+    with pytest.raises(ValueError, match="need_distinct_goals"):
+        synthesis.generate(ReadOnlyArchive(store.root), plan, fixed_assessments=True)
+    assert not calls
+
+
+def test_fixed_assessments_do_not_accept_model_generated_questions():
+    with pytest.raises(ValueError, match="must_not_be_generated"):
+        synthesis.fixed_exercise(
+            {"quiz": {"question": "Model copied previous task"}},
+            "Frozen complete chapter task",
+        )
+
+
 def test_long_originals_are_not_silently_summarized_to_old_packet_limit(
     long_plan, monkeypatch
 ):
