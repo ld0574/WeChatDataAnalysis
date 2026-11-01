@@ -112,6 +112,7 @@ def assets(root):
         for directory, reader in (
             ("review-jobs", "review"),
             ("completeness-jobs", "omissions"),
+            ("visual-review-jobs", "visual"),
         ):
             for receipt in sorted((root / "wiki" / directory).glob("*/receipt.json")):
                 saved = json.loads(receipt.read_bytes())
@@ -121,10 +122,14 @@ def assets(root):
                     from .course_wiki_review import published_review
 
                     published_review(root, row["id"], job=receipt.parent.name)
-                else:
+                elif reader == "omissions":
                     from .course_wiki_completeness import published_report
 
                     published_report(root, row["id"], job=receipt.parent.name)
+                else:
+                    from .course_wiki_visual_review import report
+
+                    report(root, row["id"], job=receipt.parent.name)
                 for path in sorted(receipt.parent.rglob("*.json")):
                     add(path.relative_to(root).as_posix())
         for directory in ("reviews", "completeness"):
@@ -333,6 +338,7 @@ def verify(root):
     for folder, reader in (
         ("review-jobs", "review"),
         ("completeness-jobs", "omissions"),
+        ("visual-review-jobs", "visual"),
     ):
         for path in (root / "wiki" / folder).glob("*/receipt.json"):
             value = json.loads(path.read_bytes())
@@ -340,10 +346,14 @@ def verify(root):
                 from .course_wiki_review import published_review
 
                 published_review(root, value["article"], job=path.parent.name)
-            else:
+            elif reader == "omissions":
                 from .course_wiki_completeness import published_report
 
                 published_report(root, value["article"], job=path.parent.name)
+            else:
+                from .course_wiki_visual_review import report
+
+                report(root, value["article"], job=path.parent.name)
             reports += 1
     return {
         "policy": POLICY,

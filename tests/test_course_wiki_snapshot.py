@@ -77,6 +77,82 @@ def test_restore_routes_without_original_archive(publication, tmp_path):
     assert isolated["original_root_access_attempts"] == 0
 
 
+def test_native_visual_report_survives_isolated_restore_and_requires_checkpoints(
+    publication, tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from wechat_decrypt_tool import course_wiki_visual_review as visual
+
+    @contextmanager
+    def slot(*args):
+        yield
+
+    monkeypatch.setattr(visual, "slot", slot)
+    monkeypatch.setattr(visual, "local_model_digest", lambda model: "synthetic-weights")
+
+    def chat(model, messages, *, schema):
+        context = json.loads(messages[1]["content"])
+        assert messages[1]["images"]
+        value = {
+            "target": context["target"],
+            "relevance": "partial",
+            "caption_support": "partial",
+            "reason": "Synthetic incomplete figure.",
+            "observations": [
+                {
+                    "description": "Synthetic visible figure.",
+                    "visible_text": "",
+                    "box": [0, 0, 1000, 1000],
+                }
+            ],
+            "missing_visual_information": ["Synthetic omitted condition."],
+            "limitations": ["Not independent review."],
+        }
+        return json.dumps(value), {
+            "prompt_eval_count": 1000,
+            "context_length": 16384,
+            "size_vram": 8 * 1024**2,
+        }
+
+    monkeypatch.setattr(visual, "vision_chat", chat)
+    article = "e" * 32
+    result = visual.review(
+        SimpleNamespace(root=publication, checkpoint=lambda: None), article
+    )
+    backup = snapshot.create(publication, tmp_path / "visual-backup", reserve_gib=0)
+    restored = snapshot.restore(backup, tmp_path / "visual-restored", reserve_gib=0)
+    assert visual.report(restored, article, job=result["job"]) == result
+    proof = snapshot.verify(restored)
+    assert proof["complete_model_reports"] == 1
+    assert not proof["semantic_accuracy_verified"]
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(Path(__file__).with_name("wiki_snapshot_isolated_reader.py")),
+            str(restored),
+            str(publication),
+            str(Path(snapshot.__file__).parent),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    assert json.loads(process.stdout)["original_root_access_attempts"] == 0
+    relative = (
+        f"wiki/visual-review-jobs/{result['job']}/{result['results'][0]['target']}.json"
+    )
+    manifest = json.loads((restored / snapshot.MANIFEST).read_bytes())
+    manifest["files"] = [r for r in manifest["files"] if r["path"] != relative]
+    atomic_json(restored / snapshot.MANIFEST, manifest)
+    (restored / relative).unlink()
+    with pytest.raises((ValueError, OSError)):
+        snapshot.verify(restored)
+
+
 def test_bound_reports_survive_restore_and_cannot_be_omitted_from_manifest(
     publication, tmp_path, monkeypatch
 ):
