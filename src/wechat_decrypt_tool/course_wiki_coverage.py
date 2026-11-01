@@ -86,6 +86,11 @@ def _build(store):
     if {r["id"] for r in catalog["lessons"]} != set(sources):
         raise ValueError("source_catalog_does_not_account_for_whole_audio_inventory")
 
+    wiki_catalog = load("wiki/catalog.json", optional=True) or {"articles": []}
+    article_versions = versioned_articles(wiki_catalog["articles"])
+    wiki = Wiki(store.root)
+    values = {a["id"]: wiki.article(a["id"]) for a in article_versions}
+
     store.checkpoint()
     with store.connect() as db:
         db.execute("BEGIN")
@@ -114,6 +119,16 @@ def _build(store):
                 "SELECT path,count(*) n FROM documents INDEXED BY document_source WHERE active=1 GROUP BY path"
             )
         }
+        from .course_wiki_documents import current_matches
+
+        document_current = {
+            (article_id, ref): current_matches(
+                db, source, value["packet"]["bindings"][ref]
+            )
+            for article_id, value in values.items()
+            for ref, source in value["packet"]["sources"].items()
+            if source["kind"] == "document"
+        }
     observed = time.time()
 
     library = Library(store.root)
@@ -137,27 +152,50 @@ def _build(store):
         ):
             raise ValueError("wiki_planned_source_manifest_changed")
         for ref, evidence in recipe["packet"]["sources"].items():
-            if evidence["video"] in sources:
+            if evidence.get("video") in sources:
                 planned[evidence["video"]].add(ref)
-
-    wiki_catalog = load("wiki/catalog.json", optional=True)
-    if wiki_catalog is None:
-        wiki_catalog = {"articles": []}
-    article_versions = versioned_articles(wiki_catalog["articles"])
-    wiki = Wiki(store.root)
     cited_speech, cited_frames, article_ids = (
         defaultdict(set),
         defaultdict(set),
         defaultdict(set),
     )
     issues = []
+    cited_documents = defaultdict(set)
+    retained_sources = (
+        {r["relative_path"]: r["sha256"] for r in resources["completed"]}
+        if resources
+        else {}
+    )
     for article in article_versions:
         store.checkpoint()
-        value = wiki.article(article["id"])
+        value = values[article["id"]]
         if article.get("superseded_by"):
             continue
         for ref in citations(value["article"]):
             source = value["packet"]["sources"][ref]
+            if source["kind"] == "document":
+                binding = value["packet"]["bindings"][ref]
+                cited_documents[binding["relative_path"]].add((article["id"], ref))
+                if (
+                    retained_sources.get(binding["relative_path"])
+                    != binding["retained_source"]["container_sha256"]
+                ):
+                    issues.append(
+                        {
+                            "article": article["id"],
+                            "source": ref,
+                            "code": "frozen_document_container_differs_from_current_manifest",
+                        }
+                    )
+                if not document_current[(article["id"], ref)]:
+                    issues.append(
+                        {
+                            "article": article["id"],
+                            "source": ref,
+                            "code": "frozen_document_differs_from_current_revision",
+                        }
+                    )
+                continue
             key, number = ref.split(":", 1)
             if (
                 not re.fullmatch(r"[a-f0-9]{24}", key)
@@ -238,13 +276,17 @@ def _build(store):
                     "indexed_chunks": documents.get(
                         path_key(Path(resources["source"]) / relative), 0
                     ),
-                    "wiki_document_citation_supported": False,
+                    "wiki_document_citation_supported": bool(cited_documents[relative]),
+                    "draft_cited_chunks": len(
+                        {ref for _, ref in cited_documents[relative]}
+                    ),
+                    "draft_articles": sorted({a for a, _ in cited_documents[relative]}),
                     "complete_document_coverage_verified": False,
                 }
             )
     gaps = [
         {"code": "semantic_review_not_complete"},
-        {"code": "document_evidence_not_yet_supported_in_wiki_article_packets"},
+        {"code": "selected_document_chunks_do_not_prove_full_courseware_coverage"},
         {"code": "draft_citation_counts_do_not_prove_topic_coverage"},
         {"code": "backup_and_restore_acceptance_not_proven_by_this_ledger"},
     ]
@@ -270,6 +312,12 @@ def _build(store):
             "pending_resource_paths": len(resources["pending"]) if resources else None,
         },
         "summary": {
+            "draft_cited_document_chunks": len(
+                {ref for rows in cited_documents.values() for _, ref in rows}
+            ),
+            "resource_paths_with_draft_citations": sum(
+                bool(rows) for rows in cited_documents.values()
+            ),
             "registered_audio_courses": sum(
                 r["database_state"] != "not_registered" for r in courses
             ),

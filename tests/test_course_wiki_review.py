@@ -338,3 +338,45 @@ def test_legacy_literal_quote_reports_remain_readable(published, monkeypatch):
         == "model_crosscheck_complete"
     )
     assert len(calls) == n
+
+
+def test_single_target_strategy_has_separate_budget_and_retains_both_reports(
+    published, monkeypatch
+):
+    store, article_id, calls = setup(published, monkeypatch)
+    first = run(store, article_id)
+    path = store.root / "wiki" / "review-jobs" / first["job"] / "receipt.json"
+    frozen = path.read_bytes()
+    n = len(calls)
+    second = review.review(ReadOnlyArchive(store.root), article_id, single_targets=True)
+    assert first["job"] != second["job"]
+    assert second["batching"] == "single-target-v1"
+    assert all(len(ctx["targets"]) == 1 for ctx in calls[n:])
+    assert path.read_bytes() == frozen
+    assert first["summary"] == second["summary"]
+    assert (
+        review.published_review(store.root, article_id, job=first["job"])["summary"]
+        == first["summary"]
+    )
+    assert (
+        review.published_review(store.root, article_id, job=second["job"])["summary"]
+        == second["summary"]
+    )
+    original = json.loads(
+        (store.root / "wiki" / "reviews" / (article_id + ".json")).read_bytes()
+    )
+    resumed = review.review(
+        ReadOnlyArchive(store.root), article_id, single_targets=True
+    )
+    assert resumed["updated"] == original["updated"]
+
+
+def test_immutable_review_history_rejects_changed_payload(published, monkeypatch):
+    store, article_id, _ = setup(published, monkeypatch)
+    receipt = run(store, article_id)
+    changed = copy.deepcopy(receipt)
+    changed["summary"]["supported"] += 1
+    with pytest.raises(ValueError, match="immutable_receipt"):
+        review.retain_receipt(Wiki(store.root), changed)
+    with pytest.raises(ValueError, match="invalid_history_job"):
+        review.published_review(store.root, article_id, job="../secret")

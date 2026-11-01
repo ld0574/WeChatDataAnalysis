@@ -318,6 +318,18 @@ def create_app(store, model="qwen3.5:9b"):
     library = Library(store.root)
     resources = Path(__file__).parent / "resources"
 
+    @app.get("/wiki/image/{sha}.{extension}")
+    def courseware_image(sha: str, extension: str):
+        from .course_wiki_documents import retained_image
+
+        try:
+            data, mime = retained_image(store.root, sha, extension)
+            return Response(
+                data, media_type=mime, headers={"X-Content-Type-Options": "nosniff"}
+            )
+        except (OSError, ValueError):
+            raise HTTPException(404, "课件原图未保留或校验失败") from None
+
     @app.get("/library/frame/{sha}")
     def frame(sha: str):
         if not re.fullmatch(r"[a-f0-9]{64}", sha):
@@ -381,11 +393,11 @@ def create_app(store, model="qwen3.5:9b"):
             ) from None
 
     @app.get("/wiki/api/review/{key}")
-    def wiki_review(key: str):
+    def wiki_review(key: str, job: str | None = None):
         from .course_wiki_review import published_review
 
         try:
-            return published_review(store.root, key)
+            return published_review(store.root, key, job=job)
         except KeyError:
             raise HTTPException(404, "未找到主题文章或对照记录不完整") from None
         except (OSError, ValueError, TypeError):

@@ -68,7 +68,7 @@ def evidence_schema(schema, packet):
     # those aliases and would accidentally constrain objectives/empty code refs.
     result = json.loads(json.dumps(schema))
     ids = sorted(packet["sources"])
-    frames = [k for k in ids if packet["sources"][k]["kind"] == "frame"]
+    frames = [k for k in ids if packet["sources"][k].get("image_sha256")]
 
     def bind(node):
         if not isinstance(node, dict):
@@ -110,7 +110,7 @@ SECTION_PROMPT = (
 解释为什么、条件与具体例子，不用空泛重复和凑字数。每段给出支持结论的出处。
 heading 必须与指定标题完全一致。只有原文实际展示的代码可原样摘录，不能自行生成代码。
 code 无代码填空字符串，code_citations 为空数组；有代码须给出包含此原文的引用。
-image 只能选择 kind=frame 的引用 ID，且画面确实有助于本章理解；否则填空字符串。
+image 只能选择带 image_sha256 的来源引用 ID，且画面确实有助于本章理解；否则填空字符串。
 image_caption 无图填空。有图说明与图中内容对应；图中文字是机器提取，未经人工核对。
 不要为了填图引用不相关画面。不要用资料不足的内容扩写出新事实。"""
 )
@@ -191,7 +191,7 @@ def validate_section(value, packet, expected, previous=()):
         source = packet["sources"].get(value["image"])
         if (
             not source
-            or source["kind"] != "frame"
+            or source["kind"] not in {"frame", "document"}
             or not re.fullmatch(r"[a-f0-9]{64}", source.get("image_sha256", ""))
         ):
             raise ValueError("image_must_be_a_frozen_source_frame")

@@ -91,10 +91,10 @@ function refs(node, ids, packet) {
     const s = packet.sources[ref];
     if (!s) continue;
     const a = link(
-      `[${time(s.start)}${s.kind === "frame" ? " 图" : ""}]`,
+      `[${s.kind === "document" ? sourceLocation(s) : time(s.start)}${s.image_sha256 ? " 图" : ""}]`,
       "#source-" + ref,
     );
-    a.setAttribute("aria-label", `查看出处 ${s.title} ${time(s.start)}`);
+    a.setAttribute("aria-label", `查看出处 ${s.title} ${sourceLocation(s)}`);
     a.addEventListener("click", (event) => {
       event.preventDefault();
       const target = document.getElementById("source-" + ref);
@@ -107,6 +107,12 @@ function refs(node, ids, packet) {
   }
   node.append(span);
 }
+function sourceLocation(source) {
+  if (source.kind !== "document") return `${time(source.start)}–${time(source.end)}`;
+  if (source.page) return `课件第 ${source.page} 页`;
+  if (source.slide) return `课件第 ${source.slide} 张`;
+  return "课件片段 " + source.id;
+}
 function claim(value, packet) {
   const p = el("p", value.text);
   refs(p, value.citations, packet);
@@ -115,7 +121,9 @@ function claim(value, packet) {
 function image(ref, caption) {
   const f = el("figure");
   const img = el("img");
-  img.src = `/library/frame/${ref.image_sha256}`;
+  img.src = ref.kind === "document"
+    ? `/wiki/image/${ref.image_sha256}.${ref.image_extension}`
+    : `/library/frame/${ref.image_sha256}`;
   img.alt = caption;
   img.loading = "lazy";
   img.addEventListener(
@@ -127,7 +135,7 @@ function image(ref, caption) {
     img,
     el(
       "figcaption",
-      `${caption} · 原始课程画面 ${time(ref.start)}（图文对应待复核）`,
+      `${caption} · ${ref.kind === "document" ? sourceLocation(ref) + (ref.region ? " · 原图裁切区域 " + ref.region.join(", ") : "") : "原始课程画面 " + time(ref.start)}（图文对应待复核）`,
     ),
   );
   return f;
@@ -147,7 +155,7 @@ function articleRow(row) {
     el("span", "模型草稿 · 语义待复核", "status"),
     el(
       "span",
-      `${row.questions} 道自测 · ${row.images} 张原图 · ${row.gaps} 项资料缺口`,
+      `${row.questions} 道自测 · ${row.images} 处正文配图${row.source_images === undefined ? "" : ` · ${row.source_images} 张出处原图`} · ${row.gaps} 项资料缺口`,
       "meta",
     ),
   );
@@ -372,6 +380,15 @@ async function article(id, version, targetSection) {
       refs(section, s.code_citations, p);
     }
     if (s.image) section.append(image(p.sources[s.image], s.image_caption));
+    const pages = [...new Set([...s.paragraphs.flatMap(c => c.citations), ...s.code_citations])]
+      .filter(ref => ref !== s.image && p.sources[ref]?.kind === "document" && p.sources[ref].image_sha256);
+    if (pages.length) {
+      const originals = el("details", undefined, "source-pages");
+      originals.append(el("summary", `查看本章引用的课件原页（${pages.length} 张）`));
+      originals.append(el("p", "按本章实际引用展示原页，便于核对文字和代码；原页不代表模型解释已正确。", "meta"));
+      for (const ref of pages) originals.append(image(p.sources[ref], "本章引用的课件原页"));
+      section.append(originals);
+    }
     body.append(section);
   });
   const pitfalls = el("section");
@@ -464,12 +481,15 @@ async function article(id, version, targetSection) {
     d.append(
       el(
         "summary",
-        `${s.title} · ${time(s.start)}–${time(s.end)} · ${s.kind === "frame" ? "原始画面" : "语音转写"}`,
+        `${s.title} · ${sourceLocation(s)} · ${s.kind === "document" ? "课件摘录" : s.kind === "frame" ? "原始画面" : "语音转写"}`,
       ),
       el("p", s.text, "source-text"),
     );
-    if (s.kind === "frame") d.append(image(s, s.text));
-    d.append(link("查看所属课程笔记", "#lesson=" + s.video));
+    if (s.image_sha256) d.append(image(s, s.kind === "document" ? "保留的课件图像" : s.text));
+    if (s.kind === "document") {
+      d.append(el("p", `${s.relative_path} · ${s.locator}`, "meta"));
+      d.append(el("p", `摘录范围仅为本片段；${s.review_required ? "机器提取文字与图示解读待复核" : "提取文字，排版与语义待复核"}。固定版本 ${s.revision.slice(0, 12)}。`, "meta"));
+    } else d.append(link("查看所属课程笔记", "#lesson=" + s.video));
     sources.append(d);
   }
   body.append(sources);
@@ -697,6 +717,7 @@ async function coverage(version) {
     `转写：${d.summary.transcribed_courses} 节；已发布来源笔记：${d.summary.source_notes_published} 节。`,
     `主题草稿：${d.summary.draft_articles} 篇（保留 ${d.summary.draft_article_versions ?? d.summary.draft_articles} 个版本）；引用涉及 ${d.summary.courses_with_draft_citations} 节课，还有 ${d.summary.courses_without_draft_citations} 节未被文章引用。`,
     `课件与附件：清单保留 ${d.scope.retained_resource_paths} 个路径，待处理 ${d.scope.pending_resource_paths ?? "未知"} 个；其中 ${d.summary.retained_paths_with_some_indexed_chunks} 个有部分检索片段。`,
+    `主题文章已引用 ${d.summary.draft_cited_document_chunks ?? 0} 个课件片段，涉及 ${d.summary.resource_paths_with_draft_citations ?? 0} 个附件路径；这不代表全文已整理。`,
   ]));
   summary.append(notice("提取成功、已被文章引用都不能证明知识完整。主题文章仍待语义复核，课件证据尚未接入文章；原视频继续保留。"));
   if (d.summary.source_identity_mismatches || d.issues.length)

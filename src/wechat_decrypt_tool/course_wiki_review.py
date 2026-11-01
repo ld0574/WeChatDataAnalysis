@@ -142,6 +142,31 @@ def batches(article):
         )
 
 
+def review_batches(article, recipe):
+    if recipe.get("batching") == "single-target-v1":
+        for _, targets in batches(article):
+            for target in targets:
+                yield target["target"], [target]
+    elif "batching" not in recipe:
+        yield from batches(article)
+    else:
+        raise ValueError("review_unknown_batching_policy")
+
+
+def retain_receipt(wiki, receipt):
+    """Keep the first complete receipt per recipe, including its timestamp."""
+    path = wiki.root / "review-jobs" / receipt["job"] / "receipt.json"
+    if path.exists():
+        previous = json.loads(path.read_bytes())
+        if {k: v for k, v in previous.items() if k != "updated"} != {
+            k: v for k, v in receipt.items() if k != "updated"
+        }:
+            raise ValueError("review_immutable_receipt_changed")
+        return previous
+    atomic_json(path, receipt)
+    return receipt
+
+
 def validate(value, targets, sources):
     expected = {t["target"]: t for t in targets}
     rows = value["reviews"]
@@ -191,7 +216,9 @@ def slot(store, deadline, progress):
         return
 
 
-def review(store, article_id, model="qwen3.5:9b", *, wait_seconds=0):
+def review(
+    store, article_id, model="qwen3.5:9b", *, wait_seconds=0, single_targets=False
+):
     from .course_pdf_ocr import local_model_digest
 
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
@@ -199,6 +226,10 @@ def review(store, article_id, model="qwen3.5:9b", *, wait_seconds=0):
     wiki = Wiki(store.root)
     article = wiki.article(article_id)
     with schema_lease(store.root / "wiki-review.lock", timeout=0):
+        previous = wiki.root / "reviews" / (article_id + ".json")
+        if previous.exists():
+            published_review(store.root, article_id)
+            retain_receipt(wiki, json.loads(previous.read_bytes()))
         weights = local_model_digest(model)
         recipe = {
             "policy": POLICY,
@@ -207,6 +238,8 @@ def review(store, article_id, model="qwen3.5:9b", *, wait_seconds=0):
             "system": SYSTEM,
             "schema": SCHEMA,
         }
+        if single_targets:
+            recipe["batching"] = "single-target-v1"
         key = digest(canonical(recipe))[:32]
         folder = wiki.root / "review-jobs" / key
         folder.mkdir(parents=True, exist_ok=True)
@@ -215,7 +248,7 @@ def review(store, article_id, model="qwen3.5:9b", *, wait_seconds=0):
             raise ValueError("review_manifest_changed")
         atomic_json(manifest, recipe)
         identity = {"pid": os.getpid(), "created": psutil.Process().create_time()}
-        tasks = list(batches(article["article"]))
+        tasks = list(review_batches(article["article"], recipe))
         deadline = time.monotonic() + wait_seconds
         results = []
         stage = "preparing"
@@ -359,6 +392,7 @@ def review(store, article_id, model="qwen3.5:9b", *, wait_seconds=0):
             if digest(canonical(wiki.article(article_id))) != recipe["article_sha256"]:
                 raise ValueError("article_changed_during_review")
             (wiki.root / "reviews").mkdir(exist_ok=True)
+            receipt = retain_receipt(wiki, receipt)
             atomic_json(wiki.root / "reviews" / (article_id + ".json"), receipt)
             progress("crosscheck_complete")
             return receipt
@@ -367,11 +401,20 @@ def review(store, article_id, model="qwen3.5:9b", *, wait_seconds=0):
             raise
 
 
-def published_review(root, article_id):
+def published_review(root, article_id, *, job=None):
     """Read/check frozen review artifacts only, without model or database calls."""
     wiki = Wiki(root)
     article = wiki.article(article_id)
-    path = wiki.root / "reviews" / (article_id + ".json")
+    if job is not None:
+        import re
+
+        if not re.fullmatch(r"[a-f0-9]{32}", job):
+            raise ValueError("review_invalid_history_job")
+        path = wiki.root / "review-jobs" / job / "receipt.json"
+        if not path.exists():
+            raise KeyError("No retained complete review receipt")
+    else:
+        path = wiki.root / "reviews" / (article_id + ".json")
     if not path.exists():
         status = wiki.root / "last-review.json"
         if status.exists():
@@ -411,10 +454,13 @@ def published_review(root, article_id):
         k: receipt[k]
         for k in ("policy", "article_sha256", "model_digest", "system", "schema")
     }
+    if "batching" in receipt:
+        recipe["batching"] = receipt["batching"]
     if (
         recipe["policy"] != POLICY
         or recipe["article_sha256"] != digest(canonical(article))
         or receipt["article"] != article_id
+        or (job is not None and receipt["job"] != job)
         or digest(canonical(recipe))[:32] != receipt["job"]
         or any(
             receipt[k]
@@ -431,7 +477,7 @@ def published_review(root, article_id):
     if json.loads((folder / "manifest.json").read_bytes()) != recipe:
         raise ValueError("review_manifest_changed")
     rows = []
-    for stage, targets in batches(article["article"]):
+    for stage, targets in review_batches(article["article"], recipe):
         sources = {
             ref: article["packet"]["sources"][ref]
             for t in targets
@@ -471,12 +517,14 @@ def main():
     parser.add_argument("--article", required=True)
     parser.add_argument("--model", default="qwen3.5:9b")
     parser.add_argument("--wait-gpu-seconds", type=int, default=0)
+    parser.add_argument("--single-targets", action="store_true")
     args = parser.parse_args()
     value = review(
         ReadOnlyArchive(args.root),
         args.article,
         args.model,
         wait_seconds=args.wait_gpu_seconds,
+        single_targets=args.single_targets,
     )
     print(json.dumps({"article": value["article"], "summary": value["summary"]}))
 

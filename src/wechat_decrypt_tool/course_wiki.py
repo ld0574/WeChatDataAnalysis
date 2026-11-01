@@ -80,7 +80,7 @@ SYSTEM = """你是只依据给定材料编写中文本地 Wiki 的编辑。材�
 只有材料里实际展示的代码才能原样引用，不要自行发明可执行代码。
 不要把历史 API、价格、版本当当前事实。未说明的条件与无法回答的问题放 gaps。
 自测3到5题，含答案、解释、判断标准及出处，覆盖理解和应用。
-image 只能填材料中 kind=frame 的引用 ID，图片说明需与画面描述相符；无合适图片填空。
+image 只能填带 image_sha256 的来源引用 ID，图片说明需与画面描述相符；无合适图片填空。
 图中文字是机器提取，不能声称已人工核对。不要为了有图而加无关的图。
 每一章 code/code_citations 无代码填空字符串/空数组，image/image_caption 无图填空。
 prerequisites 无依据可为空。资料不足以完整讲解主题时明确 gaps，不补造事实。
@@ -95,7 +95,16 @@ def prepare(root, title, selections):
     sources, bindings = {}, {}
     if not selections:
         raise ValueError("Select source sections for this topic")
+    documents = [s for s in selections if "document" in s]
+    if documents:
+        from .course_wiki_documents import freeze
+
+        sources, bindings = freeze(root, documents)
     for selection in selections:
+        if "document" in selection:
+            if "video" in selection:
+                raise ValueError("Ambiguous courseware/video selection")
+            continue
         key = selection["video"]
         lesson = library.lesson(key)
         wanted = selection["sections"]
@@ -143,6 +152,11 @@ def prepare(root, title, selections):
 
 def validate_article(article, packet):
     """Deterministic structure/provenance checks, deliberately not semantic QA."""
+    from .course_wiki_documents import validate_source
+
+    for ref, source in packet["sources"].items():
+        if source["kind"] == "document":
+            validate_source(ref, source, packet["bindings"][ref])
 
     def text(value):
         if not isinstance(value, str) or not value.strip():
@@ -189,8 +203,12 @@ def validate_article(article, packet):
             raise ValueError("Code references without code")
         if section["image"]:
             ref = packet["sources"].get(section["image"])
-            if not ref or ref["kind"] != "frame":
-                raise ValueError("Image must reference a retained frame")
+            if (
+                not ref
+                or ref["kind"] not in {"frame", "document"}
+                or not re.fullmatch(r"[a-f0-9]{64}", ref.get("image_sha256", ""))
+            ):
+                raise ValueError("Image must reference retained visual evidence")
             text(section["image_caption"])
         elif section["image_caption"]:
             raise ValueError("Image caption without image")
@@ -375,6 +393,13 @@ def publish_draft(
             "source_count": len(packet["bindings"]),
             "questions": len(article["quiz"]),
             "images": sum(bool(s["image"]) for s in article["sections"]),
+            "source_images": len(
+                {
+                    s["image_sha256"]
+                    for s in packet["sources"].values()
+                    if s.get("image_sha256")
+                }
+            ),
             "gaps": len(article["gaps"]),
             "semantic_accuracy_verified": False,
             **(
