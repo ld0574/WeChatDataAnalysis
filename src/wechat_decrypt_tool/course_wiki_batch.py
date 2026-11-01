@@ -27,6 +27,7 @@ from .course_wiki_synthesis import generate
 
 POLICY = "finite-first-topic-source-batch-v1"
 PAGED_POLICY = "finite-complete-directory-pages-batch-v1"
+ALLOCATION_POLICY = "finite-complete-allocated-originals-batch-v1"
 TERMINAL = {"draft_checks_complete", "no_supported_topic", "needs_review"}
 
 
@@ -43,7 +44,7 @@ def manifest(root, key):
     if (
         value["id"] != key
         or digest(canonical(recipe))[:32] != key
-        or recipe["policy"] not in {POLICY, PAGED_POLICY}
+        or recipe["policy"] not in {POLICY, PAGED_POLICY, ALLOCATION_POLICY}
         or not recipe["fixed_assessments"]
     ):
         raise ValueError("wiki_batch_manifest_changed")
@@ -179,6 +180,56 @@ def prepare_directories(store, videos, *, model="qwen3.5:9b"):
         }
 
 
+def prepare_allocations(store, partitions, *, model="qwen3.5:9b"):
+    from .course_wiki_allocation import create
+
+    if not partitions or len(partitions) != len(set(partitions)):
+        raise ValueError("wiki_batch_invalid_evidence_partitions")
+    with schema_lease(store.root / "wiki-theme-batch.lock", timeout=0):
+        courses = []
+        for partition in partitions:
+            allocation = create(store, partition)
+            for number in range(allocation["scopes"]):
+                spec = {
+                    "video": allocation["video"],
+                    "lesson_sha256": allocation["lesson_sha256"],
+                    "allocation": allocation["allocation"],
+                    "allocation_scope": number,
+                }
+                spec["item"] = digest(canonical(spec))[:32]
+                courses.append(spec)
+        recipe = {
+            "policy": ALLOCATION_POLICY,
+            "model": model,
+            "model_digest": local_model_digest(model),
+            "fixed_assessments": True,
+            "courses": courses,
+        }
+        key = digest(canonical(recipe))[:32]
+        folder = store.root / "wiki/theme-batches" / key
+        state = "prepared"
+        if folder.exists():
+            _, previous = manifest(store.root, key)
+            if previous != recipe:
+                raise ValueError("wiki_batch_allocation_recipe_changed")
+            state = "already_prepared"
+        else:
+            requested = {r["item"] for r in courses}
+            for path in (store.root / "wiki/theme-batches").glob("*/manifest.json"):
+                _, previous = manifest(store.root, path.parent.name)
+                if requested & {r.get("item") for r in previous["courses"]}:
+                    raise ValueError("wiki_batch_allocation_scope_already_reserved")
+            folder.mkdir(parents=True, exist_ok=False)
+            atomic_json(folder / "manifest.json", {"id": key, "recipe": recipe})
+        return {
+            "state": state,
+            "batch": key,
+            "partitions": len(partitions),
+            "scopes": len(courses),
+            "source_deletion_allowed": False,
+        }
+
+
 def run(store, key, *, wait_seconds=3600):
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
         raise ValueError("wiki_batch_invalid_gpu_wait")
@@ -189,7 +240,11 @@ def run(store, key, *, wait_seconds=3600):
             item_key(r): {
                 "video": r["video"],
                 "state": "pending",
-                **{k: r[k] for k in ("directory", "page") if k in r},
+                **{
+                    k: r[k]
+                    for k in ("directory", "page", "allocation", "allocation_scope")
+                    if k in r
+                },
             }
             for r in recipe["courses"]
         }
@@ -246,12 +301,31 @@ def run(store, key, *, wait_seconds=3600):
                     if "directory" in spec
                     else {}
                 )
+                if "allocation" in spec:
+                    options = {
+                        "allocation": spec["allocation"],
+                        "allocation_scope": spec["allocation_scope"],
+                    }
                 planned = propose(
                     store, video, model, wait_seconds=wait_seconds, **options
                 )
                 row["planning_job"] = job_id(planned["job"])
                 if "directory_page_sections" in planned:
                     row["directory_page_sections"] = planned["directory_page_sections"]
+                if "evidence_partition" in planned:
+                    row.update(
+                        {
+                            k: planned[k]
+                            for k in (
+                                "evidence_partition",
+                                "scope_evidence_pages",
+                                "selected_evidence_pages",
+                                "unselected_evidence_pages",
+                                "partially_selected_sections",
+                                "complete_sections_selected",
+                            )
+                        }
+                    )
                 if planned["state"] == "no_supported_topic_proposed":
                     row["state"] = "no_supported_topic"
                     progress("running", current_video=video)
@@ -346,6 +420,9 @@ def main():
     directories = sub.add_parser("prepare-directories")
     directories.add_argument("--video", action="append", required=True)
     directories.add_argument("--model", default="qwen3.5:9b")
+    allocations = sub.add_parser("prepare-allocations")
+    allocations.add_argument("--partition", action="append", required=True)
+    allocations.add_argument("--model", default="qwen3.5:9b")
     for name in ("run", "guard"):
         execute = sub.add_parser(name)
         execute.add_argument("--batch", required=True)
@@ -377,6 +454,8 @@ def main():
         result = prepare(store, limit=args.limit, model=args.model)
     elif args.command == "prepare-directories":
         result = prepare_directories(store, args.video, model=args.model)
+    elif args.command == "prepare-allocations":
+        result = prepare_allocations(store, args.partition, model=args.model)
     else:
         result = run(store, args.batch, wait_seconds=args.wait_gpu_seconds)
     print(json.dumps({k: v for k, v in result.items() if k in {"state", "batch"}}))

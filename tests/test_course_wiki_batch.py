@@ -44,6 +44,11 @@ def pipeline(tmp_path, monkeypatch):
         plan = {"video": video}
         if "directory" in kwargs:
             plan.update(directory=kwargs["directory"], page=kwargs["page_number"])
+        if "allocation" in kwargs:
+            plan.update(
+                allocation=kwargs["allocation"],
+                allocation_scope=kwargs["allocation_scope"],
+            )
         job = digest(canonical(plan))[:32]
         (store.root / "wiki/planning-jobs" / job).mkdir(parents=True, exist_ok=True)
         atomic_json(store.root / f"wiki/planning-jobs/{job}/plan.json", plan)
@@ -317,4 +322,72 @@ def test_directory_pages_cannot_get_fresh_budget_by_joining_another_batch(
     batch.prepare_directories(p.store, ["video-0"])
     with pytest.raises(ValueError, match="page_already_reserved"):
         batch.prepare_directories(p.store, ["video-0", "video-1"])
+    assert not p.calls
+
+
+def test_allocated_original_scopes_are_resumable_and_keep_unselected_ranges(
+    pipeline, monkeypatch
+):
+    from wechat_decrypt_tool import course_wiki_allocation as allocation
+
+    p = pipeline
+    monkeypatch.setattr(
+        allocation,
+        "create",
+        lambda store, partition: {
+            "allocation": "c" * 32,
+            "video": "video-0",
+            "lesson_sha256": digest(canonical(p.lessons["video-0"])),
+            "scopes": 2,
+        },
+    )
+    original = batch.propose
+
+    def proposed(store, video, model, **options):
+        assert options["allocation"] == "c" * 32
+        result = original(store, video, model, **options)
+        result.update(
+            evidence_partition="e" * 32,
+            scope_evidence_pages=[options["allocation_scope"]],
+            selected_evidence_pages=[options["allocation_scope"]],
+            unselected_evidence_pages=[1 - options["allocation_scope"]],
+            partially_selected_sections=["s1"],
+            complete_sections_selected=[],
+        )
+        return result
+
+    monkeypatch.setattr(batch, "propose", proposed)
+    first = batch.prepare_allocations(p.store, ["e" * 32])
+    assert first["scopes"] == 2 and not p.calls
+    assert batch.prepare_allocations(p.store, ["e" * 32])["batch"] == first["batch"]
+    result = batch.run(p.store, first["batch"])
+    rows = list(result["courses"].values())
+    assert len({r["article"] for r in rows}) == 2
+    assert [r["allocation_scope"] for r in rows] == [0, 1]
+    assert [r["unselected_evidence_pages"] for r in rows] == [[1], [0]]
+    assert all(r["complete_sections_selected"] == [] for r in rows)
+    before = list(p.calls)
+    batch.run(p.store, first["batch"])
+    assert p.calls == before
+
+
+def test_recomposing_allocation_batch_cannot_reset_original_scope_budget(
+    pipeline, monkeypatch
+):
+    from wechat_decrypt_tool import course_wiki_allocation as allocation
+
+    p = pipeline
+    monkeypatch.setattr(
+        allocation,
+        "create",
+        lambda store, partition: {
+            "allocation": partition,
+            "video": "video-0",
+            "lesson_sha256": digest(canonical(p.lessons["video-0"])),
+            "scopes": 2,
+        },
+    )
+    batch.prepare_allocations(p.store, ["a" * 32])
+    with pytest.raises(ValueError, match="allocation_scope_already_reserved"):
+        batch.prepare_allocations(p.store, ["a" * 32, "b" * 32])
     assert not p.calls
