@@ -229,6 +229,10 @@ def validate_article(article, packet):
     )
     if developed < 650:
         raise ValueError("Article body is too short for a developed topic")
+    if "chapter_scopes" in packet:
+        from .course_wiki_synthesis import validate_scopes
+
+        validate_scopes(article, packet)
     return {
         "structure_verified": True,
         "citation_ids_verified": True,

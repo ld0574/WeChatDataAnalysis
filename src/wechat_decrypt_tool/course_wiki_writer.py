@@ -318,11 +318,17 @@ class DraftJob:
                 manager.__exit__(None, None, None)
             return
 
-    def stage(self, name, prompt, schema, context, validate):
+    def stage(self, name, prompt, schema, context, validate, *, evidence_packet=None):
         from .course_pdf_ocr import local_model_digest
 
         self.store.checkpoint()
-        schema = evidence_schema(schema, self.packet)
+        scoped = self.packet if evidence_packet is None else evidence_packet
+        if not scoped["sources"] or any(
+            self.packet["sources"].get(ref) != source
+            for ref, source in scoped["sources"].items()
+        ):
+            raise ValueError("wiki_stage_evidence_outside_frozen_packet")
+        schema = evidence_schema(schema, scoped)
         binding = digest(
             canonical(
                 {

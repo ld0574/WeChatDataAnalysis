@@ -1,0 +1,420 @@
+"""Long topic drafts with complete, bounded original evidence per chapter.
+
+No summaries replace sources. Plans explicitly bind chapter responsibilities,
+literal code ranges and self-check scopes. Whole-topic semantics remain unproven.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+from pathlib import Path
+
+import psutil
+
+from .course_knowledge import GpuBusyError, atomic_json, schema_lease
+from .course_library import canonical
+from .course_pdf_ocr import local_model_digest
+from .course_video_visual_audit import ReadOnlyArchive
+from .course_wiki import (
+    CLAIM,
+    QUIZ,
+    SECTION,
+    STRINGS,
+    prepare,
+    object_schema,
+    publish_draft,
+    validate_article,
+    Wiki,
+)
+from .course_wiki_writer import (
+    COMMON,
+    SECTION_PROMPT,
+    DraftJob,
+    claim,
+    nonempty,
+    references,
+    validate_section,
+)
+
+POLICY = "wiki-chapter-scoped-synthesis-v1"
+INTRO = object_schema(
+    {
+        "overview": CLAIM,
+        "objectives": STRINGS,
+        "prerequisites": {"type": "array", "items": CLAIM},
+        "gaps": STRINGS,
+    }
+)
+EXERCISE = object_schema(
+    {
+        "quiz": QUIZ,
+        "pitfalls": {"type": "array", "items": CLAIM},
+        "gaps": STRINGS,
+    }
+)
+PINNED_SECTION = json.loads(json.dumps(SECTION))
+for field in ("code", "code_citations"):
+    PINNED_SECTION["properties"].pop(field)
+    PINNED_SECTION["required"].remove(field)
+INTRO_PROMPT = (
+    COMMON
+    + """
+本次只编写长主题的概述、2到6个学习目标、前置知识和资料缺口。
+章节标题与分工是编辑计划，不是事实证据；概述和前置知识只引用本次给出的原文。
+不预先宣称已覆盖整门课程，不把没有看到的章节内容写成结论。"""
+)
+CHAPTER_PROMPT = (
+    SECTION_PROMPT
+    + """
+这是多章文章中的一章。按 current_section 的分工展开，不重复其他章的任务。
+其他章的标题只是导航，不能据此补写事实。只使用本次 sources 中的原文。
+若提供 selected_code，程序会在本章显示该原样代码；请解释它的作用与材料说明的条件，
+至少一段引用 selected_code.source。不重新转抄代码，不把静态摘录当成已执行验证。"""
+)
+EXERCISE_PROMPT = (
+    COMMON
+    + """
+本次只编写一道聚焦 focus 的自测，含问题、答案、解释、判断标准和支持答案的出处。
+根据本次原文列出有依据的易错点，没依据可为空，缺少的条件写入 gaps。
+不要重复 previous_questions；其他章节标题与题目不是事实证据，不使用它们补造答案。"""
+)
+
+
+def bounded(value, maximum):
+    nonempty(value)
+    if len(value) > maximum:
+        raise ValueError("wiki_synthesis_plan_text_exceeds_limit")
+
+
+def bounded_context(value):
+    if len(canonical(value).decode()) > 15000:
+        raise ValueError("wiki_synthesis_stage_context_exceeds_limit")
+    return value
+
+
+def code_excerpt(specification, packet):
+    if specification is None:
+        return None
+    ref, start, end = (specification[k] for k in ("source", "start", "end"))
+    if ref not in packet["sources"]:
+        raise ValueError("wiki_selected_code_source_outside_chapter")
+    text = packet["sources"][ref]["text"]
+    if (
+        type(start) is not int
+        or type(end) is not int
+        or not 0 <= start < end <= len(text)
+        or not 20 <= end - start <= 1600
+    ):
+        raise ValueError("wiki_selected_code_range_invalid")
+    return {"source": ref, "start": start, "end": end, "text": text[start:end]}
+
+
+def prepare_plan(root, plan):
+    title = plan["title"]
+    bounded(title, 160)
+    scope_note = plan.get(
+        "scope_note",
+        "本篇仅整理显式选定的原文，不代表完整课程或工程已经覆盖；代码未执行验证。",
+    )
+    bounded(scope_note, 800)
+    chapters, exercises = plan["chapters"], plan["exercises"]
+    if not 4 <= len(chapters) <= 8 or not 3 <= len(exercises) <= 5:
+        raise ValueError("wiki_synthesis_requires_4_to_8_chapters_and_3_to_5_questions")
+    headings = [c["heading"] for c in chapters]
+    if len(set(headings)) != len(headings):
+        raise ValueError("wiki_synthesis_duplicate_chapter_heading")
+    intro = prepare(root, title, plan["introduction"])
+    packets = []
+    sources, bindings = dict(intro["sources"]), dict(intro["bindings"])
+    for chapter in chapters:
+        bounded(chapter["heading"], 120)
+        bounded(chapter["focus"], 500)
+        current = prepare(root, title, chapter["selections"])
+        code_excerpt(chapter.get("code_excerpt"), current)
+        for target, incoming in (
+            (sources, current["sources"]),
+            (bindings, current["bindings"]),
+        ):
+            for key, value in incoming.items():
+                if key in target and target[key] != value:
+                    raise ValueError("wiki_synthesis_sources_changed_between_chapters")
+                target[key] = value
+        packets.append(current)
+    for exercise in exercises:
+        if type(exercise["chapter"]) is not int or not 0 <= exercise["chapter"] < len(
+            chapters
+        ):
+            raise ValueError("wiki_synthesis_invalid_quiz_chapter")
+        bounded(exercise["focus"], 400)
+    if (
+        len(sources) > 96
+        or sum(len(s["text"]) for s in sources.values()) > 26000
+        or len(canonical(sources)) > 300000
+    ):
+        raise ValueError("wiki_synthesis_union_evidence_exceeds_limit")
+    packet = {
+        "policy": POLICY,
+        "title": title,
+        "sources": sources,
+        "bindings": bindings,
+        "scope": "explicit_chapter_scoped_original_evidence",
+        "source_freeze_policy": "per_packet_observation",
+        "full_topic_coverage_verified": False,
+        "scope_note": scope_note,
+        "chapter_scopes": [sorted(p["sources"]) for p in packets],
+        "overview_scope": sorted(intro["sources"]),
+        "quiz_scopes": [sorted(packets[e["chapter"]]["sources"]) for e in exercises],
+        "chapter_plan": chapters,
+        "exercise_plan": exercises,
+    }
+    return packet, intro, packets
+
+
+def validate_scopes(article, packet):
+    """Enforced again at publication/read/revision, not only by model prompts."""
+
+    def check(ids, scope):
+        if not set(ids) <= set(scope):
+            raise ValueError("wiki_synthesis_citation_outside_assigned_scope")
+
+    if len(article["sections"]) != len(packet["chapter_scopes"]) or len(
+        article["quiz"]
+    ) != len(packet["quiz_scopes"]):
+        raise ValueError("wiki_synthesis_article_scope_count_mismatch")
+    for value in [article["overview"], *article["prerequisites"]]:
+        check(value["citations"], packet["overview_scope"])
+    for section, scope, spec in zip(
+        article["sections"],
+        packet["chapter_scopes"],
+        packet["chapter_plan"],
+        strict=True,
+    ):
+        if section["heading"] != spec["heading"]:
+            raise ValueError("wiki_synthesis_chapter_heading_changed")
+        for value in section["paragraphs"]:
+            check(value["citations"], scope)
+        check(section["code_citations"], scope)
+        if section["image"]:
+            check([section["image"]], scope)
+        selected = code_excerpt(
+            spec.get("code_excerpt"),
+            {"sources": {r: packet["sources"][r] for r in scope}},
+        )
+        if selected and (
+            section["code"] != selected["text"]
+            or section["code_citations"] != [selected["source"]]
+        ):
+            raise ValueError("wiki_synthesis_selected_code_changed")
+    for quiz, scope in zip(article["quiz"], packet["quiz_scopes"], strict=True):
+        check(quiz["citations"], scope)
+    allowed = {ref for scope in packet["quiz_scopes"] for ref in scope}
+    for value in article["pitfalls"]:
+        check(value["citations"], allowed)
+
+
+def target_packet(packet, target, original):
+    """Keep subsequent targeted repairs within the same original source scope."""
+    if "chapter_scopes" not in packet:
+        return packet
+    if target.startswith("section-"):
+        scope = packet["chapter_scopes"][int(target.split("-")[1])]
+    elif target.startswith("quiz-"):
+        scope = packet["quiz_scopes"][int(target.split("-")[1])]
+    elif target == "overview" or target.startswith("prerequisites-"):
+        scope = packet["overview_scope"]
+    else:
+        scope = original["citations"]
+    return {**packet, "sources": {r: packet["sources"][r] for r in scope}}
+
+
+def introduction(value, packet):
+    claim(value["overview"], packet)
+    if not 2 <= len(value["objectives"]) <= 6:
+        raise ValueError("outline_requires_2_to_6_objectives")
+    for text in value["objectives"] + value["gaps"]:
+        nonempty(text)
+    for item in value["prerequisites"]:
+        claim(item, packet)
+
+
+def exercise(value, packet, previous):
+    quiz = value["quiz"]
+    for field in ("question", "answer", "explanation"):
+        nonempty(quiz[field])
+    if quiz["question"].strip() in previous:
+        raise ValueError("duplicate_self_check_question")
+    if not quiz["criteria"]:
+        raise ValueError("missing_self_check_criteria")
+    for criterion in quiz["criteria"] + value["gaps"]:
+        nonempty(criterion)
+    references(quiz["citations"], packet)
+    for item in value["pitfalls"]:
+        claim(item, packet)
+
+
+def attach_code(value, selected):
+    result = json.loads(json.dumps(value))
+    if selected:
+        result.update(code=selected["text"], code_citations=[selected["source"]])
+        if not any(selected["source"] in p["citations"] for p in result["paragraphs"]):
+            raise ValueError("section_selected_code_not_referenced")
+    return result
+
+
+def generate(store, plan, model="qwen3.5:9b", *, wait_seconds=0):
+    if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
+        raise ValueError("GPU wait must be bounded to 0..3600 seconds")
+    with schema_lease(store.root / "wiki-build.lock", timeout=0):
+        try:
+            packet, intro_packet, chapters = prepare_plan(store.root, plan)
+            weights = local_model_digest(model)
+        except Exception as exc:
+            (store.root / "wiki").mkdir(exist_ok=True)
+            atomic_json(
+                store.root / "wiki" / "last-build.json",
+                {
+                    "state": "failed",
+                    "stage": "preparing",
+                    "pipeline": POLICY,
+                    "updated": time.time(),
+                    "error_type": type(exc).__name__,
+                    "pid": os.getpid(),
+                    "created": psutil.Process().create_time(),
+                },
+            )
+            raise
+        job = DraftJob(
+            store,
+            packet,
+            model,
+            weights,
+            wait_seconds,
+            pipeline=POLICY,
+            recipe_extra={
+                "prompts": [INTRO_PROMPT, CHAPTER_PROMPT, EXERCISE_PROMPT],
+                "schemas": [INTRO, PINNED_SECTION, EXERCISE],
+            },
+        )
+        job.total = 1 + len(chapters) + len(plan["exercises"])
+        if any(a["id"] == job.key for a in Wiki(store.root).catalog()["articles"]):
+            Wiki(store.root).article(job.key)
+            return {"id": job.key, "state": "already_published"}
+        navigation = [{"heading": c["heading"]} for c in plan["chapters"]]
+        try:
+            intro = job.stage(
+                "introduction",
+                INTRO_PROMPT,
+                INTRO,
+                bounded_context(
+                    {
+                        "topic": packet["title"],
+                        "chapter_navigation": navigation,
+                        "sources": intro_packet["sources"],
+                    }
+                ),
+                lambda value: introduction(value, intro_packet),
+                evidence_packet=intro_packet,
+            )
+            sections = []
+            for number, (spec, scoped) in enumerate(
+                zip(plan["chapters"], chapters, strict=True)
+            ):
+                selected = code_excerpt(spec.get("code_excerpt"), scoped)
+                previous = [
+                    p["text"].strip() for s in sections for p in s["paragraphs"]
+                ]
+                value = job.stage(
+                    f"chapter-{number}",
+                    CHAPTER_PROMPT,
+                    PINNED_SECTION if selected else SECTION,
+                    bounded_context(
+                        {
+                            "topic": packet["title"],
+                            "chapter_navigation": navigation,
+                            "current_section": {
+                                "heading": spec["heading"],
+                                "question": spec["focus"],
+                            },
+                            "selected_code": selected,
+                            "sources": scoped["sources"],
+                        }
+                    ),
+                    lambda value, s=scoped, p=spec, code=selected: validate_section(
+                        attach_code(value, code), s, p, previous
+                    ),
+                    evidence_packet=scoped,
+                )
+                sections.append(attach_code(value, selected))
+            quizzes, pitfalls, gaps = [], [], [packet["scope_note"], *intro["gaps"]]
+            for number, spec in enumerate(plan["exercises"]):
+                scoped = chapters[spec["chapter"]]
+                previous = [q["question"].strip() for q in quizzes]
+                result = job.stage(
+                    f"self-check-{number}",
+                    EXERCISE_PROMPT,
+                    EXERCISE,
+                    bounded_context(
+                        {
+                            "topic": packet["title"],
+                            "focus": spec["focus"],
+                            "previous_questions": previous,
+                            "sources": scoped["sources"],
+                        }
+                    ),
+                    lambda value, s=scoped: exercise(value, s, previous),
+                    evidence_packet=scoped,
+                )
+                quizzes.append(result["quiz"])
+                pitfalls.extend(result["pitfalls"])
+                gaps.extend(result["gaps"])
+            article = {
+                "title": packet["title"],
+                **{k: intro[k] for k in ("overview", "objectives", "prerequisites")},
+                "sections": sections,
+                "quiz": quizzes,
+                "pitfalls": pitfalls,
+                "gaps": list(dict.fromkeys(gaps)),
+            }
+            checks = validate_article(article, packet)
+            atomic_json(
+                job.root / "assembled.json", {"article": article, "checks": checks}
+            )
+            result = publish_draft(
+                store, article, packet, job.key, model, weights, pipeline=POLICY
+            )
+            job.progress("draft_published", "complete")
+            return result
+        except Exception as exc:
+            job.progress(
+                "deferred_gpu"
+                if isinstance(exc, GpuBusyError)
+                else "paused"
+                if isinstance(exc, InterruptedError)
+                else "failed",
+                job.current,
+                error_type=type(exc).__name__,
+            )
+            raise
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--plan", type=Path, required=True)
+    parser.add_argument("--model", default="qwen3.5:9b")
+    parser.add_argument("--wait-gpu-seconds", type=int, default=0)
+    args = parser.parse_args()
+    result = generate(
+        ReadOnlyArchive(args.root),
+        json.loads(args.plan.read_text("utf-8")),
+        args.model,
+        wait_seconds=args.wait_gpu_seconds,
+    )
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

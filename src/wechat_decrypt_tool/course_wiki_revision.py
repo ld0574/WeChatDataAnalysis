@@ -203,22 +203,28 @@ def revise(store, article_id, model="qwen3.5:9b", *, wait_seconds=0):
         changes = {}
         try:
             for target, finding in problems.items():
+                from .course_wiki_synthesis import target_packet
+
+                scoped = target_packet(packet, target, all_targets[target])
                 quiz, code = target.startswith("quiz-"), target.endswith("-code")
                 schema = QUIZ_FIX if quiz else CLAIM_FIX
                 context = {
                     "topic": packet["title"],
                     "original": all_targets[target],
                     "model_crosscheck_finding": finding,
-                    "sources": packet["sources"],
+                    "sources": scoped["sources"],
                 }
                 if len(canonical(context).decode()) > 16000:
                     raise ValueError("revision_context_exceeds_bounded_budget")
                 changes[target] = job.stage(
                     "repair-" + target,
                     QUIZ_PROMPT if quiz else CODE_PROMPT if code else CLAIM_PROMPT,
-                    fix_schema(schema, packet),
+                    fix_schema(schema, scoped),
                     context,
-                    lambda v, q=quiz, c=code: validate_fix(v, packet, quiz=q, code=c),
+                    lambda v, q=quiz, c=code, p=scoped: validate_fix(
+                        v, p, quiz=q, code=c
+                    ),
+                    evidence_packet=scoped,
                 )
             article = apply_fixes(parent["article"], changes)
             atomic_json(

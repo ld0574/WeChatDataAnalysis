@@ -217,6 +217,7 @@ async function home(version) {
     const step = wiki.build.stage;
     const labels = {
       outline: "提纲",
+      introduction: "概述与前置知识",
       exercises: "自测与易错点",
       complete: "合并校验",
       interrupted: "当前步骤",
@@ -225,6 +226,8 @@ async function home(version) {
       labels[step] ||
       (step?.startsWith("section-")
         ? `正文第 ${Number(step.slice(8)) + 1} 节`
+        : step?.startsWith("chapter-") ? `正文第 ${Number(step.slice(8)) + 1} 章`
+        : step?.startsWith("self-check-") ? `第 ${Number(step.slice(11)) + 1} 道自测`
         : step?.startsWith("repair-") ? "修订已标记的内容" : "");
     const completed = wiki.build.completed_stages;
     status.textContent =
@@ -308,6 +311,7 @@ async function article(id, version, targetSection) {
       "模型草稿 · 来源结构与引用编号已检查 · 语义、图片相关性和主题完整性待复核。自测为自评，不自动认定掌握。",
     ),
   );
+  if (p.scope_note) main.append(notice(p.scope_note));
   main.append(claim(a.overview, p));
   const reviewBox = el("details", undefined, "source-crosscheck");
   reviewBox.append(el("summary", "来源对照 · 本机模型辅助检查"));
@@ -374,8 +378,18 @@ async function article(id, version, targetSection) {
     section.append(el("h2", s.heading));
     for (const c of s.paragraphs) section.append(claim(c, p));
     if (s.code) {
+      section.append(el("p", "课程原样代码摘录 · 未执行验证；片段依赖周围代码，请结合完整出处和版本条件阅读。", "meta"));
       const pre = el("pre");
-      pre.append(el("code", s.code));
+      const selected = p.chapter_plan?.[i]?.code_excerpt;
+      const original = selected && p.sources[selected.source]?.text;
+      let displayedCode = s.code;
+      if (original && original.slice(selected.start, selected.end) === s.code) {
+        const lineStart = original.lastIndexOf("\n", selected.start - 1) + 1;
+        const indentation = original.slice(lineStart, selected.start);
+        // Retain the source line's leading whitespace for nested statements.
+        if (/^[\t ]*$/.test(indentation)) displayedCode = indentation + s.code;
+      }
+      pre.append(el("code", displayedCode));
       section.append(pre);
       refs(section, s.code_citations, p);
     }
