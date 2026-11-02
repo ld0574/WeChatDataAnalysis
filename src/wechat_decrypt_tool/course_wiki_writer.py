@@ -358,6 +358,9 @@ class DraftJob:
     def parse_response(self, raw):
         return json.loads(raw)
 
+    def generate_response(self, messages, *, schema):
+        return local_chat(self.model, messages, schema=schema), None
+
     def stage(self, name, prompt, schema, context, validate, *, evidence_packet=None):
         from .course_pdf_ocr import local_model_digest
 
@@ -419,7 +422,9 @@ class DraftJob:
                             attempts / (name + f"-{attempt + 1:02}.json"),
                             {**record, "state": "started"},
                         )
-                    raw = local_chat(self.model, messages, schema=schema)
+                    raw, metrics = self.generate_response(messages, schema=schema)
+                    if metrics is not None:
+                        record["model_metrics"] = metrics
                     if local_model_digest(self.model) != self.model_digest:
                         raise ValueError("local_model_revision_changed")
                 record["raw_response"] = raw

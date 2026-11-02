@@ -1,5 +1,9 @@
 # Wiki 课件证据
 
+2026-11-03 新增显式文本推理配置 `local-text-gpu-context16384-output4000-v1`，仅用于尚未开始工作的反向检查。直接检查须同时选择 `--per-source --keyed-windows --window-batches --large-context`；批次使用 `--large-context-new-checks`，在规划前写入范围专属意图，恢复时沿用。上下文 16,384、最大输出 4,000，必须保存实际 GPU 占用、上下文长度、模型摘要和输入／输出 token 数；实际输入必须小于 12,384 token，并以 stop 结束。发布后重读会核对接受尝试的请求、输出、模型及度量与断点的绑定。旧默认值和旧耗尽预算保持，不能切换配置重新获得尝试。
+
+初始两组 135 项测试通过，增加请求绑定篡改检查后，文本推理组 24 项通过（原组 23 项）。覆盖模拟本地传输、实际发布夹具、断点恢复、不可切换旧预算、GPU／上下文证据篡改拒绝和独立恢复阅读器；这些测试未调用真实 GPU 模型。收据 `wiki/large-context-initial-20261103-tests.xml`、`wiki/large-context-batch-writer-20261103-tests.xml`、`wiki/large-context-request-binding-20261103-tests.xml`。真实有限范围试点尚待运行，不能算作语义验收。
+
 2026-11-03 新窗口分组策略的实际任务 `b060c889e37287f66e60f7373b87aac9` 已终止，完成 1 / 25 组、5 个窗口。首个键控断点独立重新解码通过，五项均为 partial；第二组三次 `ModelOutputTruncatedError` 的 `done_reason` 都为 length，实际 prompt_eval_count + eval_count 分别为 7,909 + 283、7,914 + 278、7,914 + 278，均耗尽通用推理配置的 8,192 token 上限，而输出配置原本请求 2,500 token。第二／三次原始响应哈希相同，失败及耗尽预算均保留。该结果只证明首组键控格式实际可用，不是完整报告或语义通过。诊断 `wiki/window-batches-pilot-terminal-20261103-diagnostic.json`；运行进程及守护均已退出，未启动新重试。下一步应为尚未启动的范围绑定较大上下文和可核验的推理参数，而不是改变旧任务默认值、丢弃原文或循环重写相同文章。
 
 2026-11-03 新增可选窗口分组协议 `ordered-windows-with-complete-source-and-article-context-16000-v1`，生成策略 `keyed-window-batches-verdict-dependent-evidence-grammar-v1`，必须显式同时选择逐来源和键控结果。完整来源及文章目标在各组原样重复，只有 windows 的键集合分区；所有上下文先构造并检查，超大的单窗口不会消耗模型调用。配方、收据和历史报告均重建同一分组，缺失、篡改或与旧策略互换被拒绝。旧配方及旧默认行为保持。

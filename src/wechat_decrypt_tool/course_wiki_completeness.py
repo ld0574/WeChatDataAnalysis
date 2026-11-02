@@ -232,6 +232,13 @@ def decode_keyed(data, context):
 
 
 class OmissionJob(DraftJob):
+    def generate_response(self, messages, *, schema):
+        if not getattr(self, "large_context", False):
+            return super().generate_response(messages, schema=schema)
+        from .course_wiki_text_inference import chat
+
+        return chat(self.model, messages, schema=schema)
+
     def parse_response(self, raw):
         if not getattr(self, "keyed_windows", False):
             return super().parse_response(raw)
@@ -278,9 +285,12 @@ def review(
     constrained_evidence=False,
     keyed_windows=False,
     window_batches=False,
+    large_context=False,
 ):
     if type(keyed_windows) is not bool:
         raise ValueError("omissions_invalid_keyed_windows_option")
+    if type(large_context) is not bool or large_context and not window_batches:
+        raise ValueError("omissions_large_context_requires_window_batches")
     if (
         type(window_batches) is not bool
         or window_batches
@@ -302,11 +312,14 @@ def review(
             GENERATION_POLICY,
             KEYED_REVERSE_POLICY,
             BOUNDED_KEYED_REVERSE_POLICY,
+            LARGE_CONTEXT_REVERSE_POLICY,
             retain_generation_policy,
         )
 
         constraint_policy = (
-            BOUNDED_KEYED_REVERSE_POLICY
+            LARGE_CONTEXT_REVERSE_POLICY
+            if large_context
+            else BOUNDED_KEYED_REVERSE_POLICY
             if window_batches
             else KEYED_REVERSE_POLICY
             if keyed_windows
@@ -315,6 +328,8 @@ def review(
             else None
         )
         system = KEYED_SYSTEM if keyed_windows else SYSTEM
+        from .course_wiki_text_inference import profile
+
         retain_generation_policy(
             wiki.root,
             "completeness-jobs",
@@ -346,11 +361,13 @@ def review(
                 ),
                 **({"source_batching": SOURCE_BATCHING} if per_source else {}),
                 **({"window_batching": WINDOW_BATCHING} if window_batches else {}),
+                **({"inference": profile()} if large_context else {}),
             },
             job_directory="completeness-jobs",
         )
         job.article_id, job.total = article_id, len(contexts)
         job.keyed_windows = keyed_windows
+        job.large_context = large_context
         if (job.root / "receipt.json").exists():
             result = published_report(store.root, article_id, job=job.key)
             atomic_json(existing, json.loads((job.root / "receipt.json").read_bytes()))
@@ -403,6 +420,7 @@ def review(
                 "source_deletion_allowed": False,
                 **({"source_batching": SOURCE_BATCHING} if per_source else {}),
                 **({"window_batching": WINDOW_BATCHING} if window_batches else {}),
+                **({"inference": profile()} if large_context else {}),
                 **(
                     {"generation_constraints": constraint_policy}
                     if constraint_policy
@@ -489,13 +507,28 @@ def published_report(root, article_id, *, job=None):
     from .course_wiki_check_constraints import (
         BOUNDED_KEYED_REVERSE_POLICY,
         KEYED_REVERSE_POLICY,
+        LARGE_CONTEXT_REVERSE_POLICY,
         generation_policy,
     )
 
     constraint_policy = recipe["extra"].get("generation_constraints")
     constrained = generation_policy(constraint_policy, reverse=True)
-    keyed = constraint_policy in (KEYED_REVERSE_POLICY, BOUNDED_KEYED_REVERSE_POLICY)
-    bounded = constraint_policy == BOUNDED_KEYED_REVERSE_POLICY
+    keyed = constraint_policy in (
+        KEYED_REVERSE_POLICY,
+        BOUNDED_KEYED_REVERSE_POLICY,
+        LARGE_CONTEXT_REVERSE_POLICY,
+    )
+    large = constraint_policy == LARGE_CONTEXT_REVERSE_POLICY
+    bounded = constraint_policy in (
+        BOUNDED_KEYED_REVERSE_POLICY,
+        LARGE_CONTEXT_REVERSE_POLICY,
+    )
+    from .course_wiki_text_inference import profile, validate_metrics
+
+    if recipe["extra"].get("inference") != (
+        profile() if large else None
+    ) or receipt.get("inference") != recipe["extra"].get("inference"):
+        raise ValueError("omissions_inference_binding_changed")
     window_batching = recipe["extra"].get("window_batching")
     if (
         window_batching != (WINDOW_BATCHING if bounded else None)
@@ -557,6 +590,43 @@ def published_report(root, article_id, *, job=None):
             "data": data,
         }:
             raise ValueError("omissions_checkpoint_changed")
+        if large:
+            verified = False
+            repair = ""
+            for attempt_path in sorted((folder / "attempts").glob(name + "-*.json")):
+                attempt = json.loads(attempt_path.read_bytes())
+                messages = [
+                    {
+                        "role": "system",
+                        "content": recipe["extra"]["system"] + range_notice,
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {**context, "previous_validation_failure": repair},
+                            ensure_ascii=False,
+                        ),
+                    },
+                ]
+                repair = attempt.get("validation_error", "")
+                if (
+                    attempt.get("input_sha256") != binding
+                    or attempt.get("model_digest") != recipe["model_digest"]
+                    or attempt.get("accepted_structure") is not True
+                ):
+                    continue
+                if attempt.get("request_sha256") != digest(canonical(messages)):
+                    raise ValueError("omissions_inference_request_changed")
+                parser = object.__new__(OmissionJob)
+                parser.keyed_windows = True
+                if parser.parse_response(attempt["raw_response"]) != data:
+                    continue
+                validate_metrics(
+                    attempt.get("model_metrics", {}), recipe["model_digest"]
+                )
+                verified = True
+            if not verified:
+                raise ValueError("omissions_inference_metrics_missing")
         chapters.append(
             {
                 "stage": name,
@@ -594,6 +664,7 @@ def main():
     parser.add_argument("--constrained-evidence", action="store_true")
     parser.add_argument("--keyed-windows", action="store_true")
     parser.add_argument("--window-batches", action="store_true")
+    parser.add_argument("--large-context", action="store_true")
     args = parser.parse_args()
     value = review(
         ReadOnlyArchive(args.root),
@@ -604,6 +675,7 @@ def main():
         constrained_evidence=args.constrained_evidence,
         keyed_windows=args.keyed_windows,
         window_batches=args.window_batches,
+        large_context=args.large_context,
     )
     print(
         json.dumps(

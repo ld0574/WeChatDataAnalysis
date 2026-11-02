@@ -311,6 +311,48 @@ def topic_structure(folder, key, spec, row, requested):
     return True
 
 
+def check_inference(folder, key, spec, row, requested):
+    """Bind the larger reverse-check context before planning an unstarted item."""
+    from .course_wiki_text_inference import profile
+    from .course_wiki_check_constraints import LARGE_CONTEXT_REVERSE_POLICY
+    from .course_wiki_completeness import WINDOW_BATCHING
+
+    spec_sha = digest(canonical(spec))
+    path = folder / "check-inference-intents" / (spec_sha + ".json")
+    expected = {
+        "policy": "new-item-large-context-reverse-check-v1",
+        "batch": key,
+        "item": item_key(spec),
+        "spec_sha256": spec_sha,
+        "generation_constraints": LARGE_CONTEXT_REVERSE_POLICY,
+        "window_batching": WINDOW_BATCHING,
+        "inference": profile(),
+    }
+    if path.exists():
+        value = json.loads(path.read_bytes())
+        sha = digest(canonical(value))
+        if (
+            value != expected
+            or requested is False
+            or row.get("check_inference_sha256", sha) != sha
+            or "check_inference_sha256" not in row
+            and row["state"] != "pending"
+        ):
+            raise ValueError("wiki_batch_check_inference_intent_changed")
+    else:
+        if "check_inference_sha256" in row:
+            raise ValueError("wiki_batch_check_inference_intent_missing")
+        if requested is not True:
+            return False
+        if row["state"] != "pending" or "planning_job" in row or "article" in row:
+            raise ValueError("wiki_batch_large_context_requires_unstarted_item")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(path, expected)
+        sha = digest(canonical(expected))
+    row["check_inference_sha256"] = sha
+    return True
+
+
 def run(
     store,
     key,
@@ -319,7 +361,15 @@ def run(
     max_items=None,
     constrained_new_checks=None,
     flexible_new_topics=None,
+    large_context_new_checks=None,
 ):
+    if (
+        large_context_new_checks is not None
+        and type(large_context_new_checks) is not bool
+    ):
+        raise ValueError("wiki_batch_invalid_check_inference_option")
+    if large_context_new_checks is True and constrained_new_checks is False:
+        raise ValueError("wiki_batch_large_context_requires_constrained_checks")
     if flexible_new_topics is not None and type(flexible_new_topics) is not bool:
         raise ValueError("wiki_batch_invalid_topic_structure_option")
     if flexible_new_topics is True and constrained_new_checks is False:
@@ -399,6 +449,13 @@ def run(
                     )
                 processed += 1
                 flexible = topic_structure(folder, key, spec, row, flexible_new_topics)
+                large = check_inference(
+                    folder, key, spec, row, large_context_new_checks
+                )
+                if large and constrained_new_checks is False:
+                    raise ValueError(
+                        "wiki_batch_large_context_requires_constrained_checks"
+                    )
                 if flexible and constrained_new_checks is False:
                     raise ValueError("wiki_batch_flexible_requires_constrained_checks")
                 check_options = (
@@ -408,7 +465,7 @@ def run(
                         key,
                         spec,
                         row,
-                        True if flexible else constrained_new_checks,
+                        True if flexible or large else constrained_new_checks,
                     )
                     else {}
                 )
@@ -504,6 +561,15 @@ def run(
                     model,
                     wait_seconds=wait_seconds,
                     per_source=True,
+                    **(
+                        {
+                            "keyed_windows": True,
+                            "window_batches": True,
+                            "large_context": True,
+                        }
+                        if large
+                        else {}
+                    ),
                     **check_options,
                 )
                 published_report(store.root, row["article"], job=reverse["job"])
@@ -561,6 +627,9 @@ def main():
             "--constrained-new-checks", action="store_true", default=None
         )
         execute.add_argument("--flexible-new-topics", action="store_true", default=None)
+        execute.add_argument(
+            "--large-context-new-checks", action="store_true", default=None
+        )
     args = parser.parse_args()
     if args.command == "guard":
         job_id(args.batch)
@@ -584,6 +653,11 @@ def main():
                 ),
                 *(["--constrained-new-checks"] if args.constrained_new_checks else []),
                 *(["--flexible-new-topics"] if args.flexible_new_topics else []),
+                *(
+                    ["--large-context-new-checks"]
+                    if args.large_context_new_checks
+                    else []
+                ),
             ],
             maximum_power=200,
             maximum_temperature=70,
@@ -605,6 +679,7 @@ def main():
             max_items=args.max_items,
             constrained_new_checks=args.constrained_new_checks,
             flexible_new_topics=args.flexible_new_topics,
+            large_context_new_checks=args.large_context_new_checks,
         )
     print(json.dumps({k: v for k, v in result.items() if k in {"state", "batch"}}))
 
