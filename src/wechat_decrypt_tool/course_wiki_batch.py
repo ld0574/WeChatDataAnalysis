@@ -271,7 +271,59 @@ def check_constraints(folder, key, spec, row, requested):
     return True
 
 
-def run(store, key, *, wait_seconds=3600, max_items=None, constrained_new_checks=None):
+def topic_structure(folder, key, spec, row, requested):
+    """Only unstarted allocations may opt into material-shaped planning."""
+    from .course_wiki_planning import FLEXIBLE_ALLOCATION_POLICY
+
+    spec_sha = digest(canonical(spec))
+    path = folder / "topic-structure-intents" / (spec_sha + ".json")
+    expected = {
+        "policy": "new-batch-item-topic-structure-v1",
+        "batch": key,
+        "item": item_key(spec),
+        "spec_sha256": spec_sha,
+        "planning_strategy": FLEXIBLE_ALLOCATION_POLICY,
+    }
+    if path.exists():
+        value = json.loads(path.read_bytes())
+        sha = digest(canonical(value))
+        if (
+            value != expected
+            or requested is False
+            or row.get("topic_execution_sha256", sha) != sha
+            or ("topic_execution_sha256" not in row and row["state"] != "pending")
+            or "allocation" not in spec
+        ):
+            raise ValueError("wiki_batch_topic_execution_intent_changed")
+    else:
+        if "topic_execution_sha256" in row:
+            raise ValueError("wiki_batch_topic_execution_intent_missing")
+        if requested is not True:
+            return False
+        if "allocation" not in spec:
+            raise ValueError("wiki_batch_flexible_requires_allocated_scope")
+        if row["state"] != "pending" or "planning_job" in row or "article" in row:
+            raise ValueError("wiki_batch_flexible_requires_unstarted_item")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(path, expected)
+        sha = digest(canonical(expected))
+    row["topic_execution_sha256"] = sha
+    return True
+
+
+def run(
+    store,
+    key,
+    *,
+    wait_seconds=3600,
+    max_items=None,
+    constrained_new_checks=None,
+    flexible_new_topics=None,
+):
+    if flexible_new_topics is not None and type(flexible_new_topics) is not bool:
+        raise ValueError("wiki_batch_invalid_topic_structure_option")
+    if flexible_new_topics is True and constrained_new_checks is False:
+        raise ValueError("wiki_batch_flexible_requires_constrained_checks")
     if constrained_new_checks is not None and type(constrained_new_checks) is not bool:
         raise ValueError("wiki_batch_invalid_check_constraint_option")
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
@@ -346,9 +398,18 @@ def run(store, key, *, wait_seconds=3600, max_items=None, constrained_new_checks
                         ),
                     )
                 processed += 1
+                flexible = topic_structure(folder, key, spec, row, flexible_new_topics)
+                if flexible and constrained_new_checks is False:
+                    raise ValueError("wiki_batch_flexible_requires_constrained_checks")
                 check_options = (
                     {"constrained_evidence": True}
-                    if check_constraints(folder, key, spec, row, constrained_new_checks)
+                    if check_constraints(
+                        folder,
+                        key,
+                        spec,
+                        row,
+                        True if flexible else constrained_new_checks,
+                    )
                     else {}
                 )
                 if (
@@ -370,6 +431,8 @@ def run(store, key, *, wait_seconds=3600, max_items=None, constrained_new_checks
                         "allocation": spec["allocation"],
                         "allocation_scope": spec["allocation_scope"],
                     }
+                if flexible:
+                    options["flexible_structure"] = True
                 planned = propose(
                     store, video, model, wait_seconds=wait_seconds, **options
                 )
@@ -497,6 +560,7 @@ def main():
         execute.add_argument(
             "--constrained-new-checks", action="store_true", default=None
         )
+        execute.add_argument("--flexible-new-topics", action="store_true", default=None)
     args = parser.parse_args()
     if args.command == "guard":
         job_id(args.batch)
@@ -519,6 +583,7 @@ def main():
                     else []
                 ),
                 *(["--constrained-new-checks"] if args.constrained_new_checks else []),
+                *(["--flexible-new-topics"] if args.flexible_new_topics else []),
             ],
             maximum_power=200,
             maximum_temperature=70,
@@ -539,6 +604,7 @@ def main():
             wait_seconds=args.wait_gpu_seconds,
             max_items=args.max_items,
             constrained_new_checks=args.constrained_new_checks,
+            flexible_new_topics=args.flexible_new_topics,
         )
     print(json.dumps({k: v for k, v in result.items() if k in {"state", "batch"}}))
 

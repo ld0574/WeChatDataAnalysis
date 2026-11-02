@@ -60,19 +60,29 @@ SCHEMA = object_schema(
 )
 
 
-def checkpoint(folder, stage, recipe, prompt, schema, context, scoped, validate):
+def checkpoint(
+    folder, stage, recipe, prompt, schema, context, scoped, validate, *, heading=None
+):
     value = json.loads((folder / (stage + ".json")).read_bytes())
-    binding = digest(
-        canonical(
-            {
-                "prompt": prompt + recipe.get("original_range_notice", ""),
-                "schema": evidence_schema(schema, scoped),
-                "context": context,
-                "model_digest": recipe["model_digest"],
-            }
+    schemas = [schema]
+    if heading is not None:
+        pinned = json.loads(json.dumps(schema))
+        pinned["properties"]["heading"]["enum"] = [heading]
+        schemas.append(pinned)
+    bindings = {
+        digest(
+            canonical(
+                {
+                    "prompt": prompt + recipe.get("original_range_notice", ""),
+                    "schema": evidence_schema(candidate, scoped),
+                    "context": context,
+                    "model_digest": recipe["model_digest"],
+                }
+            )
         )
-    )
-    if value["input_sha256"] != binding or value["data_sha256"] != digest(
+        for candidate in schemas
+    }
+    if value["input_sha256"] not in bindings or value["data_sha256"] != digest(
         canonical(value["data"])
     ):
         raise ValueError("limitations_repair_original_checkpoint_changed")
@@ -143,6 +153,7 @@ def assemble_parent(root, parent):
             lambda v: synthesis.validate_section(
                 synthesis.attach_code(v, selected), scoped, chapter, previous
             ),
+            heading=chapter["heading"],
         )
         sections.append(synthesis.attach_code(section, selected))
     quizzes, pitfalls, gaps = [], [], [packet["scope_note"], *intro["gaps"]]

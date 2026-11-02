@@ -180,6 +180,15 @@ def prepare(root, title, selections):
 def validate_article(article, packet):
     """Deterministic structure/provenance checks, deliberately not semantic QA."""
     from .course_wiki_documents import validate_source
+    from .course_wiki_synthesis import FLEXIBLE_STRUCTURE, POLICY as CHAPTER_POLICY
+
+    flexible = packet.get("structure_contract") == FLEXIBLE_STRUCTURE
+    if flexible and (
+        packet.get("policy") != CHAPTER_POLICY
+        or not packet.get("evidence_partitions")
+        or "chapter_scopes" not in packet
+    ):
+        raise ValueError("Flexible article requires frozen allocated chapter sources")
 
     for ref, source in packet["sources"].items():
         if source["kind"] == "document":
@@ -209,7 +218,7 @@ def validate_article(article, packet):
         text(value)
     for value in article["prerequisites"] + article["pitfalls"]:
         claim(value)
-    if len(article["sections"]) < 4 or not article["pitfalls"]:
+    if len(article["sections"]) < (2 if flexible else 4) or not article["pitfalls"]:
         raise ValueError("Expected developed sections and limitations")
     for section in article["sections"]:
         text(section["heading"])

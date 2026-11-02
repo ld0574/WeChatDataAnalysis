@@ -55,10 +55,7 @@ def exercise_input(packet, extra, number):
     ]
     if len(set(questions)) != len(questions):
         raise ValueError("criteria_repair_duplicate_fixed_questions")
-    required = (
-        packet.get("structure_contract") == synthesis.ALLOCATED_STRUCTURE
-        and number == len(questions) - 1
-    )
+    required = synthesis.developed_structure(packet) and number == len(questions) - 1
     prompt = extra["last_exercise_prompt"] if required else extra["prompts"][2]
     schema = extra["last_exercise_schema"] if required else extra["schemas"][2]
     context = synthesis.bounded_context(
@@ -305,22 +302,25 @@ def repair(store, parent, model="qwen3.5:9b", *, wait_seconds=0, prepare_only=Fa
                 )
             )
             previous = [p["text"].strip() for s in sections for p in s["paragraphs"]]
+            context = synthesis.bounded_context(
+                {
+                    "topic": packet["title"],
+                    "chapter_navigation": navigation,
+                    "current_section": {
+                        "heading": chapter["heading"],
+                        "question": chapter["focus"],
+                    },
+                    "selected_code": selected,
+                    "sources": scoped["sources"],
+                }
+            )
             section = body.stage(
                 f"chapter-{n}",
                 body_recipe["extra"]["prompts"][1],
-                schema,
-                synthesis.bounded_context(
-                    {
-                        "topic": packet["title"],
-                        "chapter_navigation": navigation,
-                        "current_section": {
-                            "heading": chapter["heading"],
-                            "question": chapter["focus"],
-                        },
-                        "selected_code": selected,
-                        "sources": scoped["sources"],
-                    }
+                synthesis.chapter_schema(
+                    body, f"chapter-{n}", schema, context, scoped, chapter["heading"]
                 ),
+                context,
                 lambda v: synthesis.validate_section(
                     synthesis.attach_code(v, selected), scoped, chapter, previous
                 ),

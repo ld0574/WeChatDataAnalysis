@@ -41,6 +41,29 @@ from .course_wiki_writer import (
 
 POLICY = "wiki-chapter-scoped-synthesis-v1"
 ALLOCATED_STRUCTURE = "allocated-developed-chapters-and-limitations-v1"
+FLEXIBLE_STRUCTURE = "allocated-material-shaped-chapters-and-assessments-v1"
+
+
+def developed_structure(packet):
+    return packet.get("structure_contract") in {ALLOCATED_STRUCTURE, FLEXIBLE_STRUCTURE}
+
+
+def flexible_assessments(chapters, exercises):
+    if not 2 <= len(chapters) <= 5 or not 3 <= len(exercises) <= 5:
+        raise ValueError("wiki_flexible_requires_2_to_5_chapters_and_3_to_5_questions")
+    if any(
+        type(e.get("chapter")) is not int or not 0 <= e["chapter"] < len(chapters)
+        for e in exercises
+    ):
+        raise ValueError("wiki_synthesis_invalid_quiz_chapter")
+    if {e["chapter"] for e in exercises} != set(range(len(chapters))):
+        raise ValueError("wiki_flexible_requires_assessment_for_every_chapter")
+    for e in exercises:
+        bounded(e["focus"], 400)
+    if len({e["focus"].strip() for e in exercises}) != len(exercises):
+        raise ValueError("wiki_flexible_requires_distinct_assessment_goals")
+
+
 INTRO = object_schema(
     {
         "overview": CLAIM,
@@ -172,7 +195,9 @@ def prepare_plan(root, plan):
     )
     bounded(scope_note, 800)
     chapters, exercises = plan["chapters"], plan["exercises"]
-    if not 4 <= len(chapters) <= 8 or not 3 <= len(exercises) <= 5:
+    if plan.get("structure_contract") == FLEXIBLE_STRUCTURE:
+        flexible_assessments(chapters, exercises)
+    elif not 4 <= len(chapters) <= 8 or not 3 <= len(exercises) <= 5:
         raise ValueError("wiki_synthesis_requires_4_to_8_chapters_and_3_to_5_questions")
     headings = [c["heading"] for c in chapters]
     if len(set(headings)) != len(headings):
@@ -230,7 +255,7 @@ def prepare_plan(root, plan):
             key: sorted(pages) for key, pages in partitions.items()
         }
     if "structure_contract" in plan:
-        if plan["structure_contract"] != ALLOCATED_STRUCTURE or not partitions:
+        if not developed_structure(plan) or not partitions:
             raise ValueError("wiki_synthesis_invalid_allocated_structure_contract")
         packet["structure_contract"] = plan["structure_contract"]
     return packet, intro, packets
@@ -239,10 +264,16 @@ def prepare_plan(root, plan):
 def validate_scopes(article, packet):
     """Enforced again at publication/read/revision, not only by model prompts."""
     if "structure_contract" in packet:
-        if packet["structure_contract"] != ALLOCATED_STRUCTURE:
+        if not developed_structure(packet):
             raise ValueError("wiki_synthesis_invalid_allocated_structure_contract")
         if any(len(s["paragraphs"]) < 2 for s in article["sections"]):
             raise ValueError("section_requires_at_least_two_developed_paragraphs")
+        if packet["structure_contract"] == FLEXIBLE_STRUCTURE:
+            flexible_assessments(packet["chapter_plan"], packet["exercise_plan"])
+            if not packet.get("evidence_partitions") or packet["quiz_scopes"] != [
+                packet["chapter_scopes"][e["chapter"]] for e in packet["exercise_plan"]
+            ]:
+                raise ValueError("wiki_flexible_assessment_scope_changed")
 
     def check(ids, scope):
         if not set(ids) <= set(scope):
@@ -376,7 +407,7 @@ def generate(
                 },
             )
             raise
-        structured = packet.get("structure_contract") == ALLOCATED_STRUCTURE
+        structured = developed_structure(packet)
         section_schema = developed_schema(SECTION) if structured else SECTION
         pinned_schema = (
             developed_schema(PINNED_SECTION) if structured else PINNED_SECTION
@@ -391,7 +422,7 @@ def generate(
         ) + LIMITATIONS_NOTICE
         contract_recipe = (
             {
-                "structure_contract": ALLOCATED_STRUCTURE,
+                "structure_contract": packet["structure_contract"],
                 "unpinned_section_schema": section_schema,
                 "last_exercise_schema": limitations_schema(EXERCISE),
                 "last_exercise_prompt": EXERCISE_PROMPT + LIMITATIONS_NOTICE,
