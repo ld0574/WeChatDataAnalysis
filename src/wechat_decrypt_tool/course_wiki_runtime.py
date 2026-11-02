@@ -18,7 +18,7 @@ from .course_backup import file_hash
 from .course_knowledge import atomic_json
 
 POLICY = "offline-windows-wiki-reader-runtime-v1"
-ROOTS = ("fastapi", "uvicorn", "psutil", "Pillow", "httpx")
+ROOTS = ("fastapi", "uvicorn", "psutil", "Pillow", "httpx", "jsonschema")
 MANIFEST = "reader-runtime.json"
 
 BOOTSTRAP = '''"""Launch with this bundle's Python, without a system installation."""

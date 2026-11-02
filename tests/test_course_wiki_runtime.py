@@ -6,6 +6,26 @@ import pytest
 from wechat_decrypt_tool import course_wiki_runtime as runtime
 
 
+def test_runtime_includes_schema_validation_and_its_transitive_requirements():
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    distributions = runtime.dependency_closure()
+    selected = {
+        canonicalize_name(dist.metadata["Name"]): dist
+        for dist in distributions.values()
+    }
+    # Retained limitations lineage is revalidated when a snapshot is read.
+    assert "jsonschema" in selected
+    for dist in selected.values():
+        for text in dist.requires or []:
+            requirement = Requirement(text)
+            if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
+                continue
+            dependency = selected[canonicalize_name(requirement.name)]
+            assert requirement.specifier.contains(dependency.version, prereleases=True)
+
+
 def bundle(tmp_path):
     root = tmp_path / "bundle"
     rows = []
