@@ -89,7 +89,7 @@ def writer_dependencies(root, publication):
         return []
     folders, visiting = {}, set()
 
-    def visit(key, parent=None):
+    def visit(key, parent=None, *, failed_limitations=False):
         if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{32}", key):
             raise ValueError("snapshot_writer_dependency_invalid_id")
         if key in visiting:
@@ -134,12 +134,30 @@ def writer_dependencies(root, publication):
             ):
                 if field in extra:
                     visit(extra[field], recipe)
+            if "failed_limitations_job" in extra:
+                if "literal_limitations_subset" not in extra:
+                    raise ValueError("snapshot_failed_limitations_lineage_missing")
+                visit(extra["failed_limitations_job"], recipe, failed_limitations=True)
             if "criteria_repair" in extra:
                 from .course_wiki_synthesis_repair import validate_lineage
 
                 validate_lineage(root, recipe, complete=True, job=key)
             if "limitations_repair" in extra:
                 from .course_wiki_limitations_repair import validate_lineage
+
+                validate_lineage(
+                    root,
+                    recipe,
+                    complete=not failed_limitations,
+                    job=key,
+                    publication=publication["article"]
+                    if key == publication["id"]
+                    else None,
+                )
+            if failed_limitations and "limitations_repair" not in extra:
+                raise ValueError("snapshot_failed_limitations_wrong_role")
+            if "literal_limitations_subset" in extra:
+                from .course_wiki_limitations_subset import validate_lineage
 
                 validate_lineage(
                     root,
@@ -256,10 +274,14 @@ def assets(root):
             for path in sorted(folder.rglob("*.json")):
                 add(path.relative_to(root).as_posix())
             recipe = json.loads((folder / "manifest.json").read_bytes())["recipe"]
-            for role in ("criteria", "limitations"):
-                spec = recipe.get("extra", {}).get(role + "_repair")
+            extra = recipe.get("extra", {})
+            for role, spec in (
+                ("criteria-repair", extra.get("criteria_repair")),
+                ("limitations-repair", extra.get("limitations_repair")),
+                ("limitations-subset", extra.get("literal_limitations_subset")),
+            ):
                 if spec:
-                    relative = f"wiki/{role}-repair-bindings/{spec['parent_job']}.json"
+                    relative = f"wiki/{role}-bindings/{spec['parent_job']}.json"
                     if json.loads(inside(root, relative).read_bytes()) != {
                         "policy": spec["policy"],
                         "parent_job": spec["parent_job"],
