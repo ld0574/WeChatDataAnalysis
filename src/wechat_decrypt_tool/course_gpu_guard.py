@@ -94,7 +94,12 @@ def run(
     sleep=time.sleep,
 ):
     root = Path(root).resolve()
-    if guard_name not in {"gpu-thermal-guard", "wiki-revision-thermal-guard"}:
+    log_names = {
+        "gpu-thermal-guard": "thermal-worker",
+        "wiki-revision-thermal-guard": "thermal-wiki-revision",
+        "extraction-thermal-guard": "thermal-extraction",
+    }
+    if guard_name not in log_names:
         raise ValueError("gpu_guard_unknown_role")
     if not (root / "knowledge.sqlite3").is_file():
         raise ValueError("gpu_guard_archive_missing")
@@ -117,11 +122,7 @@ def run(
                 root / ("pause-before-resume-" + str(time.time_ns()) + ".flag")
             )
         environment = {**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
-        log_name = (
-            "thermal-worker"
-            if guard_name == "gpu-thermal-guard"
-            else "thermal-wiki-revision"
-        )
+        log_name = log_names[guard_name]
         with (
             (root / (log_name + ".stdout.log")).open("ab") as stdout,
             (root / (log_name + ".stderr.log")).open("ab") as stderr,

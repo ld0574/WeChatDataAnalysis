@@ -191,6 +191,27 @@ def test_monitor_role_cannot_escape_archive(root):
     assert (root / "pause.flag").exists()
 
 
+def test_extraction_verifier_monitor_can_coexist_without_overwriting_other_roles(root):
+    worker = SimpleNamespace(pid=123, poll=lambda: 0, returncode=0)
+
+    def extraction(*args, **kwargs):
+        guard.run(root, [], sampler=reading, launch=lambda *a, **k: worker,
+                  guard_name="extraction-thermal-guard")
+        return worker
+
+    def revision(*args, **kwargs):
+        guard.run(root, [], sampler=reading, launch=extraction,
+                  guard_name="wiki-revision-thermal-guard")
+        return worker
+
+    guard.run(root, [], resume=True, sampler=reading, launch=revision)
+    for role in ("gpu-thermal-guard", "wiki-revision-thermal-guard", "extraction-thermal-guard"):
+        value = json.loads((root / (role + ".json")).read_bytes())
+        assert value["maximum_temperature_c"] == 70
+        assert not value["automatic_restart_allowed"]
+    assert (root / "thermal-extraction.stdout.log").exists()
+
+
 def test_revision_cli_preserves_explicit_review_history(root, monkeypatch):
     calls = []
     monkeypatch.setattr(

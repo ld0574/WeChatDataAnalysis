@@ -23,6 +23,7 @@ from pathlib import Path
 PORT = 11437
 MODEL = "qwen3.5:9b"
 PHRASE = "the quick brown fox jumps over the lazy dog"
+HANDOFF_POLICY = "frozen-payload-verified-before-gpu-permit-v1"
 
 
 def loopback_endpoint(address):
@@ -109,6 +110,77 @@ def restored_model_digests(bundle, manifest):
     if not expected:
         raise ValueError("environment_gpu_model_no_frozen_gguf_manifest")
     return expected
+
+
+def wait_for_gpu_permit(work, token, owner, manifest_sha256, *, cuda_initialized,
+                        timeout=3600, alive=None, sleep=time.sleep, monotonic=time.monotonic):
+    """Let the caller acquire its GPU lease after the expensive file verifier.
+
+    A fresh token and exact live owner distinguish this invocation from old
+    marker files. The restored process touches only its probe work directory.
+    """
+    import psutil
+
+    if cuda_initialized or not re.fullmatch(r"[a-f0-9]{64}", token):
+        raise ValueError("environment_gpu_permit_preflight_invalid")
+    if alive is None:
+        def alive():
+            try:
+                return abs(psutil.Process(owner[0]).create_time() - owner[1]) < .001
+            except psutil.NoSuchProcess:
+                return False
+    identity = {"pid": os.getpid(), "created": psutil.Process().create_time()}
+    ready = {**identity, "state": "frozen_payload_verified_waiting_gpu_permit",
+             "policy": HANDOFF_POLICY, "token": token, "manifest_sha256": manifest_sha256,
+             "cuda_initialized": False, "owner_pid": owner[0], "owner_created": owner[1]}
+    temporary = work / "gpu-ready.tmp"
+    temporary.write_text(json.dumps(ready), encoding="utf-8")
+    temporary.replace(work / "gpu-ready.json")
+    deadline = monotonic() + timeout
+    permit = work / ("gpu-permit-" + token + ".json")
+    while True:
+        if not alive():
+            raise ValueError("environment_gpu_permit_owner_exited")
+        if permit.exists():
+            value = json.loads(permit.read_bytes())
+            if any(value.get(k) != ready[k] for k in (
+                "policy", "token", "manifest_sha256", "pid", "created", "owner_pid", "owner_created"
+            )):
+                raise ValueError("environment_gpu_permit_identity_changed")
+            return HANDOFF_POLICY
+        if monotonic() >= deadline:
+            raise ValueError("environment_gpu_permit_timeout")
+        sleep(.5)
+
+
+def await_model_tags(client, process, work, *, timeout=180,
+                     monotonic=time.monotonic, sleep=time.sleep):
+    """Allow a cold manifest read to finish and retain transport diagnostics."""
+    import httpx
+
+    deadline = monotonic() + timeout
+    attempts = []
+    while True:
+        if process.poll() is not None:
+            raise ValueError("environment_gpu_ollama_server_exited")
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise ValueError("environment_gpu_ollama_startup_timeout")
+        started = monotonic()
+        try:
+            response = client.get("/api/tags", timeout=httpx.Timeout(
+                min(30, remaining), connect=min(2, remaining)))
+            if response.status_code not in {502, 503}:
+                response.raise_for_status()
+                tags = response.json()["models"]
+                attempts.append({"seconds": monotonic() - started, "status": response.status_code})
+                (work / "startup-status.json").write_text(json.dumps({"state": "ready", "attempts": attempts}), encoding="utf-8")
+                return tags
+            attempts.append({"seconds": monotonic() - started, "status": response.status_code})
+        except httpx.TransportError as exc:
+            attempts.append({"seconds": monotonic() - started, "error_type": type(exc).__name__})
+        (work / "startup-status.json").write_text(json.dumps({"state": "waiting", "attempts": attempts}), encoding="utf-8")
+        sleep(min(.5, max(0, deadline - monotonic())))
 
 
 def isolated_runtime(bundle, expected_manifest, *, bootstrap_path=None, bootstrap_sha256=None):
@@ -225,19 +297,7 @@ def ollama_probe(bundle, work, isolation, manifest):
         owner = psutil.Process(process.pid)
         try:
             with httpx.Client(base_url=f"http://127.0.0.1:{PORT}", trust_env=False, timeout=240) as client:
-                deadline = time.monotonic() + 90
-                while True:
-                    if process.poll() is not None:
-                        raise ValueError("environment_gpu_ollama_server_exited")
-                    try:
-                        response = client.get("/api/tags", timeout=2)
-                        response.raise_for_status()
-                        tags = response.json()["models"]
-                        break
-                    except httpx.TransportError:
-                        if time.monotonic() >= deadline:
-                            raise ValueError("environment_gpu_ollama_startup_timeout") from None
-                        time.sleep(0.5)
+                tags = await_model_tags(client, process, work)
                 selected = [r for r in tags if r["name"] == MODEL]
                 expected = restored_model_digests(bundle, manifest)
                 if len(selected) != 1 or selected[0]["digest"] not in expected:
@@ -292,7 +352,12 @@ def main():
     parser.add_argument("--bootstrap-sha256")
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--mode", choices=["asr", "ollama", "all"], required=True)
+    parser.add_argument("--gpu-permit-token")
+    parser.add_argument("--permit-owner-pid", type=int)
+    parser.add_argument("--permit-owner-created", type=float)
     args = parser.parse_args()
+    if args.gpu_permit_token and not (args.permit_owner_pid and args.permit_owner_created):
+        parser.error("GPU permit requires exact owner identity")
     bundle, work = args.bundle.resolve(), args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     bootstrap, manifest, roots, blocked = isolated_runtime(
@@ -301,6 +366,15 @@ def main():
     )
     def isolation(processes):
         return check_isolation(bundle, bootstrap, roots, blocked, processes)
+
+    handoff = "caller_already_holds_gpu_lease"
+    if args.gpu_permit_token:
+        import torch
+
+        isolation([])
+        handoff = wait_for_gpu_permit(
+            work, args.gpu_permit_token, (args.permit_owner_pid, args.permit_owner_created),
+            args.manifest_sha256, cuda_initialized=torch.cuda.is_initialized())
 
     if args.mode == "all":
         result, _ = asr_probe(bundle, work)
@@ -320,6 +394,7 @@ def main():
                "manifest_sha256": args.manifest_sha256, "files_verified": len(manifest["files"]),
                "bundle": str(bundle), "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                "probe_bootstrap_sha256": hashlib.sha256(Path(bootstrap.__file__).read_bytes()).hexdigest(),
+               "gpu_lease_handoff": handoff,
                "course_content_used": False, "source_deletion_allowed": False,
                "updated": time.time(), **result}
     (work / (args.mode + "-validation.json")).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
