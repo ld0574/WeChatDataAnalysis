@@ -1,5 +1,9 @@
 # Wiki 课件证据
 
+2026-11-03 较大上下文的真实有限范围已完成。文章 `8249ac233cc25e38b4e44c5d8f8bd0a7` 的页面、检索和 3 张来源图字节一致；正向报告 `3fd00527579cbafc24f15d724629206b` 为 2 supported／3 partial／9 unsupported。反向报告 `720123409291d273e49817f783eae007` 完成全部 5 组，29 个窗口中 15 covered／14 not_essential；5 次均第一次结构通过、stop 结束，实际上下文 16,384、显存 6,021,573,508 字节，最大输入 4,871 token、输出合计 3,681 token，最小剩余上下文空间 11,513 token。它证明本范围实际使用了新推理配置，并未覆盖旧失败的 7,914 token 输入压力，也不是语义通过。
+
+合并核查发现：15 项反向覆盖结论中，3 项没有任何正向 fully supported 的文章依据，7 项使用了至少一项未获充分支持的依据。来源核对与反向覆盖不能相互代替，不能依据“无 missing”验收。收据为 `wiki/large-context-pilot-terminal-20261103-validation.json`、`wiki/large-context-pilot-claim-consistency-20261103-diagnostic.json`。88 个输入、尝试、断点及报告文件共 757,123 字节已校验备份，收据 `wiki/large-context-pilot-terminal-backup-20261103-validation.json`。原有限进程已退出，旧批次终止行未变。其后仅为这篇新稿准备并启动一轮来源绑定修订，依据原正向报告处理 12 个目标；输入和运行脚本先行备份，不修改历史耗尽任务，也不循环修订。
+
 2026-11-03 新增显式文本推理配置 `local-text-gpu-context16384-output4000-v1`，仅用于尚未开始工作的反向检查。直接检查须同时选择 `--per-source --keyed-windows --window-batches --large-context`；批次使用 `--large-context-new-checks`，在规划前写入范围专属意图，恢复时沿用。上下文 16,384、最大输出 4,000，必须保存实际 GPU 占用、上下文长度、模型摘要和输入／输出 token 数；实际输入必须小于 12,384 token，并以 stop 结束。发布后重读会核对接受尝试的请求、输出、模型及度量与断点的绑定。旧默认值和旧耗尽预算保持，不能切换配置重新获得尝试。
 
 初始两组 135 项测试通过，增加请求绑定篡改检查后，文本推理组 24 项通过（原组 23 项）。覆盖模拟本地传输、实际发布夹具、断点恢复、不可切换旧预算、GPU／上下文证据篡改拒绝和独立恢复阅读器；这些测试未调用真实 GPU 模型。收据 `wiki/large-context-initial-20261103-tests.xml`、`wiki/large-context-batch-writer-20261103-tests.xml`、`wiki/large-context-request-binding-20261103-tests.xml`。真实有限范围试点尚待运行，不能算作语义验收。
