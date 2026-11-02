@@ -333,10 +333,8 @@ class DraftJob:
                 manager.__exit__(None, None, None)
             return
 
-    def stage(self, name, prompt, schema, context, validate, *, evidence_packet=None):
-        from .course_pdf_ocr import local_model_digest
-
-        self.store.checkpoint()
+    def stage_input(self, prompt, schema, context, *, evidence_packet=None):
+        """Derive the exact retained request identity without starting a model."""
         prompt += self.range_notice
         scoped = self.packet if evidence_packet is None else evidence_packet
         if not scoped["sources"] or any(
@@ -355,6 +353,16 @@ class DraftJob:
                 }
             )
         )
+        return schema, binding
+
+    def stage(self, name, prompt, schema, context, validate, *, evidence_packet=None):
+        from .course_pdf_ocr import local_model_digest
+
+        self.store.checkpoint()
+        schema, binding = self.stage_input(
+            prompt, schema, context, evidence_packet=evidence_packet
+        )
+        prompt += self.range_notice
         path = self.root / (name + ".json")
         if path.exists():
             cached = json.loads(path.read_text("utf-8"))

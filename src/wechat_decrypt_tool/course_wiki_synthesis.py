@@ -111,6 +111,29 @@ def limitations_schema(schema):
     return value
 
 
+def chapter_schema(job, name, schema, context, packet, heading):
+    """Pin new requests while preserving every prior stage's exact schema/budget."""
+    pinned = json.loads(json.dumps(schema))
+    pinned["properties"]["heading"]["enum"] = [heading]
+    candidates = {
+        job.stage_input(CHAPTER_PROMPT, candidate, context, evidence_packet=packet)[
+            1
+        ]: candidate
+        for candidate in (schema, pinned)
+    }
+    bindings = set()
+    path = job.root / (name + ".json")
+    if path.exists():
+        bindings.add(json.loads(path.read_bytes())["input_sha256"])
+    for attempt in (job.root / "attempts").glob(name + "-*.json"):
+        bindings.add(json.loads(attempt.read_bytes())["input_sha256"])
+    if not bindings:
+        return pinned
+    if len(bindings) != 1 or not bindings <= candidates.keys():
+        raise ValueError("wiki_chapter_retained_schema_binding_changed")
+    return candidates[next(iter(bindings))]
+
+
 def bounded(value, maximum):
     nonempty(value)
     if len(value) > maximum:
@@ -452,22 +475,30 @@ def generate(
                 previous = [
                     p["text"].strip() for s in sections for p in s["paragraphs"]
                 ]
+                context = bounded_context(
+                    {
+                        "topic": packet["title"],
+                        "chapter_navigation": navigation,
+                        "current_section": {
+                            "heading": spec["heading"],
+                            "question": spec["focus"],
+                        },
+                        "selected_code": selected,
+                        "sources": scoped["sources"],
+                    }
+                )
                 value = body_stage(
                     f"chapter-{number}",
                     CHAPTER_PROMPT,
-                    pinned_schema if selected else section_schema,
-                    bounded_context(
-                        {
-                            "topic": packet["title"],
-                            "chapter_navigation": navigation,
-                            "current_section": {
-                                "heading": spec["heading"],
-                                "question": spec["focus"],
-                            },
-                            "selected_code": selected,
-                            "sources": scoped["sources"],
-                        }
+                    chapter_schema(
+                        legacy_job,
+                        f"chapter-{number}",
+                        pinned_schema if selected else section_schema,
+                        context,
+                        scoped,
+                        spec["heading"],
                     ),
+                    context,
                     lambda value, s=scoped, p=spec, code=selected: validate_section(
                         attach_code(value, code), s, p, previous
                     ),
