@@ -296,6 +296,11 @@ def _build(store):
     ]
     if resources is None:
         gaps.append({"code": "retained_resource_manifest_missing"})
+    from .course_resource_resolutions import observe
+
+    resolutions = observe(
+        store, load, inventory=inventory, extraction=extraction, resources=resources
+    )
     result = {
         "version": 1,
         "policy": POLICY,
@@ -359,6 +364,7 @@ def _build(store):
             "pdf_warnings": extraction.get("pdf_warnings", []) if extraction else [],
             "historical_findings_require_current_resolution_check": True,
         },
+        "current_resource_resolutions": resolutions,
         "no_audio_sources": inventory.get("excluded_without_audio", []),
         "excluded_source_errors": inventory.get("excluded_errors", []),
         "database_states": dict(Counter(r["database_state"] for r in courses)),

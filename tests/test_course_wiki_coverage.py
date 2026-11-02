@@ -124,7 +124,25 @@ def test_some_indexed_chunks_do_not_certify_whole_resource_or_wiki_document_supp
     assert result["recorded_index_findings"][
         "historical_findings_require_current_resolution_check"
     ]
+    assert len(result["current_resource_resolutions"]["unverified_errors"]) == 1
+    assert len(result["current_resource_resolutions"]["unverified_pending"]) == 1
+    assert result["current_resource_resolutions"]["resolved_csv_skips"] == []
     assert "private source prose" not in json.dumps(result)
+
+
+def test_new_resolution_receipt_marks_snapshot_stale_without_http_database_scan(published, monkeypatch):
+    from wechat_decrypt_tool.course_resource_resolutions import CSV_RECEIPT
+
+    store, _ = published
+    build(store)
+    ro = ReadOnlyArchive(store.root)
+    client = TestClient(create_app(ro))
+    monkeypatch.setattr(ro, "connect", lambda: pytest.fail("HTTP must not scan DB"))
+    atomic_json(store.root / CSV_RECEIPT, {})
+    result = client.get("/wiki/api/coverage")
+    assert result.status_code == 200
+    assert result.json()["stale_inputs"] == [CSV_RECEIPT]
+    assert result.json()["current_resource_resolutions"]["resolved_csv_skips"] == []
 
 
 def test_stale_inventory_or_tampered_article_never_replaces_previous_ledger(

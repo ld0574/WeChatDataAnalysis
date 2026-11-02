@@ -996,10 +996,10 @@ async function coverage(version) {
     `课程范围：${d.scope.canonical_audio_courses} 节有声课；另有 ${d.scope.excluded_no_audio_sources} 节无声来源。`,
     `转写：${d.summary.transcribed_courses} 节；已发布来源笔记：${d.summary.source_notes_published} 节。`,
     `主题草稿：${d.summary.draft_articles} 篇（保留 ${d.summary.draft_article_versions ?? d.summary.draft_articles} 个版本）；引用涉及 ${d.summary.courses_with_draft_citations} 节课，还有 ${d.summary.courses_without_draft_citations} 节未被文章引用。`,
-    `课件与附件：清单保留 ${d.scope.retained_resource_paths} 个路径，待处理 ${d.scope.pending_resource_paths ?? "未知"} 个；其中 ${d.summary.retained_paths_with_some_indexed_chunks} 个有部分检索片段。`,
+    `课件与附件：清单保留 ${d.scope.retained_resource_paths} 个路径，早期清单待评估 ${d.scope.pending_resource_paths ?? "未知"} 个；其中 ${d.summary.retained_paths_with_some_indexed_chunks} 个有部分检索片段。`,
     `主题文章已引用 ${d.summary.draft_cited_document_chunks ?? 0} 个课件片段，涉及 ${d.summary.resource_paths_with_draft_citations ?? 0} 个附件路径；这不代表全文已整理。`,
   ]));
-  summary.append(notice("提取成功、已被文章引用都不能证明知识完整。主题文章仍待语义复核，课件证据尚未接入文章；原视频继续保留。"));
+  summary.append(notice("提取成功、已被文章引用都不能证明知识完整。主题文章仍待语义复核，课件、图文与主题的完整覆盖仍需核对；原视频继续保留。"));
   if (d.summary.source_identity_mismatches || d.issues.length)
     summary.append(notice(`需核对：${d.summary.source_identity_mismatches} 节来源身份不一致，${d.issues.length} 项引用问题。`));
   main.append(summary);
@@ -1074,11 +1074,32 @@ async function coverage(version) {
     const box = el("details");
     box.append(el("summary", `${title}（${values.length}）`));
     box.append(list(values.map((r) => typeof r === "string" ? r :
-      [r.relative_path || r.path || "未命名来源", r.reason || r.error || r.code].filter(Boolean).join(" · "),
+      [r.relative_path || r.path || "未命名来源", r.member, r.reason || r.error || r.code].filter(Boolean).join(" · "),
     )));
     gaps.append(box);
   }
-  detail("待处理课件与附件", d.pending_resources);
+  const resolutions = d.current_resource_resolutions;
+  if (resolutions) {
+    const observed = new Date(resolutions.observed * 1000).toLocaleString(
+      "zh-CN", { timeZone: "Asia/Shanghai", hour12: false },
+    );
+    gaps.append(el("h3", "历史记录的后续核对"));
+    gaps.append(el("p", `核对时间：${observed}（北京时间）。沿用以前的内容校验，并检查当前版本、数量与文件属性；不代表重新读完所有内容或完成图文、语义验收。`, "muted"));
+    gaps.append(list([
+      `已核实完成 CSV 索引的历史跳过项：${resolutions.resolved_csv_skips.length} 个。`,
+      `已在有声课程范围内核实音轨归档的早期待评估来源：${resolutions.accounted_pending_audio.length} 个；课程笔记和画面仍按逐课状态处理。`,
+      `已有加密诊断、仍未提取的 Office 课件：${resolutions.known_encrypted_office.length} 个。`,
+      `尚未得到当前证据确认：${resolutions.unverified_skips.length} 个历史跳过项、${resolutions.unverified_errors.length} 个历史错误、${resolutions.unverified_pending.length} 个早期待评估来源。`,
+    ]));
+    detail("已核实的 CSV 历史跳过项", resolutions.resolved_csv_skips.map((r) => ({
+      ...r, reason: `${r.rows.toLocaleString()} 行，${r.active_chunks.toLocaleString()} 个活动检索片段`,
+    })));
+    detail("已核实音轨归档的早期待评估来源", resolutions.accounted_pending_audio);
+    detail("加密且仍未提取的 Office 课件", resolutions.known_encrypted_office);
+    if (resolutions.receipt_issues.length)
+      gaps.append(el("p", "部分后续核对凭据缺失或已变化；对应来源继续列为未确认，不算已补齐。", "muted"));
+  }
+  detail("早期待评估课件与附件（原始记录）", d.pending_resources);
   detail("无声来源（仍保留在范围中）", d.no_audio_sources);
   detail("来源读取排除项", d.excluded_source_errors);
   const findings = d.recorded_index_findings;
