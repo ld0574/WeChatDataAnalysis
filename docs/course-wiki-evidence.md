@@ -197,3 +197,5 @@ Wiki 写作计划现在可以混合视频窗口与课件片段。课件选择使
 发布后快照递归保留正文任务、旧自测任务的全部 JSON、原失败回复及新任务；读取时重新核对完整恢复谱系、单次预算和所需阶段。来源或断点变化、丢失时拒绝，不能用自洽重算文件清单掩盖来源损失。相关回归 71 项通过，最终增加消息顺序检查后的专门测试 10 项通过（`wiki/criteria-repair-regression-20261102-tests.xml`、`wiki/criteria-repair-final-v2-20261102-tests.xml`），包括真实独立恢复阅读与中断后的预算保留。通过结构检查仍不表示题目、解释和整门课程在语义上合格。
 
 本次 16 项目录批次已结束，7 项双向检查完成、9 项失败待处理。终轮实际 HTTP 校验覆盖 11 篇草稿、7 对报告及 18 张原图：`wiki/finite-final-http-20261102-validation.json`。随后一次冻结修订完成了 16 个生成步骤，但删去一道无法支持的自测后只剩 3 题，与原 4 题范围不符，未发布；原稿和全部中间结果保留，未自动重写。具体收据：`wiki/third-revision-terminal-20261102-diagnostic.json`。
+
+实际自测恢复任务 `a974783988a21985eb3f6d0564b378e9` 的三个新调用均已接受，旧第一题及全部正文复用，原任务和正文任务的全部文件哈希未变。但四题均未生成有出处的易错点，整篇的全局限制检查拒绝发布；没有把局部成功标成文章完成。候选稿保存于该任务的 `unpublished-candidate.json`，单次调用预算不刷新。该缺口需要另一个明确绑定既有结果、具有独立有限预算的限制说明阶段，或保留为无法发布的资料问题；不能凭空添写易错点。收据：`wiki/criteria-repair-actual-20261102-validation.json`。输入和实际结果分别已在 C 盘备份并逐文件重算哈希：`wiki/criteria-repair-input-backup-20261102-validation.json`、`wiki/criteria-repair-result-backup-20261102-validation.json`。
