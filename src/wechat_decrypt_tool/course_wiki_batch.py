@@ -230,7 +230,50 @@ def prepare_allocations(store, partitions, *, model="qwen3.5:9b"):
         }
 
 
-def run(store, key, *, wait_seconds=3600, max_items=None):
+def check_constraints(folder, key, spec, row, requested):
+    """Pin a new item's evidence grammar before any model can be called.
+
+    Legacy attempts keep their original grammar. A durable intent also survives
+    a crash between its creation and the first progress write.
+    """
+    from .course_wiki_check_constraints import GENERATION_POLICY
+
+    spec_sha = digest(canonical(spec))
+    path = folder / "check-execution-intents" / (spec_sha + ".json")
+    expected = {
+        "policy": "new-batch-item-check-execution-v1",
+        "batch": key,
+        "item": item_key(spec),
+        "spec_sha256": spec_sha,
+        "generation_constraints": GENERATION_POLICY,
+    }
+    if path.exists():
+        value = json.loads(path.read_bytes())
+        sha = digest(canonical(value))
+        if (
+            value != expected
+            or requested is False
+            or row.get("check_execution_sha256", sha) != sha
+            or ("check_execution_sha256" not in row and row["state"] != "pending")
+        ):
+            raise ValueError("wiki_batch_check_execution_intent_changed")
+    else:
+        if "check_execution_sha256" in row:
+            raise ValueError("wiki_batch_check_execution_intent_missing")
+        if requested is not True:
+            return False
+        if row["state"] != "pending" or "planning_job" in row or "article" in row:
+            raise ValueError("wiki_batch_check_constraints_require_unstarted_item")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(path, expected)
+        sha = digest(canonical(expected))
+    row["check_execution_sha256"] = sha
+    return True
+
+
+def run(store, key, *, wait_seconds=3600, max_items=None, constrained_new_checks=None):
+    if constrained_new_checks is not None and type(constrained_new_checks) is not bool:
+        raise ValueError("wiki_batch_invalid_check_constraint_option")
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
         raise ValueError("wiki_batch_invalid_gpu_wait")
     if max_items is not None and (
@@ -303,6 +346,11 @@ def run(store, key, *, wait_seconds=3600, max_items=None):
                         ),
                     )
                 processed += 1
+                check_options = (
+                    {"constrained_evidence": True}
+                    if check_constraints(folder, key, spec, row, constrained_new_checks)
+                    else {}
+                )
                 if (
                     digest(canonical(Library(store.root).lesson(video)))
                     != spec["lesson_sha256"]
@@ -378,6 +426,7 @@ def run(store, key, *, wait_seconds=3600, max_items=None):
                     model,
                     wait_seconds=wait_seconds,
                     single_targets=True,
+                    **check_options,
                 )
                 published_review(store.root, row["article"], job=forward["job"])
                 row.update(
@@ -392,6 +441,7 @@ def run(store, key, *, wait_seconds=3600, max_items=None):
                     model,
                     wait_seconds=wait_seconds,
                     per_source=True,
+                    **check_options,
                 )
                 published_report(store.root, row["article"], job=reverse["job"])
                 row.update(
@@ -444,6 +494,9 @@ def main():
         execute.add_argument("--batch", required=True)
         execute.add_argument("--wait-gpu-seconds", type=int, default=3600)
         execute.add_argument("--max-items", type=int)
+        execute.add_argument(
+            "--constrained-new-checks", action="store_true", default=None
+        )
     args = parser.parse_args()
     if args.command == "guard":
         job_id(args.batch)
@@ -465,6 +518,7 @@ def main():
                     if args.max_items is not None
                     else []
                 ),
+                *(["--constrained-new-checks"] if args.constrained_new_checks else []),
             ],
             maximum_power=200,
             maximum_temperature=70,
@@ -484,6 +538,7 @@ def main():
             args.batch,
             wait_seconds=args.wait_gpu_seconds,
             max_items=args.max_items,
+            constrained_new_checks=args.constrained_new_checks,
         )
     print(json.dumps({k: v for k, v in result.items() if k in {"state", "batch"}}))
 

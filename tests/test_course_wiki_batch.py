@@ -434,3 +434,161 @@ def test_slice_counts_failed_item_without_retry_or_starting_next(pipeline, monke
         "pending",
     ]
     assert pipeline.calls == ["failed"]
+
+
+def test_new_check_constraints_are_bound_before_models_and_sent_to_both_checks(
+    pipeline, monkeypatch
+):
+    p = pipeline
+    key = batch.prepare(p.store, limit=2)["batch"]
+    seen = []
+    original = batch.review
+
+    def check(*args, **kwargs):
+        assert kwargs["constrained_evidence"] is True
+        progress = json.loads(
+            (p.store.root / f"wiki/theme-batches/{key}/progress.json").read_bytes()
+        )
+        row = progress["courses"]["video-0"]
+        assert row["check_execution_sha256"]
+        seen.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(batch, "review", check)
+    monkeypatch.setattr(batch, "omissions", check)
+    result = batch.run(p.store, key, max_items=1, constrained_new_checks=True)
+    assert result["courses"]["video-0"]["state"] == "draft_checks_complete"
+    assert len(seen) == 2
+    folder, _ = batch.manifest(p.store.root, key)
+    assert len(list((folder / "check-execution-intents").glob("*.json"))) == 1
+    assert result["courses"]["video-1"]["state"] == "pending"
+
+
+def test_constraint_intent_resumes_after_gpu_wait_without_flag(pipeline, monkeypatch):
+    p = pipeline
+    key = batch.prepare(p.store, limit=1)["batch"]
+    original = batch.propose
+
+    def busy(*a, **kw):
+        raise GpuBusyError("Synthetic shared GPU is occupied")
+
+    monkeypatch.setattr(batch, "propose", busy)
+    assert (
+        batch.run(p.store, key, constrained_new_checks=True)["state"] == "deferred_gpu"
+    )
+    monkeypatch.setattr(batch, "propose", original)
+    original_check = batch.review
+
+    def check(*a, **kw):
+        assert kw["constrained_evidence"] is True
+        return original_check(*a, **kw)
+
+    monkeypatch.setattr(batch, "review", check)
+    monkeypatch.setattr(batch, "omissions", check)
+    assert (
+        batch.run(p.store, key)["courses"]["video-0"]["state"]
+        == "draft_checks_complete"
+    )
+
+
+@pytest.mark.parametrize("change", ["remove", "tamper", "switch"])
+def test_bound_constraint_intent_cannot_be_removed_changed_or_switched(
+    pipeline, monkeypatch, change
+):
+    p = pipeline
+    key = batch.prepare(p.store, limit=1)["batch"]
+    original = batch.propose
+
+    def busy(*a, **kw):
+        raise GpuBusyError("Synthetic shared GPU is occupied")
+
+    monkeypatch.setattr(batch, "propose", busy)
+    batch.run(p.store, key, constrained_new_checks=True)
+    folder, _ = batch.manifest(p.store.root, key)
+    intent = next((folder / "check-execution-intents").glob("*.json"))
+    if change == "remove":
+        intent.unlink()
+    elif change == "tamper":
+        value = json.loads(intent.read_bytes())
+        value["generation_constraints"] = "changed"
+        atomic_json(intent, value)
+    monkeypatch.setattr(batch, "propose", original)
+    result = batch.run(
+        p.store, key, constrained_new_checks=False if change == "switch" else None
+    )
+    assert result["courses"]["video-0"]["state"] == "needs_review"
+    assert not p.calls
+
+
+def test_constraint_opt_in_never_changes_previously_started_legacy_item(
+    pipeline, monkeypatch
+):
+    p = pipeline
+    key = batch.prepare(p.store, limit=1)["batch"]
+
+    def busy(*a, **kw):
+        raise GpuBusyError("Synthetic shared GPU is occupied")
+
+    monkeypatch.setattr(batch, "generate", busy)
+    assert batch.run(p.store, key)["state"] == "deferred_gpu"
+    before = list(p.calls)
+    result = batch.run(p.store, key, constrained_new_checks=True)
+    assert result["courses"]["video-0"]["state"] == "needs_review"
+    assert p.calls == before
+
+
+@pytest.mark.parametrize("value", [0, 1, "true", []])
+def test_check_constraint_option_rejects_non_booleans_before_models(pipeline, value):
+    key = batch.prepare(pipeline.store, limit=1)["batch"]
+    with pytest.raises(ValueError, match="invalid_check_constraint_option"):
+        batch.run(pipeline.store, key, constrained_new_checks=value)
+    assert not pipeline.calls
+
+
+def test_constraint_intent_recovers_crash_before_progress_write(pipeline):
+    p = pipeline
+    key = batch.prepare(p.store, limit=1)["batch"]
+    folder, recipe = batch.manifest(p.store.root, key)
+    first = {"state": "pending"}
+    assert batch.check_constraints(folder, key, recipe["courses"][0], first, True)
+    recovered = {"state": "pending"}
+    assert batch.check_constraints(folder, key, recipe["courses"][0], recovered, None)
+    assert first == recovered
+    assert not p.calls
+
+
+def test_enabling_new_constraints_never_rechecks_terminal_legacy_rows(pipeline):
+    p = pipeline
+    key = batch.prepare(p.store, limit=1)["batch"]
+    batch.run(p.store, key)
+    before = list(p.calls)
+    batch.run(p.store, key, constrained_new_checks=True)
+    folder, _ = batch.manifest(p.store.root, key)
+    assert not (folder / "check-execution-intents").exists()
+    assert p.calls == before
+
+
+def test_guard_forwards_new_check_constraint_option(pipeline, monkeypatch):
+    commands = []
+    monkeypatch.setattr(
+        batch, "gpu_guard", lambda root, command, **kw: commands.append(command)
+    )
+    monkeypatch.setattr(
+        batch.sys,
+        "argv",
+        [
+            "batch",
+            "--root",
+            str(pipeline.store.root),
+            "guard",
+            "--batch",
+            "a" * 32,
+            "--max-items",
+            "2",
+            "--constrained-new-checks",
+        ],
+    )
+    batch.main()
+    assert commands[0][-1] == "--constrained-new-checks"
+    assert commands[0][commands[0].index("--max-items") + 1] == "2"
+    assert not pipeline.calls
