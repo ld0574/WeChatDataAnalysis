@@ -1,5 +1,7 @@
 # Wiki 课件证据
 
+2026-11-03 修复按课程读取截图的全表扫描：原查询 `SELECT * FROM frames WHERE video=? ORDER BY time,id` 的实际计划为 `SCAN frames` 加临时排序；新增 `frame_video_time(video,time,id)` 后为索引查找且无需临时排序。60 项数据库、发布及队列测试通过，覆盖旧库迁移、相同时间的稳定排序、记录与全文检索不变、空库和已有连接自动重规划。已通过 schema／writer 租约在现有 WAL 库中原子补齐，耗时 1.242 秒，4,727 条截图记录未增删改，主进程 6640 身份保持。最近完成来源的 290 段语音、105 张截图、49 个笔记窗口在索引后重新验证通过；阅读器目录与本机一致，目前发布 42／340 节来源笔记、5,516 个术语。收据 `wiki/frame-lookup-live-migration-20261103-validation.json` 和 `wiki/frame-lookup-current-source-20261103-validation.json`；查询计划改善不能换算成未经测量的全任务加速倍数。
+
 2026-11-03 较大上下文的真实有限范围已完成。文章 `8249ac233cc25e38b4e44c5d8f8bd0a7` 的页面、检索和 3 张来源图字节一致；正向报告 `3fd00527579cbafc24f15d724629206b` 为 2 supported／3 partial／9 unsupported。反向报告 `720123409291d273e49817f783eae007` 完成全部 5 组，29 个窗口中 15 covered／14 not_essential；5 次均第一次结构通过、stop 结束，实际上下文 16,384、显存 6,021,573,508 字节，最大输入 4,871 token、输出合计 3,681 token，最小剩余上下文空间 11,513 token。它证明本范围实际使用了新推理配置，并未覆盖旧失败的 7,914 token 输入压力，也不是语义通过。
 
 合并核查发现：15 项反向覆盖结论中，3 项没有任何正向 fully supported 的文章依据，7 项使用了至少一项未获充分支持的依据。来源核对与反向覆盖不能相互代替，不能依据“无 missing”验收。收据为 `wiki/large-context-pilot-terminal-20261103-validation.json`、`wiki/large-context-pilot-claim-consistency-20261103-diagnostic.json`。88 个输入、尝试、断点及报告文件共 757,123 字节已校验备份，收据 `wiki/large-context-pilot-terminal-backup-20261103-validation.json`。原有限进程已退出，旧批次终止行未变。其后仅为这篇新稿准备并启动一轮来源绑定修订，依据原正向报告处理 12 个目标；输入和运行脚本先行备份，不修改历史耗尽任务，也不循环修订。

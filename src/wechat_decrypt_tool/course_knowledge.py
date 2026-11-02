@@ -234,6 +234,7 @@ class KnowledgeStore:
               CREATE TABLE IF NOT EXISTS frames(
                 id INTEGER PRIMARY KEY,video TEXT,time REAL,path TEXT UNIQUE,
                 description TEXT DEFAULT '',status TEXT DEFAULT 'pending',search_text TEXT DEFAULT '',model TEXT DEFAULT '');
+              CREATE INDEX IF NOT EXISTS frame_video_time ON frames(video,time,id);
               CREATE TABLE IF NOT EXISTS notes(
                 video TEXT,window INTEGER,data TEXT,model TEXT,status TEXT,
                 PRIMARY KEY(video,window));
