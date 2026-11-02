@@ -1,5 +1,7 @@
 import sys
 import types
+import os
+import importlib.machinery
 from pathlib import Path
 
 import pytest
@@ -57,6 +59,30 @@ def test_only_identity_bound_entrypoint_aliases_can_be_trusted(tmp_path, monkeyp
     assert set(bootstrap.outside_module_names(tmp_path, script)) == {"external", "__mp_main__"}
 
 
+def test_installed_project_copy_inside_bundle_is_still_rejected(tmp_path, monkeypatch):
+    module = types.ModuleType("wechat_decrypt_tool.asr_backends")
+    monkeypatch.setattr(bootstrap, "sys", types.SimpleNamespace(modules={module.__name__: module}))
+    module.__file__ = str(tmp_path / "site-packages/wechat_decrypt_tool/asr_backends.py")
+    assert bootstrap.outside_module_names(tmp_path) == [module.__name__]
+    module.__file__ = str(tmp_path / "src/wechat_decrypt_tool/asr_backends.py")
+    assert bootstrap.outside_module_names(tmp_path) == []
+
+
+def test_activation_resolves_frozen_source_before_old_installed_package(tmp_path, monkeypatch):
+    for folder, marker in (("src", "canonical"), ("site-packages", "obsolete")):
+        path = tmp_path / folder / "source_precedence_probe"
+        path.mkdir(parents=True)
+        (path / "__init__.py").write_text("marker=" + repr(marker))
+    fake_sys = types.SimpleNamespace(executable=str(tmp_path / "python/python.exe"),
+                                     base_prefix=str(tmp_path / "python"), path=[])
+    monkeypatch.setattr(bootstrap, "BUNDLE", tmp_path)
+    monkeypatch.setattr(bootstrap, "sys", fake_sys)
+    monkeypatch.setattr(bootstrap, "os", types.SimpleNamespace(environ={}, pathsep=os.pathsep))
+    bootstrap.activate()
+    spec = importlib.machinery.PathFinder.find_spec("source_precedence_probe", fake_sys.path)
+    assert Path(spec.origin) == tmp_path / "src/source_precedence_probe/__init__.py"
+
+
 def test_bootstrap_companion_must_match_its_own_anchor(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["bootstrap", "--bundle", str(tmp_path),
                                      "--bootstrap-sha256", "0" * 64, "probe"])
@@ -80,12 +106,17 @@ def test_gpu_rejects_unanchored_bootstrap_before_import(tmp_path):
 @pytest.mark.parametrize("key,value", [
     ("files_verified", 0), ("probe_bootstrap_sha256", "different"),
     ("companion_bootstrap", False), ("gpu_context_initialized", True),
+    ("project_source_policy", "obsolete"), ("project_modules_from_canonical_source", False),
+    ("asr_backend_full_precision_contract_verified", False),
     ("original_installation_access_attempts", 1), ("network_connection_attempts", 1),
     ("outside_module_count", 1), ("original_installation_native_mapping_count", 1),
 ])
 def test_companion_cannot_accept_missing_files_changed_code_or_any_isolation_failure(key, value):
     result = {"state": "isolated_cpu_and_native_synthetic_probe_verified", "files_verified": 12,
               "probe_bootstrap_sha256": "anchored", "companion_bootstrap": True,
+              "project_source_policy": "frozen-bundle-src-before-site-packages-v1",
+              "project_modules_from_canonical_source": True,
+              "asr_backend_full_precision_contract_verified": True,
               "gpu_context_initialized": False, "gpu_inference_verified": False,
               "original_installation_access_attempts": 0, "network_connection_attempts": 0,
               "outside_module_count": 0, "original_installation_native_mapping_count": 0}

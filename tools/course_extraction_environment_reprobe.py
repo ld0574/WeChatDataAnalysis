@@ -20,6 +20,9 @@ def validate_probe(result, count, bootstrap_sha256):
         or result.get("files_verified") != count
         or result.get("probe_bootstrap_sha256") != bootstrap_sha256
         or result.get("companion_bootstrap") is not True
+        or result.get("project_source_policy") != "frozen-bundle-src-before-site-packages-v1"
+        or result.get("project_modules_from_canonical_source") is not True
+        or result.get("asr_backend_full_precision_contract_verified") is not True
         or result.get("gpu_context_initialized") is not False
         or result.get("gpu_inference_verified") is not False
         or any(result.get(key) != 0 for key in (

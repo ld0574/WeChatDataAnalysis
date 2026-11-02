@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 
 BUNDLE = Path(__file__).resolve().parent
 POLICY = "offline-windows-course-extraction-environment-v1"
+PROJECT_SOURCE_POLICY = "frozen-bundle-src-before-site-packages-v1"
 
 
 def sha(path):
@@ -104,7 +105,9 @@ def activate():
     os.environ["PATH"] = (
         os.pathsep.join(map(str, native)) + os.pathsep + os.environ.get("PATH", "")
     )
-    sys.path[:0] = [str(BUNDLE / "site-packages"), str(BUNDLE / "src")]
+    # A wheel-installed project copy may also exist in site-packages. Always
+    # execute the separately frozen source component, not that older copy.
+    sys.path[:0] = [str(BUNDLE / "src"), str(BUNDLE / "site-packages")]
 
 
 def original_native_mappings(paths, roots):
@@ -160,7 +163,12 @@ def outside_module_names(bundle, trusted_entrypoint=None):
             and origin.resolve() == trusted_entrypoint.resolve()
         ):
             continue
-        if not origin.is_absolute() or not origin.resolve().is_relative_to(bundle.resolve()):
+        project_module = name == "wechat_decrypt_tool" or name.startswith("wechat_decrypt_tool.")
+        if (
+            not origin.is_absolute()
+            or not origin.resolve().is_relative_to(bundle.resolve())
+            or (project_module and not origin.resolve().is_relative_to(bundle / "src/wechat_decrypt_tool"))
+        ):
             outside.append(name)
     return outside
 
@@ -214,7 +222,9 @@ def probe(manifest, plan, *, trusted_entrypoint=None):
     processor = AutoProcessor.from_pretrained(
         BUNDLE / "voice_models/qwen3-asr-06b-hf", local_files_only=True
     )
-    from wechat_decrypt_tool.asr_backends import read_audio
+    from wechat_decrypt_tool.asr_backends import QwenGpuBackend, read_audio
+    if not callable(getattr(QwenGpuBackend, "use_full_precision", None)):
+        raise ValueError("environment_asr_backend_full_precision_contract_missing")
     from pypdf import PdfWriter
     from PIL import Image
 
@@ -284,6 +294,9 @@ def probe(manifest, plan, *, trusted_entrypoint=None):
         "original_installation_access_attempts": len(original_access),
         "network_connection_attempts": len(network_access),
         "outside_module_count": len(outside),
+        "project_source_policy": PROJECT_SOURCE_POLICY,
+        "project_modules_from_canonical_source": True,
+        "asr_backend_full_precision_contract_verified": True,
         "original_installation_native_mapping_count": len(native_originals),
         "gpu_context_initialized": False,
         "gpu_inference_verified": False,

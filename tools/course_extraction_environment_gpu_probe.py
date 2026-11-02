@@ -66,7 +66,10 @@ def isolated_runtime(bundle, expected_manifest, *, bootstrap_path=None, bootstra
     bootstrap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bootstrap)
     bootstrap.BUNDLE = bundle
-    if not hasattr(bootstrap, "outside_module_names"):
+    if (
+        not hasattr(bootstrap, "outside_module_names")
+        or getattr(bootstrap, "PROJECT_SOURCE_POLICY", None) != "frozen-bundle-src-before-site-packages-v1"
+    ):
         raise ValueError("environment_gpu_origin_aware_bootstrap_required")
     manifest, plan = bootstrap.verify()
     bootstrap.activate()
@@ -104,12 +107,15 @@ def check_isolation(bundle, bootstrap, roots, blocked, processes):
     if outside or native or blocked:
         raise ValueError("environment_gpu_probe_not_isolated")
     return {"outside_module_count": 0, "original_native_mapping_count": 0,
+            "project_modules_from_canonical_source": True,
             "blocked_access_attempts": 0}
 
 
 def asr_probe(bundle, work):
     import torch
     from wechat_decrypt_tool.asr_backends import QwenGpuBackend, read_audio
+    if not callable(getattr(QwenGpuBackend, "use_full_precision", None)):
+        raise ValueError("environment_gpu_asr_full_precision_contract_missing")
 
     audio = work / "synthetic-speech.wav"
     # Windows SAPI is a platform requirement. No sound is sent to speakers.
