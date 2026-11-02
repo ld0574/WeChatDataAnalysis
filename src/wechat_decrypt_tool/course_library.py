@@ -365,6 +365,40 @@ def create_app(store, model="qwen3.5:9b"):
     library = Library(store.root)
     resources = Path(__file__).parent / "resources"
 
+    from threading import BoundedSemaphore
+
+    archive_slots = BoundedSemaphore(2)
+
+    def archive_read(operation, *args, **kwargs):
+        from .course_wiki_archive_search import ArchiveSearchUnavailable, SourceChanged
+
+        if not archive_slots.acquire(blocking=False):
+            raise HTTPException(429, "课件检索正在处理，请稍后重试。")
+        try:
+            return operation(store, *args, **kwargs)
+        except ArchiveSearchUnavailable as exc:
+            raise HTTPException(503, str(exc)) from None
+        except SourceChanged as exc:
+            raise HTTPException(409, str(exc)) from None
+        except KeyError:
+            raise HTTPException(404, "未找到保留的课件片段。") from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        finally:
+            archive_slots.release()
+
+    @app.get("/wiki/api/courseware/search")
+    def courseware_search(q: str = "", after: int = 0, limit: int = 20):
+        from .course_wiki_archive_search import search
+
+        return archive_read(search, q, after=after, limit=limit)
+
+    @app.get("/wiki/api/courseware/document/{key}")
+    def courseware_document(key: int, revision: str, text_sha256: str, offset: int = 0):
+        from .course_wiki_archive_search import document
+
+        return archive_read(document, key, revision, text_sha256, offset=offset)
+
     @app.get("/wiki/image/{sha}.{extension}")
     def courseware_image(sha: str, extension: str):
         from .course_wiki_documents import retained_image
@@ -588,10 +622,16 @@ def main(argv=None):
     parser.add_argument("--model", default="qwen3.5:9b")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("build")
+    sub.add_parser("prepare-courseware-search")
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=3003)
     args = parser.parse_args(argv)
-    if args.command == "build":
+    if args.command == "prepare-courseware-search":
+        from .course_wiki_archive_search import prepare_index
+
+        prepare_index(args.root)
+        print(json.dumps({"state": "courseware_search_index_ready"}))
+    elif args.command == "build":
         value = publish(ReadOnlyArchive(args.root))
         print(
             json.dumps({k: value[k] for k in ("published", "requested", "term_count")})

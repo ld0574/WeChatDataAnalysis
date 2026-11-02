@@ -36,6 +36,13 @@ baseline = blocked
 from wechat_decrypt_tool.course_wiki_snapshot import smoke  # noqa: E402
 
 result = smoke(root)
+from fastapi.testclient import TestClient  # noqa: E402
+from wechat_decrypt_tool.course_library import create_app  # noqa: E402
+from wechat_decrypt_tool.course_wiki_snapshot import PublishedStore  # noqa: E402
+
+with TestClient(create_app(PublishedStore(root))) as client:
+    if client.get("/wiki/api/courseware/search", params={"q": "synthetic"}).status_code != 503:
+        raise RuntimeError("restored_reader_did_not_explain_full_archive_search_limit")
 modules = [
     module
     for name, module in sys.modules.items()

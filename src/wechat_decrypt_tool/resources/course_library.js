@@ -1089,6 +1089,77 @@ async function coverage(version) {
   main.append(gaps);
   toc([["范围与状态", summary.id], ["逐课缺口", courses.id], ["待验收项", gaps.id]]);
 }
+function coursewareReference(row) {
+  return `#document=${row.id}/${row.revision}/${row.text_sha256}`;
+}
+async function courseware(query, version) {
+  heading("课件检索", "保留的原始提取文字");
+  main.append(el("p", "搜索已入库的讲义和课件，不受文章或课程笔记发布数量限制。多个检索词需同时出现，中文按字匹配；结果按片段编号排列。", "lead"));
+  main.append(notice("提取文字可能遗漏扫描页、动画或排版信息。命中片段不代表整份课件已完整提取；本页不会启动模型或重新扫描原文件。"));
+  main.append(searchForm("搜索全部已入库课件", (q) => {
+    location.hash = "courseware=" + encodeURIComponent(q);
+  }));
+  const body = el("div");
+  main.append(body);
+  const more = el("button", "加载更多课件片段");
+  more.type = "button";
+  let cursor = 0;
+  const load = async () => {
+    more.disabled = true;
+    try {
+      const data = await api("/wiki/api/courseware/search?q=" + encodeURIComponent(query) + "&after=" + cursor);
+      if (version !== routeVersion) return;
+      if (!data.items.length && cursor === 0 && query) body.append(el("p", "未找到已入库片段。可尝试较短或更具体的关键词。"));
+      for (const row of data.items) {
+        const item = el("article", undefined, "result");
+        item.append(el("p", row.path, "eyebrow"));
+        item.append(row.readable ? link(row.locator || "打开课件片段", coursewareReference(row)) : el("p", "此片段超过在线读取大小限制，仍保留在工作库中。"));
+        item.append(el("p", row.excerpt, "source-text"));
+        body.append(item);
+      }
+      cursor = data.next_after;
+      more.hidden = cursor === null;
+    } catch (error) {
+      if (version === routeVersion) body.append(el("p", error.message, "error"));
+    } finally {
+      more.disabled = false;
+    }
+  };
+  more.addEventListener("click", load);
+  main.append(more);
+  await load();
+}
+async function coursewareDocument(reference, version) {
+  const [key, revision, sha] = reference.split("/");
+  const url = `/wiki/api/courseware/document/${encodeURIComponent(key)}?revision=${encodeURIComponent(revision)}&text_sha256=${encodeURIComponent(sha)}`;
+  const data = await api(url);
+  if (version !== routeVersion) return;
+  heading(data.locator || "课件片段", "原始提取文字");
+  main.append(el("p", data.path, "lead"));
+  main.append(el("p", `来源位置：${data.source_key || "独立文件"} · 提取器：${data.extractor}`));
+  main.append(notice(data.revision_chain_verified ? "已核对片段版本与来源修订链。本次阅读未重新校验原文件，也不代表整份课件完整。" : "此片段的来源修订链尚未核验，文字按所选版本展示，请结合原始资料复核。"));
+  const text = el("pre", data.text, "source-text");
+  text.style.whiteSpace = "pre-wrap";
+  text.style.overflowWrap = "anywhere";
+  main.append(text);
+  let next = data.next_offset;
+  const more = el("button", "继续读取此片段");
+  more.type = "button";
+  more.hidden = next === null;
+  more.addEventListener("click", async () => {
+    more.disabled = true;
+    try {
+      const page = await api(url + "&offset=" + next);
+      if (version !== routeVersion) return;
+      text.textContent += page.text;
+      next = page.next_offset;
+      more.hidden = next === null;
+    } catch (error) {
+      if (version === routeVersion) main.append(el("p", error.message, "error"));
+    } finally { more.disabled = false; }
+  });
+  main.append(more, link("返回课件检索", "#courseware"));
+}
 async function route() {
   const version = ++routeVersion;
   activeReading = null;
@@ -1113,6 +1184,8 @@ async function route() {
     else if (mode === "terms") await terms(id, version);
     else if (mode === "term") await term(id, version);
     else if (mode === "search") await search(id, version);
+    else if (mode === "courseware") await courseware(id, version);
+    else if (mode === "document") await coursewareDocument(id, version);
     else await home(version);
   } catch (error) {
     if (version === routeVersion) {

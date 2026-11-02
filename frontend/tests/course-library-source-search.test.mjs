@@ -7,7 +7,7 @@ const source = fs.readFileSync(new URL('../../src/wechat_decrypt_tool/resources/
 
 function reader(hash, response) {
   class Element {
-    constructor(tag) { this.tagName = tag; this.children = []; this.open = false; }
+    constructor(tag) { this.tagName = tag; this.children = []; this.open = false; this.style = {}; }
     append(...nodes) { this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children = nodes; }
     setAttribute() {}
@@ -81,4 +81,28 @@ test('each matching original has its own destination for a multiword query', asy
     assert.ok(nodes.some((node) => node.href === '#lesson=course/section-0/' + original.id));
     assert.ok(nodes.some((node) => node.textContent === original.excerpt));
   }
+});
+
+test('retained courseware hits link to exact version and render hostile text literally', async () => {
+  const hit = { id: 41, revision: 'b'.repeat(64), text_sha256: 'c'.repeat(64), readable: true,
+    path: 'synthetic.txt', locator: 'chunk 3', excerpt: '<img src=x onerror=alert(1)>' };
+  const ui = reader('#courseware=Synthetic', { items: [hit], next_after: null });
+  await ui.context.route();
+  const nodes = ui.descendants(ui.main);
+  assert.ok(nodes.some((node) => node.href === `#document=41/${hit.revision}/${hit.text_sha256}`));
+  assert.ok(nodes.some((node) => node.textContent === hit.excerpt));
+  assert.equal(nodes.filter((node) => node.tagName === 'img').length, 0);
+});
+
+test('courseware document renders complete returned text and marks uncertain provenance', async () => {
+  const text = 'literal <script>example</script>\n  indented code';
+  const ui = reader(`#document=41/${'b'.repeat(64)}/${'c'.repeat(64)}`, {
+    id: 41, locator: 'chunk 3', path: 'synthetic.txt', source_key: '', extractor: 'synthetic-v1',
+    text, next_offset: null, revision_chain_verified: false,
+  });
+  await ui.context.route();
+  const nodes = ui.descendants(ui.main);
+  assert.ok(nodes.some((node) => node.tagName === 'pre' && node.textContent === text));
+  assert.ok(nodes.some((node) => node.textContent?.includes('尚未核验')));
+  assert.equal(nodes.filter((node) => node.tagName === 'script').length, 0);
 });

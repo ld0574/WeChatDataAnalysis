@@ -55,6 +55,7 @@ def test_restore_routes_without_original_archive(publication, tmp_path):
         == manifest["id"]
     )
     assert client.get("/wiki/api/coverage").status_code == 503
+    assert client.get("/wiki/api/courseware/search", params={"q": "synthetic"}).status_code == 503
     source = client.get("/library-assets/course_library.js").text
     assert "snapshotNotice(versions)" in source and "snapshotNotice(wiki)" in source
     assert client.get("/library-assets/course_learning.js").status_code == 200

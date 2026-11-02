@@ -51,6 +51,66 @@ def validate_sentinel(response, processes, expected, model_digest):
         raise ValueError("environment_gpu_model_not_resident_on_gpu")
 
 
+def restored_model_digests(bundle, manifest):
+    """Resolve Ollama v2 lists to the frozen GGUF child, never trust API IDs.
+
+    New Ollama releases report the chosen child manifest digest rather than the
+    list/tag file digest. All selected manifests and their config/weight blobs
+    must already belong to the independently verified extraction payload.
+    """
+    rows = {row["path"]: row for row in manifest["files"]}
+
+    def checked_json(relative):
+        row = rows.get(relative)
+        if row is None or row["bytes"] > 1024**2:
+            raise ValueError("environment_gpu_model_manifest_not_frozen")
+        path = bundle / relative
+        data = path.read_bytes()
+        if len(data) != row["bytes"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
+            raise ValueError("environment_gpu_model_manifest_changed")
+        return json.loads(data), row["sha256"]
+
+    def check_payload(value):
+        if value.get("runner", "llamacpp") != "llamacpp" or value.get("format", "gguf") != "gguf":
+            raise ValueError("environment_gpu_model_not_gguf")
+        descriptors = [value["config"], *value["layers"]]
+        if len(descriptors) < 2:
+            raise ValueError("environment_gpu_model_layers_missing")
+        for descriptor in descriptors:
+            digest = descriptor["digest"]
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+                raise ValueError("environment_gpu_model_blob_digest_invalid")
+            row = rows.get("ollama-models/blobs/" + digest.replace(":", "-"))
+            if row is None or row["sha256"] != digest[7:] or row["bytes"] != descriptor["size"]:
+                raise ValueError("environment_gpu_model_blob_not_frozen")
+
+    expected = set()
+    legacy = "ollama-models/manifests/registry.ollama.ai/library/qwen3.5/9b"
+    if legacy in rows:
+        value, digest = checked_json(legacy)
+        check_payload(value)
+        expected.add(digest)
+    current = "ollama-models/manifests-v2/ollama.com/library/qwen3.5/9b"
+    if current in rows:
+        value, _ = checked_json(current)
+        if value.get("mediaType") != "application/vnd.ollama.manifest.list.v2+json":
+            raise ValueError("environment_gpu_model_list_type_invalid")
+        for child in value["manifests"]:
+            if child.get("runner") != "llamacpp" or child.get("format") != "gguf":
+                continue
+            digest = child["digest"]
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+                raise ValueError("environment_gpu_model_child_digest_invalid")
+            payload, actual = checked_json("ollama-models/blobs/" + digest.replace(":", "-"))
+            if actual != digest[7:]:
+                raise ValueError("environment_gpu_model_child_identity_changed")
+            check_payload(payload)
+            expected.add(actual)
+    if not expected:
+        raise ValueError("environment_gpu_model_no_frozen_gguf_manifest")
+    return expected
+
+
 def isolated_runtime(bundle, expected_manifest, *, bootstrap_path=None, bootstrap_sha256=None):
     manifest_path = bundle / "extraction-environment.json"
     if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != expected_manifest:
@@ -147,7 +207,7 @@ def asr_probe(bundle, work):
             "inference_seconds": time.monotonic() - started}, []
 
 
-def ollama_probe(bundle, work, isolation):
+def ollama_probe(bundle, work, isolation, manifest):
     import httpx
     import psutil
     from PIL import Image, ImageDraw, ImageFont
@@ -156,7 +216,7 @@ def ollama_probe(bundle, work, isolation):
         check.bind(("127.0.0.1", PORT))
     environment = {**os.environ, "OLLAMA_HOST": f"127.0.0.1:{PORT}",
                    "OLLAMA_MODELS": str(bundle / "ollama-models"), "OLLAMA_NO_CLOUD": "1",
-                   "OLLAMA_KEEP_ALIVE": "0", "OLLAMA_NUM_PARALLEL": "1",
+                   "OLLAMA_KEEP_ALIVE": "0", "OLLAMA_NUM_PARALLEL": "1", "OLLAMA_NOPRUNE": "1",
                    "OLLAMA_CONTEXT_LENGTH": "4096", "OLLAMA_FLASH_ATTENTION": "false"}
     with (work / "ollama.stdout.log").open("wb") as stdout, (work / "ollama.stderr.log").open("wb") as stderr:
         process = subprocess.Popen([str(bundle / "ollama/ollama.exe"), "serve"],
@@ -179,8 +239,7 @@ def ollama_probe(bundle, work, isolation):
                             raise ValueError("environment_gpu_ollama_startup_timeout") from None
                         time.sleep(0.5)
                 selected = [r for r in tags if r["name"] == MODEL]
-                candidates = list((bundle / "ollama-models").glob("manifests*/**/qwen3.5/9b"))
-                expected = {hashlib.sha256(p.read_bytes()).hexdigest() for p in candidates}
+                expected = restored_model_digests(bundle, manifest)
                 if len(selected) != 1 or selected[0]["digest"] not in expected:
                     raise ValueError("environment_gpu_ollama_restored_manifest_mismatch")
                 model_digest = selected[0]["digest"]
@@ -206,6 +265,7 @@ def ollama_probe(bundle, work, isolation):
                        "images": [base64.b64encode(raw).decode()]}, 742)
                 native_isolation = isolation([owner, *owner.children(recursive=True)])
                 return {"restored_model_digest": model_digest, "text_gpu_sentinel_passed": True,
+                        "model_identity_policy": "frozen-gguf-manifest-or-v2-child-v1",
                         "vision_gpu_sentinel_passed": True,
                         "synthetic_image_sha256": hashlib.sha256(raw).hexdigest(),
                         **native_isolation}, []
@@ -249,10 +309,10 @@ def main():
 
         gc.collect()
         torch.cuda.empty_cache()
-        vision, processes = ollama_probe(bundle, work, isolation)
+        vision, processes = ollama_probe(bundle, work, isolation, manifest)
         result.update(vision)
     else:
-        result, processes = asr_probe(bundle, work) if args.mode == "asr" else ollama_probe(bundle, work, isolation)
+        result, processes = asr_probe(bundle, work) if args.mode == "asr" else ollama_probe(bundle, work, isolation, manifest)
     result.update(isolation(processes))
     if args.bootstrap and hashlib.sha256(args.bootstrap.read_bytes()).hexdigest() != args.bootstrap_sha256:
         raise ValueError("environment_gpu_bootstrap_changed_during_probe")
