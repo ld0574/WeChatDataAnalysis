@@ -13,11 +13,14 @@ from .course_wiki import object_schema
 POLICY = "verdict-dependent-evidence-grammar-experiment-v1"
 GENERATION_POLICY = "verdict-dependent-evidence-grammar-v1"
 KEYED_REVERSE_POLICY = "keyed-window-verdict-dependent-evidence-grammar-v1"
+BOUNDED_KEYED_REVERSE_POLICY = (
+    "keyed-window-batches-verdict-dependent-evidence-grammar-v1"
+)
 
 
 def generation_policy(value, *, reverse=False):
     allowed = (
-        (None, GENERATION_POLICY, KEYED_REVERSE_POLICY)
+        (None, GENERATION_POLICY, KEYED_REVERSE_POLICY, BOUNDED_KEYED_REVERSE_POLICY)
         if reverse
         else (None, GENERATION_POLICY)
     )

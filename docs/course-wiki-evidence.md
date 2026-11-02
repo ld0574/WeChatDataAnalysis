@@ -1,5 +1,9 @@
 # Wiki 课件证据
 
+2026-11-03 新增可选窗口分组协议 `ordered-windows-with-complete-source-and-article-context-16000-v1`，生成策略 `keyed-window-batches-verdict-dependent-evidence-grammar-v1`，必须显式同时选择逐来源和键控结果。完整来源及文章目标在各组原样重复，只有 windows 的键集合分区；所有上下文先构造并检查，超大的单窗口不会消耗模型调用。配方、收据和历史报告均重建同一分组，缺失、篡改或与旧策略互换被拒绝。旧配方及旧默认行为保持。
+
+`wiki/window-batches-final-20261103-tests.xml` 的 62 项检查通过；`wiki/window-batches-unsplittable-20261103-tests.xml` 另有 1 项不可拆分实际发布夹具通过，模型调用和任务分配均为 0。超限夹具还执行了真实发布、键控检查、断点恢复、快照复制及禁止原项目访问的独立阅读器验证；模型回复为合成数据，不表示真实语义通过。首次测试的未使用夹具导入被 Ruff 移除，导致初始化失败；第二次仅一处断言误把 writer 的 `previous_validation_failure` 修复信封计入冻结上下文范围，修正后通过，旧失败 XML 保留。预检 `wiki/window-batches-real-preflight-20261103-validation.json` 对真实文章得到 25 组、48 个窗口、最大 15,853 字符，原文完整且每章窗口恰好一次，并重新读取全部 26 份旧完整遗漏报告校验冻结请求、schema 和断点，模型调用为 0。
+
 2026-11-03 有限键控试点的实际修订与来源核对已结束，未通过语义验收。文章 `9f5a60ad85ff4a3c1c69f43909595769` 完成 16 项修订，实际 HTTP、检索和来源图片一致；正向报告 `3b670cf75e864b3239211945df17e836` 为 8 supported／10 partial／2 unsupported，20 个批次完成。反向检查构造全部上下文时遇到 16,444 字符请求，原 16,000 上限拒绝；零个新反向任务、零次反向模型调用，不能当作键控协议生成失败或成功。终止收据 `wiki/keyed-pilot-terminal-20261103-validation.json`；原 worker 7304、守护 46820 已退出，未自动循环修订或刷新旧预算。
 
 `wiki/keyed-pilot-context-bound-20261103-diagnostic.json` 在不改变生产检查的独立进程中重现超限；主要部分为来源 6,729 字符、文章目标 7,667 字符、5 个待判断窗口 1,799 字符。`wiki/keyed-pilot-window-partition-feasibility-20261103.json` 仅按顺序分组待判断窗口，得到 15,770／15,320 字符两组，完整来源、元数据及文章目标均不变，窗口恰好一次；运行代码尚未应用此策略。后续必须采用显式绑定的新版本协议，仅用于尚无反向任务的新稿，并验证旧配方、耗尽预算、暂停恢复和独立恢复不变。
