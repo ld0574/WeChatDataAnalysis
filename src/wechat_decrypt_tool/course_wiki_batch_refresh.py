@@ -119,7 +119,12 @@ def refresh(store, key):
                 return {"state": "no_provenance_change", "batch": key, "model_calls": 0}
             for old_key in sorted(allocations):
                 old, partition, _ = old_allocation(store.root, old_key)
-                new_partition = evidence.create(store, old["video"], old["section"])
+                new_partition = evidence.create(
+                    store,
+                    old["video"],
+                    old["section"],
+                    temporal=partition["policy"] == evidence.TEMPORAL_POLICY,
+                )
                 checked = evidence.read(store.root, new_partition["partition"])
                 if {k: v for k, v in checked.items() if k != "lesson_sha256"} != {
                     k: v for k, v in partition.items() if k != "lesson_sha256"

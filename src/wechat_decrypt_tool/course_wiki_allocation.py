@@ -13,9 +13,11 @@ from pathlib import Path
 from .course_knowledge import atomic_json, schema_lease
 from .course_library import Library, canonical
 from .course_lesson_exports import digest
+from .course_wiki_evidence import TEMPORAL_POLICY as TEMPORAL_EVIDENCE_POLICY
 from .course_wiki_evidence import materialize, read as read_partition
 
 POLICY = "complete-allocated-original-planning-contexts-v1"
+TEMPORAL_POLICY = "complete-time-ordered-original-planning-contexts-v1"
 # Leave room for the frozen same-course topic directory and repair diagnostics.
 MAX_CONTEXT = 10000
 
@@ -47,7 +49,7 @@ def context(lesson, partition, key, numbers):
                 ],
             }
         )
-    return {
+    value = {
         "video": partition["video"],
         "course_title": lesson["title"],
         "original_section": {k: section[k] for k in ("id", "title", "summary")},
@@ -58,6 +60,12 @@ def context(lesson, partition, key, numbers):
         "semantic_boundary_verified": False,
         "full_topic_coverage_verified": False,
     }
+    if partition["policy"] == TEMPORAL_EVIDENCE_POLICY:
+        value.update(
+            original_order=partition["original_order"],
+            temporal_proximity_is_not_semantic_alignment=True,
+        )
+    return value
 
 
 def recipe(lesson, partition, key):
@@ -79,7 +87,11 @@ def recipe(lesson, partition, key):
     if not scopes:
         raise ValueError("theme_allocation_empty_original_window")
     return {
-        "policy": POLICY,
+        "policy": (
+            TEMPORAL_POLICY
+            if partition["policy"] == TEMPORAL_EVIDENCE_POLICY
+            else POLICY
+        ),
         "video": partition["video"],
         "section": partition["section"],
         "lesson_sha256": partition["lesson_sha256"],
@@ -127,7 +139,10 @@ def read(root, key):
     if not path.resolve().is_relative_to(root.resolve()):
         raise ValueError("theme_allocation_context_outside_archive")
     value = json.loads(path.read_bytes())
-    if digest(canonical(value))[:32] != key or value["policy"] != POLICY:
+    if digest(canonical(value))[:32] != key or value["policy"] not in {
+        POLICY,
+        TEMPORAL_POLICY,
+    }:
         raise ValueError("theme_allocation_context_manifest_changed")
     partition = read_partition(root, value["partition"])
     lesson = Library(root).lesson(partition["video"])

@@ -11,6 +11,8 @@ from test_course_wiki_evidence import (
 )
 from wechat_decrypt_tool import course_wiki_batch as batch
 from wechat_decrypt_tool import course_wiki_batch_refresh as refresh
+from wechat_decrypt_tool import course_wiki_evidence as evidence
+from wechat_decrypt_tool import course_wiki_allocation as allocation
 from wechat_decrypt_tool.course_knowledge import atomic_json
 from wechat_decrypt_tool.course_library import Library, canonical
 from wechat_decrypt_tool.course_lesson_exports import digest
@@ -45,6 +47,29 @@ def change_lesson(reader, lesson, field="rows_sha256"):
         updated[field] = "changed"
     retain_lesson(reader.root, updated)
     return updated
+
+
+def test_temporal_order_is_preserved_by_unstarted_provenance_refresh(
+    long_evidence, monkeypatch
+):
+    store, lesson, legacy = long_evidence
+    reader = ReadOnlyArchive(store.root)
+    monkeypatch.setattr(batch, "local_model_digest", lambda _: "synthetic-model")
+    monkeypatch.setattr(refresh, "local_model_digest", lambda _: "synthetic-model")
+    prepared = evidence.create(reader, lesson["id"], legacy["section"], temporal=True)
+    old = batch.prepare_allocations(reader, [prepared["partition"]])
+    path = reader.root / f"wiki/theme-batches/{old['batch']}/manifest.json"
+    before = path.read_bytes()
+    change_lesson(reader, lesson)
+    result = refresh.refresh(reader, old["batch"])
+    assert result["model_calls"] == 0
+    assert path.read_bytes() == before
+    target = batch.manifest(reader.root, result["batch"])[1]
+    for row in target["courses"]:
+        manifest, partition, _ = allocation.read(reader.root, row["allocation"])
+        assert manifest["policy"] == allocation.TEMPORAL_POLICY
+        assert partition["policy"] == evidence.TEMPORAL_POLICY
+    assert not list(reader.root.glob("wiki/planning-jobs/*/manifest.json"))
 
 
 def test_refresh_retains_all_scopes_exact_originals_and_single_successor(reserved):

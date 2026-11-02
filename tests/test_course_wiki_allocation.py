@@ -19,6 +19,7 @@ from wechat_decrypt_tool import course_wiki_planning as planning
 from wechat_decrypt_tool import course_wiki_snapshot as snapshot
 from wechat_decrypt_tool import course_wiki_synthesis as synthesis
 from wechat_decrypt_tool import course_wiki_writer as writer
+from wechat_decrypt_tool import course_wiki_evidence as evidence
 from wechat_decrypt_tool.course_knowledge import GpuBusyError, atomic_json
 from wechat_decrypt_tool.course_library import canonical
 from wechat_decrypt_tool.course_lesson_exports import digest
@@ -28,6 +29,30 @@ from wechat_decrypt_tool.course_wiki import Wiki, validate_article
 archive = source_archive
 published = source_published
 long_evidence = source_long_evidence
+
+
+def test_temporal_contexts_keep_complete_page_allocation_and_old_context_identity(
+    long_evidence,
+):
+    store, lesson, legacy = long_evidence
+    reader = ReadOnlyArchive(store.root)
+    old = allocation.create(reader, legacy["partition"])
+    path = store.root / "wiki/allocation-contexts" / old["allocation"] / "manifest.json"
+    before = path.read_bytes()
+    ordered = evidence.create(reader, lesson["id"], legacy["section"], temporal=True)
+    new = allocation.create(reader, ordered["partition"])
+    manifest, partition, _ = allocation.read(store.root, new["allocation"])
+    assert manifest["policy"] == allocation.TEMPORAL_POLICY
+    assert [n for scope in manifest["scopes"] for n in scope] == list(
+        range(ordered["pages"])
+    )
+    for number in range(new["scopes"]):
+        scoped = allocation.scope(store.root, new["allocation"], number, lesson["id"])
+        assert len(canonical(scoped["context"]).decode()) <= allocation.MAX_CONTEXT
+        assert scoped["context"]["original_order"] == partition["original_order"]
+        assert scoped["context"]["temporal_proximity_is_not_semantic_alignment"] is True
+    assert allocation.create(reader, legacy["partition"]) == old
+    assert path.read_bytes() == before
 
 
 def proposal(context):

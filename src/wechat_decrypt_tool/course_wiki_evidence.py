@@ -11,6 +11,7 @@ from .course_library import Library, canonical
 from .course_lesson_exports import digest
 
 POLICY = "complete-original-evidence-pages-v1"
+TEMPORAL_POLICY = "complete-time-ordered-window-original-evidence-pages-v1"
 MAX_TEXT = 3200
 MAX_JSON = 11500
 MAX_PIECE = 2000
@@ -85,7 +86,7 @@ def partition(originals):
     return pages
 
 
-def recipe(lesson, video, section_id):
+def recipe(lesson, video, section_id, *, temporal=False):
     if lesson["id"] != video:
         raise ValueError("wiki_evidence_lesson_identity_mismatch")
     sections = [s for s in lesson["sections"] if s["id"] == section_id]
@@ -98,6 +99,26 @@ def recipe(lesson, video, section_id):
         for n, e in lesson["evidence"].items()
         if e["kind"] == "frame" and section["start"] <= e["start"] < section["end"]
     )
+    if temporal:
+        # Context references are not a licence to omit other retained speech.
+        # Include complete overlapping speech records, then order raw evidence
+        # by time instead of putting all speech before every frame.
+        ids.extend(
+            int(n)
+            for n, source in lesson["evidence"].items()
+            if source["kind"] == "speech"
+            and source["start"] < section["end"]
+            and source["end"] > section["start"]
+        )
+        ids = sorted(
+            set(ids),
+            key=lambda n: (
+                lesson["evidence"][str(n)]["start"],
+                0 if lesson["evidence"][str(n)]["kind"] == "speech" else 1,
+                lesson["evidence"][str(n)]["end"],
+                n,
+            ),
+        )
     originals = {
         video + ":" + str(n): {
             **lesson["evidence"][str(n)],
@@ -106,8 +127,8 @@ def recipe(lesson, video, section_id):
         }
         for n in dict.fromkeys(ids)
     }
-    return {
-        "policy": POLICY,
+    value = {
+        "policy": TEMPORAL_POLICY if temporal else POLICY,
         "video": video,
         "section": section_id,
         "lesson_sha256": digest(canonical(lesson)),
@@ -121,12 +142,21 @@ def recipe(lesson, video, section_id):
         "topic_coverage_verified": False,
         "source_deletion_allowed": False,
     }
+    if temporal:
+        value.update(
+            original_order="start_time_speech_before_frame_end_time_id",
+            complete_overlapping_speech_records_included=True,
+            temporal_proximity_is_not_semantic_alignment=True,
+        )
+    return value
 
 
-def create(store, video, section):
+def create(store, video, section, *, temporal=False):
     with schema_lease(store.root / "wiki-evidence-partition.lock", timeout=0):
         store.checkpoint()
-        value = recipe(Library(store.root).lesson(video), video, section)
+        value = recipe(
+            Library(store.root).lesson(video), video, section, temporal=temporal
+        )
         key = digest(canonical(value))[:32]
         folder = store.root / "wiki/evidence-partitions" / key
         folder.mkdir(parents=True, exist_ok=True)
@@ -152,7 +182,10 @@ def read(root, key, *, current=True):
     if not path.resolve().is_relative_to(root.resolve()):
         raise ValueError("wiki_evidence_partition_outside_archive")
     value = json.loads(path.read_bytes())
-    if digest(canonical(value))[:32] != key or value["policy"] != POLICY:
+    if digest(canonical(value))[:32] != key or value["policy"] not in {
+        POLICY,
+        TEMPORAL_POLICY,
+    }:
         raise ValueError("wiki_evidence_manifest_changed")
     library = Library(root)
     lesson = (
@@ -162,7 +195,15 @@ def read(root, key, *, current=True):
     )
     if digest(canonical(lesson)) != value["lesson_sha256"]:
         raise ValueError("wiki_evidence_original_lesson_changed")
-    if recipe(lesson, value["video"], value["section"]) != value:
+    if (
+        recipe(
+            lesson,
+            value["video"],
+            value["section"],
+            temporal=value["policy"] == TEMPORAL_POLICY,
+        )
+        != value
+    ):
         raise ValueError("wiki_evidence_incomplete_or_changed_allocation")
     return value
 

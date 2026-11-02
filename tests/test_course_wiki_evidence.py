@@ -165,10 +165,18 @@ def make_plan(prepared):
     }
 
 
+@pytest.mark.parametrize("temporal", [False, True])
 def test_allocated_source_writing_coverage_and_isolated_snapshot(
-    long_evidence, tmp_path, monkeypatch
+    long_evidence, tmp_path, monkeypatch, temporal
 ):
     store, lesson, prepared = long_evidence
+    if temporal:
+        prepared = evidence.create(
+            ReadOnlyArchive(store.root),
+            lesson["id"],
+            prepared["section"],
+            temporal=True,
+        )
     model(monkeypatch)
     result = synthesis.generate(ReadOnlyArchive(store.root), make_plan(prepared))
     publication = wiki.Wiki(store.root).article(result["id"])
@@ -243,3 +251,65 @@ def test_allocated_source_writing_coverage_and_isolated_snapshot(
     atomic_json(manifest_path, value)
     with pytest.raises(FileNotFoundError):
         snapshot.verify(restored)
+
+
+def test_temporal_partition_keeps_speech_and_frames_in_time_order_without_dropping_characters():
+    video = "a" * 24
+    sources = {
+        str(n): {
+            "id": n,
+            "kind": "speech" if n > 0 else "frame",
+            "start": start,
+            "end": start + 5,
+            "text": str(n) * 500,
+        }
+        for n, start in [(1, 0), (2, 20), (3, 40), (-1, 10), (-2, 30), (-3, 50)]
+    }
+    lesson = {
+        "id": video,
+        "title": "Synthetic lesson",
+        "evidence": sources,
+        "sections": [{"id": "section-0", "start": 0, "end": 60, "context": [1, 2]}],
+    }
+    legacy = evidence.recipe(lesson, video, "section-0")
+    temporal = evidence.recipe(lesson, video, "section-0", temporal=True)
+    assert video + ":3" not in legacy["originals"]
+    assert video + ":3" in temporal["originals"]
+    assert list(temporal["originals"]) == [
+        video + ":" + str(n) for n in [1, -1, 2, -2, 3, -3]
+    ]
+    actual = {}
+    for page in temporal["pages"]:
+        for key, source in evidence.materialize(temporal["originals"], page).items():
+            origin = source["text_origin"]
+            actual.setdefault(origin["reference"], []).append(source["text"])
+    assert {k: "".join(v) for k, v in actual.items()} == {
+        k: v["text"] for k, v in temporal["originals"].items()
+    }
+    assert temporal["temporal_proximity_is_not_semantic_alignment"] is True
+    assert temporal["semantic_boundary_verified"] is False
+    assert temporal["source_deletion_allowed"] is False
+
+
+def test_new_temporal_freeze_leaves_existing_partition_and_default_identity_unchanged(
+    long_evidence,
+):
+    store, lesson, legacy = long_evidence
+    path = (
+        store.root / "wiki/evidence-partitions" / legacy["partition"] / "manifest.json"
+    )
+    before = path.read_bytes()
+    temporal = evidence.create(
+        ReadOnlyArchive(store.root), lesson["id"], legacy["section"], temporal=True
+    )
+    assert temporal["partition"] != legacy["partition"]
+    assert path.read_bytes() == before
+    assert (
+        evidence.create(ReadOnlyArchive(store.root), lesson["id"], legacy["section"])
+        == legacy
+    )
+    assert evidence.read(store.root, legacy["partition"])["policy"] == evidence.POLICY
+    assert (
+        evidence.read(store.root, temporal["partition"])["policy"]
+        == evidence.TEMPORAL_POLICY
+    )
