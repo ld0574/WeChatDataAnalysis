@@ -138,6 +138,18 @@ def writer_dependencies(root, publication):
                 from .course_wiki_synthesis_repair import validate_lineage
 
                 validate_lineage(root, recipe, complete=True, job=key)
+            if "limitations_repair" in extra:
+                from .course_wiki_limitations_repair import validate_lineage
+
+                validate_lineage(
+                    root,
+                    recipe,
+                    complete=True,
+                    job=key,
+                    publication=publication["article"]
+                    if key == publication["id"]
+                    else None,
+                )
             if "unchanged_body_job" in extra:
                 body = inside(root, "wiki/jobs/" + extra["unchanged_body_job"])
                 stages = ["introduction"] + [
@@ -243,6 +255,18 @@ def assets(root):
         for folder in writer_dependencies(root, value):
             for path in sorted(folder.rglob("*.json")):
                 add(path.relative_to(root).as_posix())
+            recipe = json.loads((folder / "manifest.json").read_bytes())["recipe"]
+            for role in ("criteria", "limitations"):
+                spec = recipe.get("extra", {}).get(role + "_repair")
+                if spec:
+                    relative = f"wiki/{role}-repair-bindings/{spec['parent_job']}.json"
+                    if json.loads(inside(root, relative).read_bytes()) != {
+                        "policy": spec["policy"],
+                        "parent_job": spec["parent_job"],
+                        "child_job": folder.name,
+                    }:
+                        raise ValueError("snapshot_repair_singleton_binding_changed")
+                    add(relative)
         for directory, reader in (
             ("review-jobs", "review"),
             ("completeness-jobs", "omissions"),
@@ -347,7 +371,14 @@ def create(root, destination, *, reserve_gib=32):
     requirements = (
         "\n".join(
             name + "==" + importlib.metadata.version(name)
-            for name in ("fastapi", "uvicorn", "psutil", "Pillow", "httpx")
+            for name in (
+                "fastapi",
+                "uvicorn",
+                "psutil",
+                "Pillow",
+                "httpx",
+                "jsonschema",
+            )
         )
         + "\n"
     )
