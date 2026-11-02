@@ -230,11 +230,17 @@ def prepare_allocations(store, partitions, *, model="qwen3.5:9b"):
         }
 
 
-def run(store, key, *, wait_seconds=3600):
+def run(store, key, *, wait_seconds=3600, max_items=None):
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
         raise ValueError("wiki_batch_invalid_gpu_wait")
+    if max_items is not None and (
+        type(max_items) is not int or not 1 <= max_items <= 10000
+    ):
+        raise ValueError("wiki_batch_invalid_item_limit")
     with schema_lease(store.root / "wiki-theme-batch.lock", timeout=0):
         folder, recipe = manifest(store.root, key)
+        if (store.root / "wiki/theme-batch-refreshes" / (key + ".json")).exists():
+            raise ValueError("wiki_batch_superseded_by_provenance_refresh")
         path = folder / "progress.json"
         rows = {
             item_key(r): {
@@ -272,6 +278,7 @@ def run(store, key, *, wait_seconds=3600):
             atomic_json(path, value)
             return value
 
+        processed = 0
         for spec in recipe["courses"]:
             video = spec["video"]
             row = rows[item_key(spec)]
@@ -287,6 +294,15 @@ def run(store, key, *, wait_seconds=3600):
                 # Explicit skips and failures never receive new model attempts.
                 if row["state"] in TERMINAL:
                     continue
+                if max_items is not None and processed >= max_items:
+                    return progress(
+                        "slice_finished",
+                        processed_items=processed,
+                        remaining_items=sum(
+                            r["state"] not in TERMINAL for r in rows.values()
+                        ),
+                    )
+                processed += 1
                 if (
                     digest(canonical(Library(store.root).lesson(video)))
                     != spec["lesson_sha256"]
@@ -427,6 +443,7 @@ def main():
         execute = sub.add_parser(name)
         execute.add_argument("--batch", required=True)
         execute.add_argument("--wait-gpu-seconds", type=int, default=3600)
+        execute.add_argument("--max-items", type=int)
     args = parser.parse_args()
     if args.command == "guard":
         job_id(args.batch)
@@ -443,6 +460,11 @@ def main():
                 args.batch,
                 "--wait-gpu-seconds",
                 str(args.wait_gpu_seconds),
+                *(
+                    ["--max-items", str(args.max_items)]
+                    if args.max_items is not None
+                    else []
+                ),
             ],
             maximum_power=200,
             maximum_temperature=70,
@@ -457,7 +479,12 @@ def main():
     elif args.command == "prepare-allocations":
         result = prepare_allocations(store, args.partition, model=args.model)
     else:
-        result = run(store, args.batch, wait_seconds=args.wait_gpu_seconds)
+        result = run(
+            store,
+            args.batch,
+            wait_seconds=args.wait_gpu_seconds,
+            max_items=args.max_items,
+        )
     print(json.dumps({k: v for k, v in result.items() if k in {"state", "batch"}}))
 
 

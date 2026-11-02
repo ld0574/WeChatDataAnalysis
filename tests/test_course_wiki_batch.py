@@ -391,3 +391,46 @@ def test_recomposing_allocation_batch_cannot_reset_original_scope_budget(
     with pytest.raises(ValueError, match="allocation_scope_already_reserved"):
         batch.prepare_allocations(p.store, ["a" * 32, "b" * 32])
     assert not p.calls
+
+
+def test_bounded_slice_retains_all_pending_items_and_resumes_same_reservation(pipeline):
+    p = pipeline
+    key = batch.prepare(p.store, limit=3)["batch"]
+    result = batch.run(p.store, key, max_items=1)
+    assert result["state"] == "slice_finished" and result["remaining_items"] == 2
+    assert [r["state"] for r in result["courses"].values()] == [
+        "draft_checks_complete",
+        "pending",
+        "pending",
+    ]
+    before = list(p.calls)
+    result = batch.run(p.store, key, max_items=1)
+    assert result["remaining_items"] == 1
+    assert p.calls[: len(before)] == before and len(p.calls) == 8
+    assert batch.run(p.store, key, max_items=1)["state"] == "finite_batch_finished"
+    assert len(p.calls) == 12
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, 10001])
+def test_invalid_slice_limit_never_starts_models(pipeline, limit):
+    key = batch.prepare(pipeline.store, limit=2)["batch"]
+    with pytest.raises(ValueError, match="invalid_item_limit"):
+        batch.run(pipeline.store, key, max_items=limit)
+    assert not pipeline.calls
+
+
+def test_slice_counts_failed_item_without_retry_or_starting_next(pipeline, monkeypatch):
+    key = batch.prepare(pipeline.store, limit=2)["batch"]
+
+    def failed(*args, **kwargs):
+        pipeline.calls.append("failed")
+        raise ValueError("Synthetic exhausted attempt budget")
+
+    monkeypatch.setattr(batch, "propose", failed)
+    result = batch.run(pipeline.store, key, max_items=1)
+    assert result["state"] == "slice_finished"
+    assert [r["state"] for r in result["courses"].values()] == [
+        "needs_review",
+        "pending",
+    ]
+    assert pipeline.calls == ["failed"]
