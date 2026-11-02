@@ -51,15 +51,23 @@ def validate_sentinel(response, processes, expected, model_digest):
         raise ValueError("environment_gpu_model_not_resident_on_gpu")
 
 
-def isolated_runtime(bundle, expected_manifest):
+def isolated_runtime(bundle, expected_manifest, *, bootstrap_path=None, bootstrap_sha256=None):
     manifest_path = bundle / "extraction-environment.json"
     if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != expected_manifest:
         raise ValueError("environment_gpu_manifest_anchor_changed")
-    spec = importlib.util.spec_from_file_location(
-        "extraction_bootstrap", bundle / "extraction_bootstrap.py"
-    )
+    path = bundle / "extraction_bootstrap.py"
+    if bootstrap_path is not None:
+        path = Path(bootstrap_path).resolve()
+        if hashlib.sha256(path.read_bytes()).hexdigest() != bootstrap_sha256:
+            raise ValueError("environment_gpu_bootstrap_anchor_changed")
+    elif bootstrap_sha256 is not None:
+        raise ValueError("environment_gpu_bootstrap_path_required")
+    spec = importlib.util.spec_from_file_location("extraction_bootstrap", path)
     bootstrap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bootstrap)
+    bootstrap.BUNDLE = bundle
+    if not hasattr(bootstrap, "outside_module_names"):
+        raise ValueError("environment_gpu_origin_aware_bootstrap_required")
     manifest, plan = bootstrap.verify()
     bootstrap.activate()
     roots = [Path(c["source_root"]).resolve() for c in plan["components"]]
@@ -87,11 +95,7 @@ def isolated_runtime(bundle, expected_manifest):
 def check_isolation(bundle, bootstrap, roots, blocked, processes):
     import psutil
 
-    outside = []
-    for name, module in list(sys.modules.items()):
-        origin = getattr(module, "__file__", None)
-        if name != "__main__" and origin and not Path(origin).resolve().is_relative_to(bundle):
-            outside.append(name)
+    outside = bootstrap.outside_module_names(bundle, Path(__file__))
     native = []
     for process in [psutil.Process(), *processes]:
         native.extend(bootstrap.original_native_mappings(
@@ -217,12 +221,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--manifest-sha256", required=True)
+    parser.add_argument("--bootstrap", type=Path)
+    parser.add_argument("--bootstrap-sha256")
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--mode", choices=["asr", "ollama", "all"], required=True)
     args = parser.parse_args()
     bundle, work = args.bundle.resolve(), args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
-    bootstrap, manifest, roots, blocked = isolated_runtime(bundle, args.manifest_sha256)
+    bootstrap, manifest, roots, blocked = isolated_runtime(
+        bundle, args.manifest_sha256,
+        bootstrap_path=args.bootstrap, bootstrap_sha256=args.bootstrap_sha256,
+    )
     def isolation(processes):
         return check_isolation(bundle, bootstrap, roots, blocked, processes)
 
@@ -238,9 +247,12 @@ def main():
     else:
         result, processes = asr_probe(bundle, work) if args.mode == "asr" else ollama_probe(bundle, work, isolation)
     result.update(isolation(processes))
+    if args.bootstrap and hashlib.sha256(args.bootstrap.read_bytes()).hexdigest() != args.bootstrap_sha256:
+        raise ValueError("environment_gpu_bootstrap_changed_during_probe")
     receipt = {"state": "isolated_restored_gpu_synthetic_probe_verified", "mode": args.mode,
                "manifest_sha256": args.manifest_sha256, "files_verified": len(manifest["files"]),
                "bundle": str(bundle), "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+               "probe_bootstrap_sha256": hashlib.sha256(Path(bootstrap.__file__).read_bytes()).hexdigest(),
                "course_content_used": False, "source_deletion_allowed": False,
                "updated": time.time(), **result}
     (work / (args.mode + "-validation.json")).write_text(json.dumps(receipt, indent=2), encoding="utf-8")

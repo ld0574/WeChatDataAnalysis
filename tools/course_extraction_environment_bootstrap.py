@@ -117,7 +117,55 @@ def original_native_mappings(paths, roots):
     ]
 
 
-def probe(manifest, plan):
+def module_origin_path(name, module):
+    """Resolve PyTorch namespaces through their actual defining modules.
+
+    torch.ops/classes are ModuleType instances whose __file__ is a display
+    label. Only the exact registered objects and classes qualify, and their
+    defining module still has to pass the caller's bundle containment check.
+    """
+    origin = getattr(module, "__file__", None)
+    dynamic = {
+        "torch.ops": ("ops", "torch._ops", "_Ops", "_ops.py"),
+        "torch.classes": ("classes", "torch._classes", "_Classes", "_classes.py"),
+    }
+    if name in dynamic:
+        attribute, defining_name, class_name, label = dynamic[name]
+        defining = sys.modules.get(defining_name)
+        torch = sys.modules.get("torch")
+        cls = vars(defining).get(class_name) if defining is not None else None
+        if (
+            cls is not None
+            and type(module) is cls
+            and torch is not None
+            and vars(torch).get(attribute) is module
+            and origin == label
+        ):
+            origin = vars(defining).get("__file__")
+            if not origin or not Path(origin).is_absolute():
+                return Path(label)
+    return Path(origin) if origin and origin not in {"built-in", "frozen"} else None
+
+
+def outside_module_names(bundle, trusted_entrypoint=None):
+    outside = []
+    for name, module in list(sys.modules.items()):
+        origin = module_origin_path(name, module)
+        if origin is None:
+            continue
+        if (
+            trusted_entrypoint is not None
+            and name in {"__main__", "__mp_main__"}
+            and module is sys.modules.get("__main__")
+            and origin.resolve() == trusted_entrypoint.resolve()
+        ):
+            continue
+        if not origin.is_absolute() or not origin.resolve().is_relative_to(bundle.resolve()):
+            outside.append(name)
+    return outside
+
+
+def probe(manifest, plan, *, trusted_entrypoint=None):
     # Block reads of every original component and all Python network connections.
     original_roots = [Path(c["source_root"]).resolve() for c in plan["components"]]
     original_access = []
@@ -216,15 +264,7 @@ def probe(manifest, plan):
         )
         if result.returncode != 0:
             raise ValueError("environment_native_tool_version_failed")
-    outside = []
-    for name, module in list(sys.modules.items()):
-        origin = getattr(module, "__file__", None)
-        if (
-            origin
-            and origin not in {"built-in", "frozen"}
-            and not Path(origin).resolve().is_relative_to(BUNDLE)
-        ):
-            outside.append(name)
+    outside = outside_module_names(BUNDLE, trusted_entrypoint)
     import psutil
 
     native_originals = original_native_mappings(
@@ -253,12 +293,23 @@ def probe(manifest, plan):
 
 
 def main():
+    global BUNDLE
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bundle", type=Path)
+    parser.add_argument("--bootstrap-sha256")
     parser.add_argument(
         "mode", choices=["verify", "probe", "course-cli", "ollama-serve"]
     )
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    trusted_entrypoint = None
+    if args.bundle is not None:
+        if args.bootstrap_sha256 != sha(Path(__file__)):
+            raise ValueError("environment_companion_bootstrap_anchor_changed")
+        BUNDLE = args.bundle.resolve()
+        trusted_entrypoint = Path(__file__).resolve()
+    elif args.bootstrap_sha256:
+        parser.error("--bootstrap-sha256 requires --bundle")
     manifest, plan = verify()
     activate()
     if args.mode == "verify":
@@ -272,7 +323,10 @@ def main():
             )
         )
     elif args.mode == "probe":
-        print(json.dumps(probe(manifest, plan)))
+        result = probe(manifest, plan, trusted_entrypoint=trusted_entrypoint)
+        result["probe_bootstrap_sha256"] = sha(Path(__file__))
+        result["companion_bootstrap"] = trusted_entrypoint is not None
+        print(json.dumps(result))
     elif args.mode == "course-cli":
         sys.argv = ["course_knowledge", *args.arguments]
         runpy.run_module("wechat_decrypt_tool.course_knowledge", run_name="__main__")
