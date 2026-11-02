@@ -121,6 +121,17 @@ def publish(store):
 
 
 def _publish(store):
+    catalog_path = store.root / "library" / "catalog.json"
+    previous = json.loads(catalog_path.read_bytes()) if catalog_path.exists() else None
+    previous_sources = (
+        {
+            lesson["id"]
+            for lesson in previous["lessons"]
+            if lesson["state"] == "draft_available"
+        }
+        if previous is not None
+        else set()
+    )
     gate = validate_exports(store)
     raw = (store.root / "inventory-unique.json").read_bytes()
     if digest(raw) != gate["inventory_sha256"]:
@@ -214,6 +225,12 @@ def _publish(store):
         term["lesson_count"] = len({o["video"] for o in term["occurrences"]})
     if (store.root / "inventory-unique.json").read_bytes() != raw:
         raise ValueError("Inventory changed while building library")
+    # A live producer can temporarily invalidate an old export, or replace it
+    # between validation and loading. Do not publish a smaller course library.
+    # Retain the last complete catalog until all previously published sources
+    # pass the same checks again; never mark the changing export as valid.
+    if not previous_sources.issubset(completed):
+        raise ValueError("library_publication_would_remove_existing_sources")
     catalog = {
         "version": 1,
         "updated": time.time(),

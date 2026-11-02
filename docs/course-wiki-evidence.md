@@ -1,5 +1,11 @@
 # Wiki 课件证据
 
+2026-11-03 夜间从用户保存的断点恢复，继续使用 200W／70°C 守护，不自动解除温度暂停。当前 34 节已转写、33 / 340 节来源笔记已发布；第 34 节仍待完成截图识别和笔记。阅读服务恢复至 `http://127.0.0.1:3003/`，原视频继续保留。
+
+固定文章 `2ba54142fae4a5088a4685bb543760ce` 的模型对照已补齐全部 17 个阶段，首个请求 SHA 均一致，旧基线文件未改写。Qwen 为 2 supported／4 partial／11 unsupported；Defiant 为 2 supported／6 partial／9 unsupported，4 个目标判断不同，均不能视为语义合格。原包装脚本把公开 HTTP 投影与内部完整收据比较而失败，原失败保留；直接读取两份已完成报告并与实际 HTTP 投影核对一致，零额外模型调用，收据为 `wiki/literal-subset-model-pair-20261103-validation.json`。
+
+增量发布增加目录保留检查：若已发布来源的导出缺失、OCR 回到未完成状态、来源被移出清单，或校验后导出又发生变化，本次发布拒绝替换现有目录；不会把变化中的导出标为有效。新课程未就绪不妨碍保留原有已完成课程。合成回归覆盖上述并发与缺失情形，验证记录为 `wiki/publication-preservation-20261103-tests.xml`。
+
 生成约束的生产入口采用显式 `--constrained-evidence`，配方字段 `generation_constraints=verdict-dependent-evidence-grammar-v1` 固定策略；两种检查均拒绝同一文章在新旧约束之间切换以绕过失败预算。现有运行批次不改变配方。验证为 `wiki/production-constraints-20261102-tests.xml`（51 项）与 `wiki/production-constraints-snapshot-20261102-tests.xml`（20 项）；后者实际恢复含新格式正反报告的快照，在禁止读取原目录的独立进程中运行阅读器。第三篇完整双向检查收据为 `wiki/next-four-third-bidirectional-20261102-validation.json`：13 supported／7 partial／5 unsupported；42 covered／1 partial／7 missing／3 not_essential。零模型调用的修订准备 `5a38a5841a0f9489f0054b61fdfca440` 保留全部报告绑定及 16 项请求；不表示已修订或语义通过。
 
 2026-11-02 独立提取环境恢复完成：`wiki/extraction-environment-all-20261102-validation.json` 绑定正式 CPU 收据与真实 GPU v5 证明，核对冻结清单、探测脚本与 CPU 伴随脚本 SHA、CUDA／FP32 参数、合成语音、文字／图像哨兵及零外部来源访问。GPU 原证明 SHA `430230caff1e5b2ead35453ced8820b93fe083038fc3c2c29e36cea5bff62404`；完整证明、启动诊断和合成服务日志均另存 C 盘 v5 伴随备份并逐字节校验。探测及独立模型服务已退出。最新源码增量尚未独立执行，全部课程与语义覆盖仍未验收。
