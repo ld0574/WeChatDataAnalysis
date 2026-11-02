@@ -203,6 +203,9 @@ def restore(
                 )
                 or result.get("gpu_context_initialized") is not False
                 or result.get("gpu_inference_verified") is not False
+                or result.get("project_source_policy") != "frozen-bundle-src-before-site-packages-v1"
+                or result.get("project_modules_from_canonical_source") is not True
+                or result.get("asr_backend_full_precision_contract_verified") is not True
             ):
                 raise ValueError("environment_restored_probe_not_isolated")
             receipt = {

@@ -1,6 +1,6 @@
 # 课程本地 Wiki：目标与验收标准
 
-2026-11-02 GPU 恢复探测因 `QwenGpuBackend.use_full_precision` 缺失而失败；进一步对两个全新进程的实际导入路径做对照后确认，接口存在于冻结的 `src` 中，但启动顺序先加载了包内 `site-packages` 的旧项目副本。两个文件均与不可变环境清单哈希一致，既不是模型质量问题，也不能靠跳过 FP32 检查解决。启动顺序已改为冻结 `src` 优先，来源检查同时拒绝来自包内旧项目目录的模块；CPU 探测增加全精度接口契约，GPU 仍须实际检查所有参数均为 CUDA／FP32。46 项相关回归通过，两个真实隔离诊断进程分别证明旧导入缺失接口、新导入具备接口，均未初始化 CUDA。旧 CPU v2 收据只证明包内隔离，不证明使用了指定源码组件，不能据此宣布提取环境恢复；新 SHA 锚定的 v3 伴随包已启动全文件／CPU 重验，通过后才运行新的 GPU 合成探测，再交接 16 页写作批次。主课程进程在旧 GPU 探测退出后已恢复 OCR，健康工作进程没有重启。诊断为 `wiki/extraction-environment-project-shadowing-20261102-diagnostic.json`，进度为 `wiki/extraction-environment-20261102-reprobe-v3-progress.json`。
+2026-11-02 GPU 恢复探测因 `QwenGpuBackend.use_full_precision` 缺失而失败；进一步对两个全新进程的实际导入路径做对照后确认，接口存在于冻结的 `src` 中，但启动顺序先加载了包内 `site-packages` 的旧项目副本。两个文件均与不可变环境清单哈希一致，不能靠跳过 FP32 检查解决。启动顺序已改为冻结 `src` 优先，来源检查同时拒绝来自包内旧项目目录的模块；CPU 探测增加全精度接口契约，原恢复和伴随重验两个收据读取入口都要求该契约及规范源码来源，GPU 仍须实际检查所有参数均为 CUDA／FP32。50 项相关回归通过，两个真实隔离诊断进程分别证明旧导入缺失接口、新导入具备接口，均未初始化 CUDA。旧 CPU v2 收据只证明包内隔离，不证明使用了指定源码组件，不能据此宣布提取环境恢复；新 SHA 锚定的 v3 伴随包已启动全文件／CPU 重验，通过后才运行新的 GPU 合成探测，再交接 16 页写作批次。主课程进程在旧 GPU 探测退出后已恢复 OCR，健康工作进程没有重启。诊断为 `wiki/extraction-environment-project-shadowing-20261102-diagnostic.json`，进度为 `wiki/extraction-environment-20261102-reprobe-v3-progress.json`。
 
 2026-11-02 来源笔记现为 29 / 340 节、4,622 个术语。新增两节各 4／1 个片段，实际 HTTP 对象一致，全部 5 个概念词均能定位对应片段；此前 27 节均保留。最新覆盖清单已发布并经 HTTP 核对，无失效输入或来源身份冲突：30 节完成转写，17 个主题／26 个版本只引用 10 门课，330 门仍无 Wiki 草稿引用；不能把清单结构通过当成全文或语义验收。收据为 `wiki/complete-source-publication-late-20261102-validation.json` 和 `wiki/coverage-29-20261102-validation.json`。
 

@@ -50,6 +50,9 @@ def probe_result(count):
         "original_installation_native_mapping_count": 0,
         "gpu_context_initialized": False,
         "gpu_inference_verified": False,
+        "project_source_policy": "frozen-bundle-src-before-site-packages-v1",
+        "project_modules_from_canonical_source": True,
+        "asr_backend_full_precision_contract_verified": True,
     }
 
 
@@ -147,6 +150,10 @@ def test_authority_failure_leaves_destination_absent(bundle, tmp_path, change):
         ("original_installation_native_mapping_count", 1),
         ("original_installation_native_mapping_count", None),
         ("files_verified", 0),
+        ("project_source_policy", "obsolete"),
+        ("project_modules_from_canonical_source", False),
+        ("project_modules_from_canonical_source", None),
+        ("asr_backend_full_precision_contract_verified", False),
     ],
 )
 def test_nonisolated_or_incomplete_probe_cannot_produce_receipt(

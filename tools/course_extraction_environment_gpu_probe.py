@@ -107,6 +107,7 @@ def check_isolation(bundle, bootstrap, roots, blocked, processes):
     if outside or native or blocked:
         raise ValueError("environment_gpu_probe_not_isolated")
     return {"outside_module_count": 0, "original_native_mapping_count": 0,
+            "project_source_policy": bootstrap.PROJECT_SOURCE_POLICY,
             "project_modules_from_canonical_source": True,
             "blocked_access_attempts": 0}
 
