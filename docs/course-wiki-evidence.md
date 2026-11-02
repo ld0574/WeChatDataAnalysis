@@ -151,3 +151,10 @@ Wiki 写作计划现在可以混合视频窗口与课件片段。课件选择使
 `course_wiki_snapshot.writer_dependencies` 从已发布文章的固定写作配方递归收集 `unchanged_body_job` 和 `unchanged_claim_job`，即使依赖任务本身未发布，也保留其清单、阶段结果和全部尝试 JSON。核对任务 ID 与完整配方哈希、原文包、模型指纹和流水线一致性，并核对阶段数据哈希及输入指纹格式；拒绝越界身份、循环依赖、缺失或变化的清单。它不调用模型、不重置失败预算、不修改原任务。
 
 固定题目策略须保留完整概述与各章原正文断点；逐来源补写策略依据冻结的来源核对与遗漏报告重新列出必需的旧修订阶段。依赖目录或必需阶段缺失时，创建及验收均拒绝，即使文件清单同步删掉该项也不能把缺失隐藏为成功。恢复阅读仍只依赖快照本身；这些字节与依赖校验不等于重新生成、语义正确或完整课程覆盖。
+# 2026-11-02：第 30 节发布与核对证据约束实验
+
+- 第 30 节来源 `52065b506611686f2d7d4333`：43 片段、445 证据，实际阅读 HTTP SHA `3090eb9158ffa31c0a594390129590adcd5eea2ed6b81458301005a554d686d0` 与本地不可变对象一致；5 组检索均定位预期片段，查询词只保存在本机私有输入文件。
+- 发布与检索收据：`wiki/complete-source-publication-30-20261102-validation.json`、`wiki/source30-http-20261102-validation.json`、`wiki/source30-search-20261102-validation.json`。覆盖清单刷新进度：`wiki/coverage-30-20261102-progress.json`。此前 29 节快照不含新发布内容。
+- 六份既有失败回复已用标准 JSON Schema 校验器重放：原 schema 六份均允许，实验 schema 六份均拒绝；未调用模型、未改写原回复。收据：`wiki/check-constraints-retained-failures-20261102-validation.json`。
+- 实验要求基线请求、固定文章与模型摘要一致。首次错选 Defiant 被预检拒绝，实际推理 0 次：`wiki/check-constraints-preflight-20261102-diagnostic.json`。正确的 `qwen3.5:9b` 对照批次进度：`wiki/check-constraints-v2-20261102-progress.json`，每种方向一个固定请求，不发布生产报告、不重置生产预算。
+- 验证：68 项相关测试通过，`wiki/check-constraints-final-20261102-tests.xml`；Ruff 通过。覆盖真实生产失败模式的 schema 检验、原验证器拒绝仅代码解释、实际基线请求身份、完整旧预算保留、独立守护及暂停前不消耗尝试。真实 GPU 结果仍未产生，结构约束不代表语义合格。

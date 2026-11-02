@@ -1,0 +1,98 @@
+"""Opt-in grammar experiment; existing frozen review recipes stay unchanged.
+
+These schemas constrain evidence selection, never semantic correctness. Keep
+the normal source/witness validators after decoding every response.
+"""
+
+from __future__ import annotations
+
+from .course_wiki import object_schema
+
+POLICY = "verdict-dependent-evidence-grammar-experiment-v1"
+
+
+def _array(ids, minimum=0):
+    if not ids:
+        return {"type": "array", "maxItems": 0}
+    return {
+        "type": "array",
+        "minItems": minimum,
+        "items": {"type": "string", "enum": sorted(ids)},
+    }
+
+
+def _reviews(branches, count):
+    return object_schema(
+        {
+            "reviews": {
+                "type": "array",
+                "minItems": count,
+                "maxItems": count,
+                "items": {"oneOf": branches},
+            }
+        }
+    )
+
+
+def forward(request):
+    branches = []
+    for target in request["targets"]:
+        ids = sorted(
+            key
+            for key, witness in request["witnesses"].items()
+            if witness["source"] in target["citations"]
+        )
+        for verdict in ("supported", "partial", "unsupported", "unclear"):
+            if verdict in {"supported", "partial"} and not ids:
+                continue
+            evidence = {"type": "array", "maxItems": 0}
+            if ids:
+                evidence = {
+                    "type": "array",
+                    "minItems": int(verdict in {"supported", "partial"}),
+                    "items": object_schema(
+                        {"witness": {"type": "string", "enum": ids}}
+                    ),
+                }
+            branches.append(
+                object_schema(
+                    {
+                        "target": {"type": "string", "enum": [target["target"]]},
+                        "verdict": {"type": "string", "enum": [verdict]},
+                        "reason": {"type": "string", "minLength": 1},
+                        "evidence": evidence,
+                    }
+                )
+            )
+    return _reviews(branches, len(request["targets"]))
+
+
+def reverse(context):
+    branches = []
+    for key, window in context["windows"].items():
+        ids = {
+            ref
+            for ref, target in context["article_targets"].items()
+            if window["source"] in target["citations"]
+        }
+        for verdict in ("covered", "partial", "missing", "not_essential", "unclear"):
+            if verdict in {"covered", "partial"} and not ids:
+                continue
+            if verdict == "covered" and not any(
+                not ref.endswith("-code") for ref in ids
+            ):
+                continue
+            evidence = {"type": "array", "maxItems": 0}
+            if verdict in {"covered", "partial", "unclear"}:
+                evidence = _array(ids, int(verdict in {"covered", "partial"}))
+            branches.append(
+                object_schema(
+                    {
+                        "window": {"type": "string", "enum": [key]},
+                        "coverage": {"type": "string", "enum": [verdict]},
+                        "reason": {"type": "string", "minLength": 1, "maxLength": 700},
+                        "article_evidence": evidence,
+                    }
+                )
+            )
+    return _reviews(branches, len(context["windows"]))

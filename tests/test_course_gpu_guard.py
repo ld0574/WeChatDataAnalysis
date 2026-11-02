@@ -191,6 +191,21 @@ def test_monitor_role_cannot_escape_archive(root):
     assert (root / "pause.flag").exists()
 
 
+def test_experiment_monitor_retains_other_guard_statuses(root):
+    (root / "pause.flag").unlink()
+    original = b'{"state":"running","pid":42}'
+    for role in ("gpu-thermal-guard", "wiki-revision-thermal-guard", "extraction-thermal-guard"):
+        (root / (role + ".json")).write_bytes(original)
+    worker = SimpleNamespace(pid=123, poll=lambda: 0, returncode=0)
+    guard.run(root, [], maximum_power=200, sampler=lambda: reading(cap=200), launch=lambda *a, **k: worker, guard_name="review-experiment-thermal-guard")
+    value = json.loads((root / "review-experiment-thermal-guard.json").read_bytes())
+    assert value["maximum_temperature_c"] == 70
+    assert value["maximum_power_limit_w"] == 200
+    assert not value["automatic_restart_allowed"]
+    for role in ("gpu-thermal-guard", "wiki-revision-thermal-guard", "extraction-thermal-guard"):
+        assert (root / (role + ".json")).read_bytes() == original
+
+
 def test_extraction_verifier_monitor_can_coexist_without_overwriting_other_roles(root):
     worker = SimpleNamespace(pid=123, poll=lambda: 0, returncode=0)
 

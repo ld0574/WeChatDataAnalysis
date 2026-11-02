@@ -98,6 +98,7 @@ def run(
         "gpu-thermal-guard": "thermal-worker",
         "wiki-revision-thermal-guard": "thermal-wiki-revision",
         "extraction-thermal-guard": "thermal-extraction",
+        "review-experiment-thermal-guard": "thermal-review-experiment",
     }
     if guard_name not in log_names:
         raise ValueError("gpu_guard_unknown_role")
