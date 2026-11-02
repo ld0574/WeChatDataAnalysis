@@ -275,11 +275,22 @@ class Library:
         )
         chunks = re.findall(r"[\u3400-\u9fff]{2,}", chinese)
         grams = {s[i : i + 2] for s in chunks for i in range(len(s) - 1)}
+
+        def score(text):
+            if anchors and not all(a in text for a in anchors):
+                return 0
+            return 12 * (query in text) + 6 * sum(a in text for a in anchors) + sum(
+                g in text for g in grams
+            )
+
         found = []
         for row in self.catalog()["lessons"]:
             if row["state"] != "draft_available" or (video and video != row["id"]):
                 continue
-            for section in self.lesson(row["id"])["sections"]:
+            lesson = self.lesson(row["id"])
+            evidence = lesson.get("evidence", {})
+            frames = [e for e in evidence.values() if e.get("kind") == "frame"]
+            for section in lesson["sections"]:
                 text = (
                     row["title"]
                     + " "
@@ -289,13 +300,35 @@ class Library:
                         c["name"] + " " + c["explanation"] for c in section["concepts"]
                     )
                 ).casefold()
-                if anchors and not all(a in text for a in anchors):
-                    continue
-                matched = sum(g in text for g in grams)
-                score = (
-                    12 * (query in text) + 6 * sum(a in text for a in anchors) + matched
-                )
-                if score:
+                sources = [evidence[str(ref)] for ref in section.get("context", [])]
+                sources += [
+                    e for e in frames
+                    if section["start"] <= e["start"] <= section.get("end", section["start"])
+                ]
+                combined = text + " " + " ".join(e["text"] for e in sources).casefold()
+                rank = score(combined)
+                if rank:
+                    matched_source = None
+                    if sources:
+                        best = max(sources, key=lambda e: score(e["text"].casefold()))
+                        folded = best["text"].casefold()
+                        if score(folded):
+                            position = folded.find(query)
+                            if position < 0:
+                                position = min(
+                                    (folded.find(t) for t in [*anchors, *sorted(grams)] if t in folded),
+                                    default=0,
+                                )
+                            start = max(0, position - 60)
+                            excerpt = best["text"][start : start + 240]
+                            matched_source = {
+                                "id": best["id"], "kind": best["kind"],
+                                "start": best["start"], "end": best["end"],
+                                "excerpt": (
+                                    ("…" if start else "") + excerpt
+                                    + ("…" if start + 240 < len(best["text"]) else "")
+                                ),
+                            }
                     found.append(
                         {
                             "video": row["id"],
@@ -304,7 +337,8 @@ class Library:
                             "heading": section["title"],
                             "start": section["start"],
                             "summary": section["summary"],
-                            "score": score,
+                            "score": rank,
+                            "match_source": matched_source,
                         }
                     )
         return sorted(found, key=lambda x: -x["score"])[:limit]

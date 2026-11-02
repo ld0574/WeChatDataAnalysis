@@ -719,7 +719,7 @@ async function sources(version) {
   }
   toc([["课程清单", "content"]]);
 }
-async function lesson(id, version, targetSection) {
+async function lesson(id, version, targetSection, targetEvidence) {
   const l = await api("/library/api/lesson/" + encodeURIComponent(id));
   if (version !== routeVersion) return;
   main.append(link("← 来源课程", "#sources"));
@@ -743,9 +743,10 @@ async function lesson(id, version, targetSection) {
     d.append(el("summary", "展开原始语音转写"));
     for (const ref of s.context) {
       const e = l.evidence[String(ref)];
-      d.append(
-        el("p", `${time(e.start)}–${time(e.end)}  ${e.text}`, "source-text"),
-      );
+      const original = el("p", `${time(e.start)}–${time(e.end)}  ${e.text}`, "source-text");
+      original.id = s.id + "-evidence-" + e.id;
+      if (s.id === targetSection && String(e.id) === targetEvidence) d.open = true;
+      d.append(original);
     }
     section.append(d);
     const frames = Object.values(l.evidence).filter(
@@ -754,14 +755,18 @@ async function lesson(id, version, targetSection) {
     if (frames.length) {
       const pictures = el("details");
       pictures.append(el("summary", `查看原始画面（${frames.length} 张）`));
-      for (const f of frames) pictures.append(image(f, f.text));
+      for (const f of frames) {
+        const original = image(f, f.text);
+        original.id = s.id + "-evidence-" + f.id;
+        if (s.id === targetSection && String(f.id) === targetEvidence) pictures.open = true;
+        pictures.append(original);
+      }
       section.append(pictures);
     }
     main.append(section);
   }
   if (targetSection)
-    document
-      .getElementById(targetSection)
+    (document.getElementById(targetSection + "-evidence-" + targetEvidence) || document.getElementById(targetSection))
       ?.scrollIntoView({ behavior: "auto" });
 }
 function downloadLearning(text, name) {
@@ -930,11 +935,14 @@ async function search(query, version) {
       row.append(
         link(
           `${r.title} · ${time(r.start)}`,
-          "#lesson=" + r.video + "/" + r.section,
+          "#lesson=" + r.video + "/" + r.section + (r.match_source ? "/" + encodeURIComponent(String(r.match_source.id)) : ""),
         ),
         el("h3", r.heading),
         el("p", r.summary),
       );
+      if (r.match_source) {
+        row.append(el("p", `${r.match_source.kind === "speech" ? "保留转写" : "画面描述"}命中 · ${time(r.match_source.start)}–${time(r.match_source.end)}`, "meta"), el("p", r.match_source.excerpt, "source-text"));
+      }
       results.append(row);
     }
     shown += page.items.length;
@@ -1101,7 +1109,7 @@ async function route() {
     else if (mode === "coverage") await coverage(version);
     else if (mode === "learning") await learningRecords(version);
     else if (mode === "lesson")
-      await lesson(id.split("/")[0], version, id.split("/")[1]);
+      await lesson(id.split("/")[0], version, id.split("/")[1], id.split("/")[2]);
     else if (mode === "terms") await terms(id, version);
     else if (mode === "term") await term(id, version);
     else if (mode === "search") await search(id, version);
