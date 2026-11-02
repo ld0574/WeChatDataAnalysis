@@ -55,7 +55,10 @@ def test_restore_routes_without_original_archive(publication, tmp_path):
         == manifest["id"]
     )
     assert client.get("/wiki/api/coverage").status_code == 503
-    assert client.get("/wiki/api/courseware/search", params={"q": "synthetic"}).status_code == 503
+    assert (
+        client.get("/wiki/api/courseware/search", params={"q": "synthetic"}).status_code
+        == 503
+    )
     source = client.get("/library-assets/course_library.js").text
     assert "snapshotNotice(versions)" in source and "snapshotNotice(wiki)" in source
     assert client.get("/library-assets/course_learning.js").status_code == 200
@@ -76,6 +79,89 @@ def test_restore_routes_without_original_archive(publication, tmp_path):
     isolated = json.loads(process.stdout)
     assert isolated["isolated_reader_verified"]
     assert isolated["original_root_access_attempts"] == 0
+
+
+def test_constrained_reports_survive_actual_isolated_reader_restore(
+    publication, tmp_path, monkeypatch
+):
+    from wechat_decrypt_tool import course_pdf_ocr
+    from wechat_decrypt_tool import course_wiki_review as review
+    from wechat_decrypt_tool import course_wiki_completeness as omissions
+    from test_course_wiki_completeness import response
+
+    monkeypatch.setattr(
+        course_pdf_ocr, "local_model_digest", lambda _: "local-fixed-weights"
+    )
+    monkeypatch.setattr(
+        omissions, "local_model_digest", lambda _: "local-fixed-weights"
+    )
+
+    def chat(model, messages, *, schema):
+        context = json.loads(messages[1]["content"])
+        if "windows" in context:
+            return json.dumps(response(context))
+        return json.dumps(
+            {
+                "reviews": [
+                    {
+                        "target": target["target"],
+                        "verdict": "partial",
+                        "reason": "Synthetic condition gap.",
+                        "evidence": [
+                            {
+                                "witness": next(
+                                    key
+                                    for key, w in context["witnesses"].items()
+                                    if w["source"] in target["citations"]
+                                )
+                            }
+                        ],
+                    }
+                    for target in context["targets"]
+                ]
+            }
+        )
+
+    from wechat_decrypt_tool import course_wiki_writer as writer
+
+    monkeypatch.setattr(review, "local_chat", chat)
+    monkeypatch.setattr(writer, "local_chat", chat)
+    article_id = "e" * 32
+    review.review(ReadOnlyArchive(publication), article_id, constrained_evidence=True)
+    omissions.review(
+        ReadOnlyArchive(publication), article_id, constrained_evidence=True
+    )
+    backup = snapshot.create(
+        publication, tmp_path / "constrained-backup", reserve_gib=0
+    )
+    manifest = json.loads((backup / snapshot.MANIFEST).read_bytes())
+    assert any(
+        row["path"].endswith("/course_wiki_check_constraints.py")
+        for row in manifest["files"]
+    )
+    restored = snapshot.restore(
+        backup, tmp_path / "constrained-restored", reserve_gib=0
+    )
+    assert snapshot.smoke(restored)["complete_model_reports"] == 2
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(Path(__file__).with_name("wiki_snapshot_isolated_reader.py")),
+            str(restored),
+            str(publication),
+            str(Path(snapshot.__file__).parent),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    isolated = json.loads(process.stdout)
+    assert (
+        isolated["isolated_reader_verified"]
+        and isolated["original_root_access_attempts"] == 0
+    )
 
 
 def test_native_visual_report_survives_isolated_restore_and_requires_checkpoints(
@@ -335,9 +421,14 @@ def test_refuses_insufficient_space(publication, tmp_path):
         snapshot.create(publication, tmp_path / "backup", reserve_gib=1e12)
 
 
-@pytest.mark.parametrize("relative", [
-    "wiki/catalog.json", "library/catalog.json", "inventory-unique.json",
-])
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "wiki/catalog.json",
+        "library/catalog.json",
+        "inventory-unique.json",
+    ],
+)
 def test_copies_captured_pointer_bytes_when_live_pointer_advances(
     publication, tmp_path, monkeypatch, relative
 ):
@@ -374,8 +465,14 @@ def test_new_article_publication_preserves_frozen_closure(
         nonlocal published
         if not published:
             published = True
-            wiki.publish_draft(ReadOnlyArchive(publication), old_article["article"],
-                               old_article["packet"], "f" * 32, "fixture", "fixture-digest")
+            wiki.publish_draft(
+                ReadOnlyArchive(publication),
+                old_article["article"],
+                old_article["packet"],
+                "f" * 32,
+                "fixture",
+                "fixture-digest",
+            )
 
     def publish_during_copy(source, target):
         result = original(source, target)

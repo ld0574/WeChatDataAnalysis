@@ -21,7 +21,7 @@ archive = source_archive
 published = source_published
 
 
-def setup(published, monkeypatch, intercept=None):
+def setup(published, monkeypatch, intercept=None, *, constrained=False):
     store, key = published
     model(monkeypatch, store, key)
     article_id = writer.generate(ReadOnlyArchive(store.root), plan(key))["id"]
@@ -29,7 +29,7 @@ def setup(published, monkeypatch, intercept=None):
 
     def chat(model_name, messages, *, schema):
         context = json.loads(messages[1]["content"])
-        assert schema == review.selection_schema(context)
+        assert schema == review.selection_schema(context, constrained=constrained)
         calls.append(context)
         if intercept:
             custom = intercept(context, calls)
@@ -380,3 +380,53 @@ def test_immutable_review_history_rejects_changed_payload(published, monkeypatch
         review.retain_receipt(Wiki(store.root), changed)
     with pytest.raises(ValueError, match="invalid_history_job"):
         review.published_review(store.root, article_id, job="../secret")
+
+
+def test_constrained_review_is_frozen_readable_and_resumes_without_new_calls(
+    published, monkeypatch
+):
+    store, article_id, calls = setup(published, monkeypatch, constrained=True)
+    result = review.review(
+        ReadOnlyArchive(store.root), article_id, constrained_evidence=True
+    )
+    assert result["generation_constraints"] == "verdict-dependent-evidence-grammar-v1"
+    assert (
+        review.published_review(store.root, article_id)["summary"] == result["summary"]
+    )
+    count = len(calls)
+    assert (
+        review.review(
+            ReadOnlyArchive(store.root), article_id, constrained_evidence=True
+        )["job"]
+        == result["job"]
+    )
+    assert len(calls) == count
+    with pytest.raises(ValueError, match="constraint_change_requires_new_article"):
+        review.review(ReadOnlyArchive(store.root), article_id)
+    assert len(calls) == count
+
+
+@pytest.mark.parametrize("constrained", [False, True])
+def test_generation_constraint_change_cannot_reset_failed_review_budget(
+    published, monkeypatch, constrained
+):
+    store, article_id, calls = setup(
+        published,
+        monkeypatch,
+        lambda ctx, calls: '{"reviews":[]}',
+        constrained=constrained,
+    )
+    with pytest.raises(ValueError, match="budget_exhausted"):
+        review.review(
+            ReadOnlyArchive(store.root), article_id, constrained_evidence=constrained
+        )
+    saved = {
+        p: p.read_bytes() for p in (store.root / "wiki/review-jobs").rglob("*.json")
+    }
+    with pytest.raises(ValueError, match="constraint_change_requires_new_article"):
+        review.review(
+            ReadOnlyArchive(store.root),
+            article_id,
+            constrained_evidence=not constrained,
+        )
+    assert len(calls) == 3 and all(p.read_bytes() == raw for p, raw in saved.items())

@@ -115,7 +115,11 @@ def stages(value, *, per_source=False):
             yield f"chapter-{n}-source-{number}", focused
 
 
-def selection_schema(context):
+def selection_schema(context, *, constrained=False):
+    if constrained:
+        from .course_wiki_check_constraints import reverse
+
+        return reverse(context)
     evidence = (
         {
             "type": "array",
@@ -199,7 +203,13 @@ class OmissionJob(DraftJob):
 
 
 def review(
-    store, article_id, model="course-defiant:q4", *, wait_seconds=0, per_source=False
+    store,
+    article_id,
+    model="course-defiant:q4",
+    *,
+    wait_seconds=0,
+    per_source=False,
+    constrained_evidence=False,
 ):
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
         raise ValueError("GPU wait must be bounded to 0..3600 seconds")
@@ -210,6 +220,18 @@ def review(
         existing = wiki.root / "completeness" / (article_id + ".json")
         if existing.exists():
             published_report(store.root, article_id)
+        from .course_wiki_check_constraints import (
+            GENERATION_POLICY,
+            retain_generation_policy,
+        )
+
+        constraint_policy = GENERATION_POLICY if constrained_evidence else None
+        retain_generation_policy(
+            wiki.root,
+            "completeness-jobs",
+            digest(canonical(article)),
+            constraint_policy,
+        )
         job = OmissionJob(
             store,
             article["packet"],
@@ -222,7 +244,15 @@ def review(
                 "model": model,
                 "system": SYSTEM,
                 "requests": [digest(canonical(c)) for _, c in contexts],
-                "schemas": [selection_schema(c) for _, c in contexts],
+                "schemas": [
+                    selection_schema(c, constrained=constrained_evidence)
+                    for _, c in contexts
+                ],
+                **(
+                    {"generation_constraints": constraint_policy}
+                    if constraint_policy
+                    else {}
+                ),
                 **({"source_batching": SOURCE_BATCHING} if per_source else {}),
             },
             job_directory="completeness-jobs",
@@ -240,7 +270,7 @@ def review(
                 result = job.stage(
                     name,
                     SYSTEM,
-                    selection_schema(context),
+                    selection_schema(context, constrained=constrained_evidence),
                     context,
                     lambda value, c=context: validate(value, c),
                     evidence_packet={"sources": context["sources"]},
@@ -273,6 +303,11 @@ def review(
                 "image_relevance_verified": False,
                 "source_deletion_allowed": False,
                 **({"source_batching": SOURCE_BATCHING} if per_source else {}),
+                **(
+                    {"generation_constraints": constraint_policy}
+                    if constraint_policy
+                    else {}
+                ),
             }
             atomic_json(job.root / "receipt.json", receipt)
             atomic_json(existing, receipt)
@@ -352,6 +387,12 @@ def published_report(root, article_id, *, job=None):
     ):
         raise ValueError("omissions_source_batching_changed")
     contexts = list(stages(article, per_source=batching == SOURCE_BATCHING))
+    from .course_wiki_check_constraints import generation_policy
+
+    constraint_policy = recipe["extra"].get("generation_constraints")
+    constrained = generation_policy(constraint_policy)
+    if receipt.get("generation_constraints") != constraint_policy:
+        raise ValueError("omissions_generation_constraints_changed")
     assigned = {ref for _, c in contexts for ref in c["sources"]}
     unassigned = sorted(set(article["packet"]["sources"]) - assigned)
     if receipt.get("unassigned_source_ids", []) != unassigned or receipt[
@@ -362,7 +403,9 @@ def published_report(root, article_id, *, job=None):
         raise ValueError("omissions_chapter_count_changed")
     if recipe["extra"]["requests"] != [
         digest(canonical(c)) for _, c in contexts
-    ] or recipe["extra"]["schemas"] != [selection_schema(c) for _, c in contexts]:
+    ] or recipe["extra"]["schemas"] != [
+        selection_schema(c, constrained=constrained) for _, c in contexts
+    ]:
         raise ValueError("omissions_frozen_requests_changed")
     from .course_wiki_evidence import RANGE_NOTICE
 
@@ -378,7 +421,7 @@ def published_report(root, article_id, *, job=None):
             canonical(
                 {
                     "prompt": recipe["extra"]["system"] + range_notice,
-                    "schema": selection_schema(context),
+                    "schema": selection_schema(context, constrained=constrained),
                     "context": context,
                     "model_digest": recipe["model_digest"],
                 }
@@ -424,6 +467,7 @@ def main():
     parser.add_argument("--model", default="course-defiant:q4")
     parser.add_argument("--wait-gpu-seconds", type=int, default=0)
     parser.add_argument("--per-source", action="store_true")
+    parser.add_argument("--constrained-evidence", action="store_true")
     args = parser.parse_args()
     value = review(
         ReadOnlyArchive(args.root),
@@ -431,6 +475,7 @@ def main():
         args.model,
         wait_seconds=args.wait_gpu_seconds,
         per_source=args.per_source,
+        constrained_evidence=args.constrained_evidence,
     )
     print(
         json.dumps(

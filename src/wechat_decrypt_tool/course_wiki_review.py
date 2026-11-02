@@ -82,7 +82,11 @@ def review_request(targets, sources, *, selected_witnesses=True):
     return {"targets": targets, "witnesses": witnesses}
 
 
-def selection_schema(request):
+def selection_schema(request, *, constrained=False):
+    if constrained:
+        from .course_wiki_check_constraints import forward
+
+        return forward(request)
     schema = json.loads(json.dumps(SCHEMA))
     properties = schema["properties"]["reviews"]["items"]["properties"]
     properties["target"]["enum"] = [t["target"] for t in request["targets"]]
@@ -217,7 +221,13 @@ def slot(store, deadline, progress):
 
 
 def review(
-    store, article_id, model="qwen3.5:9b", *, wait_seconds=0, single_targets=False
+    store,
+    article_id,
+    model="qwen3.5:9b",
+    *,
+    wait_seconds=0,
+    single_targets=False,
+    constrained_evidence=False,
 ):
     from .course_pdf_ocr import local_model_digest
 
@@ -240,6 +250,19 @@ def review(
         }
         if single_targets:
             recipe["batching"] = "single-target-v1"
+        from .course_wiki_check_constraints import (
+            GENERATION_POLICY,
+            retain_generation_policy,
+        )
+
+        if constrained_evidence:
+            recipe["generation_constraints"] = GENERATION_POLICY
+        retain_generation_policy(
+            wiki.root,
+            "review-jobs",
+            recipe["article_sha256"],
+            recipe.get("generation_constraints"),
+        )
         key = digest(canonical(recipe))[:32]
         folder = wiki.root / "review-jobs" / key
         folder.mkdir(parents=True, exist_ok=True)
@@ -315,7 +338,11 @@ def review(
                                 if local_model_digest(model) != weights:
                                     raise ValueError("review_model_weights_changed")
                                 raw = local_chat(
-                                    model, messages, schema=selection_schema(request)
+                                    model,
+                                    messages,
+                                    schema=selection_schema(
+                                        request, constrained=constrained_evidence
+                                    ),
                                 )
                                 if local_model_digest(model) != weights:
                                     raise ValueError("review_model_weights_changed")
@@ -456,6 +483,11 @@ def published_review(root, article_id, *, job=None):
     }
     if "batching" in receipt:
         recipe["batching"] = receipt["batching"]
+    from .course_wiki_check_constraints import generation_policy
+
+    if "generation_constraints" in receipt:
+        recipe["generation_constraints"] = receipt["generation_constraints"]
+    constrained = generation_policy(recipe.get("generation_constraints"))
     if (
         recipe["policy"] != POLICY
         or recipe["article_sha256"] != digest(canonical(article))
@@ -490,6 +522,8 @@ def published_review(root, article_id, *, job=None):
                 "evidence"
             ]["items"]["properties"]
         )
+        if constrained and not selected:
+            raise ValueError("review_constraints_require_selected_witnesses")
         if saved["request_sha256"] != digest(
             canonical(review_request(targets, sources, selected_witnesses=selected))
         ) or saved["data_sha256"] != digest(canonical(saved["data"])):
@@ -518,6 +552,7 @@ def main():
     parser.add_argument("--model", default="qwen3.5:9b")
     parser.add_argument("--wait-gpu-seconds", type=int, default=0)
     parser.add_argument("--single-targets", action="store_true")
+    parser.add_argument("--constrained-evidence", action="store_true")
     args = parser.parse_args()
     value = review(
         ReadOnlyArchive(args.root),
@@ -525,6 +560,7 @@ def main():
         args.model,
         wait_seconds=args.wait_gpu_seconds,
         single_targets=args.single_targets,
+        constrained_evidence=args.constrained_evidence,
     )
     print(json.dumps({"article": value["article"], "summary": value["summary"]}))
 

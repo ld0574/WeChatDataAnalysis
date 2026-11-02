@@ -57,13 +57,13 @@ def response(context):
     }
 
 
-def fake_model(monkeypatch, intercept=None):
+def fake_model(monkeypatch, intercept=None, *, constrained=False):
     calls = []
 
     def chat(name, messages, *, schema):
         context = json.loads(messages[1]["content"])
         calls.append(context)
-        assert schema == omissions.selection_schema(context)
+        assert schema == omissions.selection_schema(context, constrained=constrained)
         if intercept:
             custom = intercept(context, calls)
             if custom is not None:
@@ -191,7 +191,9 @@ def test_partitioned_original_prompt_binding_reads_without_rerunning_model(
 
     monkeypatch.setattr(omissions, "Wiki", FrozenWiki)
     calls = fake_model(monkeypatch)
-    result = omissions.review(ReadOnlyArchive(store.root), article_id, per_source=per_source)
+    result = omissions.review(
+        ReadOnlyArchive(store.root), article_id, per_source=per_source
+    )
     folder = store.root / "wiki/completeness-jobs" / result["job"]
     before = {p.name: p.read_bytes() for p in folder.glob("*.json")}
     saved = omissions.published_report(store.root, article_id, job=result["job"])
@@ -201,7 +203,9 @@ def test_partitioned_original_prompt_binding_reads_without_rerunning_model(
     assert len(calls) == count
     assert {p.name: p.read_bytes() for p in folder.glob("*.json")} == before
     client = TestClient(create_app(ReadOnlyArchive(store.root)))
-    response = client.get("/wiki/api/completeness/" + article_id, params={"job": result["job"]})
+    response = client.get(
+        "/wiki/api/completeness/" + article_id, params={"job": result["job"]}
+    )
     assert response.status_code == 200 and response.json() == saved
     checkpoint = next(p for p in folder.glob("chapter-*.json"))
     value = json.loads(checkpoint.read_bytes())
@@ -463,3 +467,71 @@ def test_frozen_sources_outside_chapter_assignments_are_reported_as_unchecked(
     assert omissions.published_report(store.root, legacy["id"])[
         "unassigned_source_ids"
     ] == [unchecked]
+
+
+def test_constrained_omission_report_keeps_schema_and_resumes_without_calls(
+    drafted, monkeypatch
+):
+    store, article_id = drafted
+    calls = fake_model(monkeypatch, constrained=True)
+    result = omissions.review(
+        ReadOnlyArchive(store.root),
+        article_id,
+        per_source=True,
+        constrained_evidence=True,
+    )
+    assert result["generation_constraints"] == "verdict-dependent-evidence-grammar-v1"
+    assert (
+        omissions.published_report(store.root, article_id)["summary"]
+        == result["summary"]
+    )
+    count = len(calls)
+    assert (
+        omissions.review(
+            ReadOnlyArchive(store.root),
+            article_id,
+            per_source=True,
+            constrained_evidence=True,
+        )["job"]
+        == result["job"]
+    )
+    with pytest.raises(ValueError, match="constraint_change_requires_new_article"):
+        omissions.review(ReadOnlyArchive(store.root), article_id, per_source=True)
+    assert len(calls) == count
+    for folder in [
+        store.root / "wiki/completeness",
+        store.root / "wiki/completeness-jobs" / result["job"],
+    ]:
+        path = folder / (
+            (article_id + ".json") if folder.name == "completeness" else "receipt.json"
+        )
+        changed = json.loads(path.read_bytes())
+        changed.pop("generation_constraints")
+        path.write_bytes(canonical(changed))
+    with pytest.raises(ValueError, match="generation_constraints_changed"):
+        omissions.published_report(store.root, article_id)
+
+
+@pytest.mark.parametrize("constrained", [False, True])
+def test_generation_constraint_change_cannot_reset_omission_budget(
+    drafted, monkeypatch, constrained
+):
+    store, article_id = drafted
+    calls = fake_model(
+        monkeypatch, lambda context, calls: '{"reviews":[]}', constrained=constrained
+    )
+    with pytest.raises(ValueError, match="budget"):
+        omissions.review(
+            ReadOnlyArchive(store.root), article_id, constrained_evidence=constrained
+        )
+    saved = {
+        p: p.read_bytes()
+        for p in (store.root / "wiki/completeness-jobs").rglob("*.json")
+    }
+    with pytest.raises(ValueError, match="constraint_change_requires_new_article"):
+        omissions.review(
+            ReadOnlyArchive(store.root),
+            article_id,
+            constrained_evidence=not constrained,
+        )
+    assert len(calls) == 3 and all(p.read_bytes() == raw for p, raw in saved.items())

@@ -1,5 +1,7 @@
 # Wiki 课件证据
 
+生成约束的生产入口采用显式 `--constrained-evidence`，配方字段 `generation_constraints=verdict-dependent-evidence-grammar-v1` 固定策略；两种检查均拒绝同一文章在新旧约束之间切换以绕过失败预算。现有运行批次不改变配方。验证为 `wiki/production-constraints-20261102-tests.xml`（51 项）与 `wiki/production-constraints-snapshot-20261102-tests.xml`（20 项）；后者实际恢复含新格式正反报告的快照，在禁止读取原目录的独立进程中运行阅读器。第三篇完整双向检查收据为 `wiki/next-four-third-bidirectional-20261102-validation.json`：13 supported／7 partial／5 unsupported；42 covered／1 partial／7 missing／3 not_essential。零模型调用的修订准备 `5a38a5841a0f9489f0054b61fdfca440` 保留全部报告绑定及 16 项请求；不表示已修订或语义通过。
+
 2026-11-02 独立提取环境恢复完成：`wiki/extraction-environment-all-20261102-validation.json` 绑定正式 CPU 收据与真实 GPU v5 证明，核对冻结清单、探测脚本与 CPU 伴随脚本 SHA、CUDA／FP32 参数、合成语音、文字／图像哨兵及零外部来源访问。GPU 原证明 SHA `430230caff1e5b2ead35453ced8820b93fe083038fc3c2c29e36cea5bff62404`；完整证明、启动诊断和合成服务日志均另存 C 盘 v5 伴随备份并逐字节校验。探测及独立模型服务已退出。最新源码增量尚未独立执行，全部课程与语义覆盖仍未验收。
 
 证据约束的两项真实 GPU 实验已按冻结配方重验：`wiki/check-constraints-gpu-20261102-validation.json`。正向实验 `7f23a53c63c5dd05f1d83c9534c879ae` 与反向实验 `a85130fb9d087048e64183513e996197` 各一次逻辑调用、各一项 partial；原模型摘要、完整请求、首个失败原回复 SHA 一致，原阶段各三次失败仍保留。原来源验证器均通过，但生产报告未改动，不能把 partial 当作语义合格。覆盖清单收据为 `wiki/coverage-30-20261102-validation.json`，当前 30 节笔记／20 个主题／29 个版本，11 门课有草稿引用，329 门没有。

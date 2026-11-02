@@ -1,4 +1,4 @@
-"""Opt-in grammar experiment; existing frozen review recipes stay unchanged.
+"""Versioned opt-in evidence grammar; frozen review recipes stay unchanged.
 
 These schemas constrain evidence selection, never semantic correctness. Keep
 the normal source/witness validators after decoding every response.
@@ -6,9 +6,31 @@ the normal source/witness validators after decoding every response.
 
 from __future__ import annotations
 
+import json
+
 from .course_wiki import object_schema
 
 POLICY = "verdict-dependent-evidence-grammar-experiment-v1"
+GENERATION_POLICY = "verdict-dependent-evidence-grammar-v1"
+
+
+def generation_policy(value):
+    if value not in (None, GENERATION_POLICY):
+        raise ValueError("check_unknown_generation_constraints")
+    return value is not None
+
+
+def retain_generation_policy(wiki, directory, article_sha, policy):
+    """Changing a schema cannot give an existing article a fresh attempt budget."""
+    generation_policy(policy)
+    for path in (wiki / directory).glob("*/manifest.json"):
+        saved = json.loads(path.read_bytes())
+        saved = saved if directory == "review-jobs" else saved["recipe"]["extra"]
+        if (
+            saved.get("article_sha256") == article_sha
+            and saved.get("generation_constraints") != policy
+        ):
+            raise ValueError("check_constraint_change_requires_new_article")
 
 
 def _array(ids, minimum=0):
