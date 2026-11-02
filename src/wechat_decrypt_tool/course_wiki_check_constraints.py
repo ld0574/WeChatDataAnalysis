@@ -12,17 +12,23 @@ from .course_wiki import object_schema
 
 POLICY = "verdict-dependent-evidence-grammar-experiment-v1"
 GENERATION_POLICY = "verdict-dependent-evidence-grammar-v1"
+KEYED_REVERSE_POLICY = "keyed-window-verdict-dependent-evidence-grammar-v1"
 
 
-def generation_policy(value):
-    if value not in (None, GENERATION_POLICY):
+def generation_policy(value, *, reverse=False):
+    allowed = (
+        (None, GENERATION_POLICY, KEYED_REVERSE_POLICY)
+        if reverse
+        else (None, GENERATION_POLICY)
+    )
+    if value not in allowed:
         raise ValueError("check_unknown_generation_constraints")
     return value is not None
 
 
 def retain_generation_policy(wiki, directory, article_sha, policy):
     """Changing a schema cannot give an existing article a fresh attempt budget."""
-    generation_policy(policy)
+    generation_policy(policy, reverse=directory == "completeness-jobs")
     for path in (wiki / directory).glob("*/manifest.json"):
         saved = json.loads(path.read_bytes())
         saved = saved if directory == "review-jobs" else saved["recipe"]["extra"]
@@ -118,3 +124,19 @@ def reverse(context):
                 )
             )
     return _reviews(branches, len(context["windows"]))
+
+
+def reverse_keyed(context):
+    """Each required window has its own result slot, never an array of IDs."""
+    properties = {key: [] for key in context["windows"]}
+    for branch in reverse(context)["properties"]["reviews"]["items"]["oneOf"]:
+        key = branch["properties"].pop("window")["enum"][0]
+        branch["required"].remove("window")
+        properties[key].append(branch)
+    return object_schema(
+        {
+            "reviews": object_schema(
+                {key: {"oneOf": branches} for key, branches in properties.items()}
+            )
+        }
+    )

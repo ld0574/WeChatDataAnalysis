@@ -37,6 +37,14 @@ not_essential 必须解释为什么本章无需展开，不能用它掩盖关键
 文章的原始出处面板与资料缺口不能充当知识解释。找不到解释就返回 missing 或 unclear，证据为空。
 只使用本章给出的原文和文章目标编号，不编造引句，不补外部知识。输出指定 JSON。
 这是模型辅助遗漏检查，不能宣称通过全文、整门课程、语义、图文或代码运行验收。"""
+KEYED_SYSTEM = (
+    SYSTEM
+    + """
+本次使用范围编号为键的对象：reviews 必须是对象，不是数组。
+windows 中每个编号都是 reviews 的一个必填键，各填写 coverage、reason、article_evidence。
+不得输出 window 字段，不得省略、重复或新增范围编号。每个范围独立判断，不能用一个结论代替其他范围。
+"""
+)
 
 
 def stages(value, *, per_source=False):
@@ -115,7 +123,11 @@ def stages(value, *, per_source=False):
             yield f"chapter-{n}-source-{number}", focused
 
 
-def selection_schema(context, *, constrained=False):
+def selection_schema(context, *, constrained=False, keyed=False):
+    if keyed:
+        from .course_wiki_check_constraints import reverse_keyed
+
+        return reverse_keyed(context)
     if constrained:
         from .course_wiki_check_constraints import reverse
 
@@ -179,7 +191,36 @@ def validate(data, context):
             raise ValueError("omissions_absence_must_not_claim_article_evidence")
 
 
+def decode_keyed(data, context):
+    """Validate the decoded map and normalize only for existing report readers."""
+    from jsonschema import Draft202012Validator
+
+    if not Draft202012Validator(selection_schema(context, keyed=True)).is_valid(data):
+        raise ValueError("omissions_keyed_result_shape_invalid")
+    normalized = {
+        "reviews": [
+            {"window": key, **data["reviews"][key]} for key in context["windows"]
+        ]
+    }
+    validate(normalized, context)
+    return normalized
+
+
 class OmissionJob(DraftJob):
+    def parse_response(self, raw):
+        if not getattr(self, "keyed_windows", False):
+            return super().parse_response(raw)
+
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate_json_keys_in_keyed_omissions")
+                result[key] = value
+            return result
+
+        return json.loads(raw, object_pairs_hook=unique)
+
     def progress(self, state, stage, **extra):
         self.current = stage
         (self.store.root / "wiki" / "completeness").mkdir(exist_ok=True)
@@ -210,7 +251,10 @@ def review(
     wait_seconds=0,
     per_source=False,
     constrained_evidence=False,
+    keyed_windows=False,
 ):
+    if type(keyed_windows) is not bool:
+        raise ValueError("omissions_invalid_keyed_windows_option")
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
         raise ValueError("GPU wait must be bounded to 0..3600 seconds")
     wiki = Wiki(store.root)
@@ -222,10 +266,18 @@ def review(
             published_report(store.root, article_id)
         from .course_wiki_check_constraints import (
             GENERATION_POLICY,
+            KEYED_REVERSE_POLICY,
             retain_generation_policy,
         )
 
-        constraint_policy = GENERATION_POLICY if constrained_evidence else None
+        constraint_policy = (
+            KEYED_REVERSE_POLICY
+            if keyed_windows
+            else GENERATION_POLICY
+            if constrained_evidence
+            else None
+        )
+        system = KEYED_SYSTEM if keyed_windows else SYSTEM
         retain_generation_policy(
             wiki.root,
             "completeness-jobs",
@@ -242,10 +294,12 @@ def review(
             recipe_extra={
                 "article_sha256": digest(canonical(article)),
                 "model": model,
-                "system": SYSTEM,
+                "system": system,
                 "requests": [digest(canonical(c)) for _, c in contexts],
                 "schemas": [
-                    selection_schema(c, constrained=constrained_evidence)
+                    selection_schema(
+                        c, constrained=constrained_evidence, keyed=keyed_windows
+                    )
                     for _, c in contexts
                 ],
                 **(
@@ -258,6 +312,7 @@ def review(
             job_directory="completeness-jobs",
         )
         job.article_id, job.total = article_id, len(contexts)
+        job.keyed_windows = keyed_windows
         if (job.root / "receipt.json").exists():
             result = published_report(store.root, article_id, job=job.key)
             atomic_json(existing, json.loads((job.root / "receipt.json").read_bytes()))
@@ -269,12 +324,18 @@ def review(
             for name, context in contexts:
                 result = job.stage(
                     name,
-                    SYSTEM,
-                    selection_schema(context, constrained=constrained_evidence),
+                    system,
+                    selection_schema(
+                        context, constrained=constrained_evidence, keyed=keyed_windows
+                    ),
                     context,
-                    lambda value, c=context: validate(value, c),
+                    lambda value, c=context: (
+                        decode_keyed(value, c) if keyed_windows else validate(value, c)
+                    ),
                     evidence_packet={"sources": context["sources"]},
                 )
+                if keyed_windows:
+                    result = decode_keyed(result, context)
                 results.append({"stage": name, "reviews": result["reviews"]})
             if digest(canonical(wiki.article(article_id))) != digest(
                 canonical(article)
@@ -387,10 +448,13 @@ def published_report(root, article_id, *, job=None):
     ):
         raise ValueError("omissions_source_batching_changed")
     contexts = list(stages(article, per_source=batching == SOURCE_BATCHING))
-    from .course_wiki_check_constraints import generation_policy
+    from .course_wiki_check_constraints import KEYED_REVERSE_POLICY, generation_policy
 
     constraint_policy = recipe["extra"].get("generation_constraints")
-    constrained = generation_policy(constraint_policy)
+    constrained = generation_policy(constraint_policy, reverse=True)
+    keyed = constraint_policy == KEYED_REVERSE_POLICY
+    if keyed and recipe["extra"]["system"] != KEYED_SYSTEM:
+        raise ValueError("omissions_keyed_system_changed")
     if receipt.get("generation_constraints") != constraint_policy:
         raise ValueError("omissions_generation_constraints_changed")
     assigned = {ref for _, c in contexts for ref in c["sources"]}
@@ -404,7 +468,7 @@ def published_report(root, article_id, *, job=None):
     if recipe["extra"]["requests"] != [
         digest(canonical(c)) for _, c in contexts
     ] or recipe["extra"]["schemas"] != [
-        selection_schema(c, constrained=constrained) for _, c in contexts
+        selection_schema(c, constrained=constrained, keyed=keyed) for _, c in contexts
     ]:
         raise ValueError("omissions_frozen_requests_changed")
     from .course_wiki_evidence import RANGE_NOTICE
@@ -414,14 +478,20 @@ def published_report(root, article_id, *, job=None):
         raise ValueError("omissions_original_range_notice_changed")
     chapters = []
     for saved, (name, context) in zip(receipt["chapters"], contexts, strict=True):
-        data = {"reviews": saved["reviews"]}
-        validate(data, context)
         checkpoint = json.loads((folder / (name + ".json")).read_bytes())
+        data = checkpoint["data"] if keyed else {"reviews": saved["reviews"]}
+        if keyed:
+            if decode_keyed(data, context)["reviews"] != saved["reviews"]:
+                raise ValueError("omissions_keyed_checkpoint_results_changed")
+        else:
+            validate(data, context)
         binding = digest(
             canonical(
                 {
                     "prompt": recipe["extra"]["system"] + range_notice,
-                    "schema": selection_schema(context, constrained=constrained),
+                    "schema": selection_schema(
+                        context, constrained=constrained, keyed=keyed
+                    ),
                     "context": context,
                     "model_digest": recipe["model_digest"],
                 }
@@ -468,6 +538,7 @@ def main():
     parser.add_argument("--wait-gpu-seconds", type=int, default=0)
     parser.add_argument("--per-source", action="store_true")
     parser.add_argument("--constrained-evidence", action="store_true")
+    parser.add_argument("--keyed-windows", action="store_true")
     args = parser.parse_args()
     value = review(
         ReadOnlyArchive(args.root),
@@ -476,6 +547,7 @@ def main():
         wait_seconds=args.wait_gpu_seconds,
         per_source=args.per_source,
         constrained_evidence=args.constrained_evidence,
+        keyed_windows=args.keyed_windows,
     )
     print(
         json.dumps(

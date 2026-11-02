@@ -355,6 +355,9 @@ class DraftJob:
         )
         return schema, binding
 
+    def parse_response(self, raw):
+        return json.loads(raw)
+
     def stage(self, name, prompt, schema, context, validate, *, evidence_packet=None):
         from .course_pdf_ocr import local_model_digest
 
@@ -420,7 +423,7 @@ class DraftJob:
                     if local_model_digest(self.model) != self.model_digest:
                         raise ValueError("local_model_revision_changed")
                 record["raw_response"] = raw
-                value = json.loads(raw)
+                value = self.parse_response(raw)
                 validate(value)
             except GpuBusyError:
                 raise  # Waiting is not a failed model attempt.
