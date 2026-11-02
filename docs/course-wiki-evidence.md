@@ -1,5 +1,7 @@
 # Wiki 课件证据
 
+2026-11-03 新窗口分组策略的实际任务 `b060c889e37287f66e60f7373b87aac9` 已终止，完成 1 / 25 组、5 个窗口。首个键控断点独立重新解码通过，五项均为 partial；第二组三次 `ModelOutputTruncatedError` 的 `done_reason` 都为 length，实际 prompt_eval_count + eval_count 分别为 7,909 + 283、7,914 + 278、7,914 + 278，均耗尽通用推理配置的 8,192 token 上限，而输出配置原本请求 2,500 token。第二／三次原始响应哈希相同，失败及耗尽预算均保留。该结果只证明首组键控格式实际可用，不是完整报告或语义通过。诊断 `wiki/window-batches-pilot-terminal-20261103-diagnostic.json`；运行进程及守护均已退出，未启动新重试。下一步应为尚未启动的范围绑定较大上下文和可核验的推理参数，而不是改变旧任务默认值、丢弃原文或循环重写相同文章。
+
 2026-11-03 新增可选窗口分组协议 `ordered-windows-with-complete-source-and-article-context-16000-v1`，生成策略 `keyed-window-batches-verdict-dependent-evidence-grammar-v1`，必须显式同时选择逐来源和键控结果。完整来源及文章目标在各组原样重复，只有 windows 的键集合分区；所有上下文先构造并检查，超大的单窗口不会消耗模型调用。配方、收据和历史报告均重建同一分组，缺失、篡改或与旧策略互换被拒绝。旧配方及旧默认行为保持。
 
 `wiki/window-batches-final-20261103-tests.xml` 的 62 项检查通过；`wiki/window-batches-unsplittable-20261103-tests.xml` 另有 1 项不可拆分实际发布夹具通过，模型调用和任务分配均为 0。超限夹具还执行了真实发布、键控检查、断点恢复、快照复制及禁止原项目访问的独立阅读器验证；模型回复为合成数据，不表示真实语义通过。首次测试的未使用夹具导入被 Ruff 移除，导致初始化失败；第二次仅一处断言误把 writer 的 `previous_validation_failure` 修复信封计入冻结上下文范围，修正后通过，旧失败 XML 保留。预检 `wiki/window-batches-real-preflight-20261103-validation.json` 对真实文章得到 25 组、48 个窗口、最大 15,853 字符，原文完整且每章窗口恰好一次，并重新读取全部 26 份旧完整遗漏报告校验冻结请求、schema 和断点，模型调用为 0。
