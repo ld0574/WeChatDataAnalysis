@@ -233,7 +233,11 @@ class DraftJob:
         pipeline=POLICY,
         recipe_extra=None,
         job_directory="jobs",
+        max_attempts=3,
     ):
+        if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
+            raise ValueError("wiki_invalid_stage_attempt_budget")
+        self.max_attempts = max_attempts
         self.pipeline = pipeline
         self.store, self.packet, self.model, self.model_digest = (
             store,
@@ -253,6 +257,8 @@ class DraftJob:
         }
         if recipe_extra is not None:
             recipe["extra"] = recipe_extra
+        if max_attempts != 3:
+            recipe["stage_attempt_budget"] = max_attempts
         self.range_notice = ""
         if packet.get("evidence_partitions"):
             from .course_wiki_evidence import RANGE_NOTICE
@@ -371,7 +377,7 @@ class DraftJob:
             repair = prior.get("validation_error", "")
         # A bounded per-stage budget also survives restarts; a bad plan cannot
         # consume the GPU forever by repeatedly restarting the same command.
-        for attempt in range(len(previous), 3):
+        for attempt in range(len(previous), self.max_attempts):
             raw = ""
             record = {
                 "stage": name,
@@ -395,6 +401,13 @@ class DraftJob:
                         },
                     ]
                     record["request_sha256"] = digest(canonical(messages))
+                    if self.max_attempts != 3:
+                        # A restricted repair consumes its call even if the
+                        # process stops after inference but before validation.
+                        atomic_json(
+                            attempts / (name + f"-{attempt + 1:02}.json"),
+                            {**record, "state": "started"},
+                        )
                     raw = local_chat(self.model, messages, schema=schema)
                     if local_model_digest(self.model) != self.model_digest:
                         raise ValueError("local_model_revision_changed")

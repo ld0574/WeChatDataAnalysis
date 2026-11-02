@@ -127,9 +127,17 @@ def writer_dependencies(root, publication):
                 ):
                     raise ValueError("snapshot_writer_checkpoint_changed")
             extra = recipe.get("extra", {})
-            for field in ("unchanged_body_job", "unchanged_claim_job"):
+            for field in (
+                "unchanged_body_job",
+                "unchanged_claim_job",
+                "unchanged_assessment_job",
+            ):
                 if field in extra:
                     visit(extra[field], recipe)
+            if "criteria_repair" in extra:
+                from .course_wiki_synthesis_repair import validate_lineage
+
+                validate_lineage(root, recipe, complete=True, job=key)
             if "unchanged_body_job" in extra:
                 body = inside(root, "wiki/jobs/" + extra["unchanged_body_job"])
                 stages = ["introduction"] + [
