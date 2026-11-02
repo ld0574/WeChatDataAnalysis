@@ -164,3 +164,17 @@ Wiki 写作计划现在可以混合视频窗口与课件片段。课件选择使
 - 六份既有失败回复已用标准 JSON Schema 校验器重放：原 schema 六份均允许，实验 schema 六份均拒绝；未调用模型、未改写原回复。收据：`wiki/check-constraints-retained-failures-20261102-validation.json`。
 - 实验要求基线请求、固定文章与模型摘要一致。首次错选 Defiant 被预检拒绝，实际推理 0 次：`wiki/check-constraints-preflight-20261102-diagnostic.json`。正确的 `qwen3.5:9b` 对照批次进度：`wiki/check-constraints-v2-20261102-progress.json`，每种方向一个固定请求，不发布生产报告、不重置生产预算。
 - 验证：68 项相关测试通过，`wiki/check-constraints-final-20261102-tests.xml`；Ruff 通过。覆盖真实生产失败模式的 schema 检验、原验证器拒绝仅代码解释、实际基线请求身份、完整旧预算保留、独立守护及暂停前不消耗尝试。真实 GPU 结果仍未产生，结构约束不代表语义合格。
+
+## 2026-11-02：截断诊断与夜间续跑
+
+此前两次证据约束 GPU 实验已完成，每个方向各一个调用，原验证器均接受 `partial`，仅证明输出结构及原文字面证据合法：`wiki/check-constraints-gpu-20261102-validation.json`。生产策略的显式约束选项已冻结到配方，旧文章不得切换策略刷新预算。
+
+有限目录批次中的第五篇文章三次在理由字符串结束前截断，而非缺少证据后才被拒绝。诊断工具增加 `--schema-variant bounded-reason-v2`，仅用于正向核对：保留完整请求、模型与原输出 token 上限，约束理由最多 700 字符；仍须通过原文字面证据验证器，不写生产报告。首次启动因工具使用整章分组查找单主张阶段而在推理前失败，实际模型调用为 0；现改为根据基线冻结的分组策略重建目标，随后仍须比对完整请求、文章与模型指纹。旧尝试全部保留。修正后的单次诊断进度为 `wiki/bounded-reason-v2-20261102-progress.json`，GPU 等待不表示已完成。
+
+自测失败的三个保留回复均有空判断标准数组；旧生成 schema 允许，但应用验证器拒绝。CPU 重放收据 `wiki/finite-self-check-criteria-20261102-diagnostic.json` 记录逐文件哈希与两种约束结果，没有调用模型或修改生产配方；后续修复须保留旧预算和断点来源。
+
+六篇已发布草稿的 HTTP 对象、标题搜索和 7 个原图路由字节已核对，未发现长度至少 80 字的完全相同跨篇段落：`wiki/finite-publication-audit-20261102-validation.json`。这不证明语义去重、图文相关或知识完整。失败目录页的 15 个超容量窗口已完整映射到既有的 29 个范围、44 页，保留 93,971 个原文字符，无需另建重复队列：`wiki/failed-directory-allocation-map-20261102-validation.json`。
+
+诊断及约束测试共 14 项通过，收据 `wiki/bounded-reason-experiment-v2-20261102-tests.xml`；Ruff 通过。覆盖单主张基线请求完全一致、原失败文件不变、单次额外诊断预算及超过理由长度后的拒绝。生产修订交接所绑定的六份源文件保持不变。
+
+用户允许夜间提高功耗，当前延续已经生效的 200W 上限、70°C 自动暂停和禁止自动温控恢复。健康的转写、写作与修订交接进程保持运行，不重复启动，不因夜间运行清除暂停标志；完整 340 节课程的 Wiki 目标仍未完成。

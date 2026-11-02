@@ -28,15 +28,41 @@ from wechat_decrypt_tool.course_video_visual_audit import ReadOnlyArchive
 from wechat_decrypt_tool.course_wiki import Wiki
 
 
-def run(root, kind, article_id, stage, model, wait_seconds=3600, baseline_job=None):
+def run(
+    root,
+    kind,
+    article_id,
+    stage,
+    model,
+    wait_seconds=3600,
+    baseline_job=None,
+    schema_variant="evidence",
+):
     if kind not in {"forward", "reverse"}:
         raise ValueError("experiment_unknown_kind")
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
         raise ValueError("experiment_invalid_wait")
+    if schema_variant not in {"evidence", "bounded-reason-v2"}:
+        raise ValueError("experiment_unknown_schema_variant")
+    if schema_variant == "bounded-reason-v2" and kind != "forward":
+        raise ValueError("experiment_bounded_reason_requires_forward")
     store = ReadOnlyArchive(root)
     article = Wiki(root).article(article_id)
+    baseline_folder = frozen = manifest_raw = None
+    if baseline_job is not None:
+        if not re.fullmatch(r"[a-f0-9]{32}", baseline_job):
+            raise ValueError("experiment_invalid_baseline_job")
+        baseline_folder = (
+            store.root
+            / "wiki"
+            / ("review-jobs" if kind == "forward" else "completeness-jobs")
+            / baseline_job
+        )
+        manifest_raw = (baseline_folder / "manifest.json").read_bytes()
+        manifest = json.loads(manifest_raw)
+        frozen = manifest if kind == "forward" else manifest["recipe"]
     if kind == "forward":
-        targets = dict(review.batches(article["article"]))[stage]
+        targets = dict(review.review_batches(article["article"], frozen or {}))[stage]
         sources = {
             ref: article["packet"]["sources"][ref]
             for target in targets
@@ -51,6 +77,9 @@ def run(root, kind, article_id, stage, model, wait_seconds=3600, baseline_job=No
 
         if article["packet"].get("evidence_partitions"):
             system += RANGE_NOTICE
+    if schema_variant == "bounded-reason-v2":
+        for branch in schema["properties"]["reviews"]["items"]["oneOf"]:
+            branch["properties"]["reason"]["maxLength"] = 700
     Draft202012Validator.check_schema(schema)
     if len(canonical(context).decode()) > (13500 if kind == "forward" else 16000):
         raise ValueError("experiment_context_exceeds_existing_bound")
@@ -68,17 +97,6 @@ def run(root, kind, article_id, stage, model, wait_seconds=3600, baseline_job=No
     ]
     baseline = None
     if baseline_job is not None:
-        if not re.fullmatch(r"[a-f0-9]{32}", baseline_job):
-            raise ValueError("experiment_invalid_baseline_job")
-        baseline_folder = (
-            store.root
-            / "wiki"
-            / ("review-jobs" if kind == "forward" else "completeness-jobs")
-            / baseline_job
-        )
-        manifest_raw = (baseline_folder / "manifest.json").read_bytes()
-        manifest = json.loads(manifest_raw)
-        frozen = manifest if kind == "forward" else manifest["recipe"]
         first_attempt = baseline_folder / (
             stage + "-attempt-1.json"
             if kind == "forward"
@@ -118,6 +136,7 @@ def run(root, kind, article_id, stage, model, wait_seconds=3600, baseline_job=No
         "baseline": baseline,
         "logical_call_budget": 1,
         "transport_attempts_per_call_max": 3,
+        **({"schema_variant": schema_variant} if schema_variant != "evidence" else {}),
     }
     key = digest(canonical(recipe))[:32]
     folder = store.root / "wiki" / "check-experiments" / key
@@ -230,6 +249,11 @@ def main():
     parser.add_argument("--stage", required=True)
     parser.add_argument("--model", default="qwen3.5:9b")
     parser.add_argument("--baseline-job")
+    parser.add_argument(
+        "--schema-variant",
+        choices=["evidence", "bounded-reason-v2"],
+        default="evidence",
+    )
     args = parser.parse_args()
     result = run(
         args.root,
@@ -238,6 +262,7 @@ def main():
         args.stage,
         args.model,
         baseline_job=args.baseline_job,
+        schema_variant=args.schema_variant,
     )
     print(json.dumps(result))
     raise SystemExit(
