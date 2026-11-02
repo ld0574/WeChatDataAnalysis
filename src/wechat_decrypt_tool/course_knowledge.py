@@ -568,6 +568,17 @@ class KnowledgeStore:
                 key = version["source_key"]
                 extractor = version["extractor"]
                 raw = version["raw_digest"]
+                if version.get("require_absent") and (
+                    c.execute(
+                        "SELECT 1 FROM resource_revisions WHERE path=? AND source_key=?",
+                        (path, key),
+                    ).fetchone()
+                    or c.execute(
+                        "SELECT 1 FROM documents WHERE path=? AND source_key=? LIMIT 1",
+                        (path, key),
+                    ).fetchone()
+                ):
+                    raise RuntimeError("Document alias target is no longer absent")
                 parent = version["metadata"].get("parent_source_key")
                 if parent is not None:
                     current = c.execute(
