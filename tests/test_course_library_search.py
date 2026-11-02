@@ -120,5 +120,34 @@ def test_source_only_queries_find_correct_section_and_original_without_republica
         assert item["summary"] == "Brief generated notes."
         assert lib.search(query, video="unrelated-course") == []
     assert obj.read_bytes() == raw
+    assert all(not item["match_sources"] for item in lib.search("Synthetic"))
     # One result per section even if notes and multiple originals match.
     assert len(lib.search("retained")) == 1
+
+
+def test_multiword_query_across_transcription_rows_keeps_both_original_destinations(tmp_path):
+    root = tmp_path / "library"
+    (root / "objects").mkdir(parents=True)
+    value = {
+        "sections": [{"id": "section-0", "title": "Section", "start": 0, "end": 60,
+                      "summary": "Brief notes", "concepts": [], "context": [1, 3, 4, 5, 2]}],
+        "evidence": {
+            "1": {"id": 1, "kind": "speech", "start": 0, "end": 10, "text": "AlphaIdentifier appears here."},
+            "2": {"id": 2, "kind": "speech", "start": 10, "end": 20, "text": "BetaIdentifier appears later."},
+            **{str(n): {"id": n, "kind": "speech", "start": 0, "end": 10,
+                        "text": "AlphaIdentifier repeated."} for n in (3, 4, 5)},
+        },
+    }
+    raw = canonical(value)
+    sha = digest(raw)
+    (root / "objects" / (sha + ".json")).write_bytes(raw)
+    atomic_json(root / "catalog.json", {"lessons": [
+        {"id": "synthetic", "title": "Synthetic", "state": "draft_available", "artifact": sha}
+    ]})
+    result = Library(tmp_path).search("AlphaIdentifier BetaIdentifier")
+    assert len(result) == 1
+    assert result[0]["match_source"] == result[0]["match_sources"][0]
+    assert [s["id"] for s in result[0]["match_sources"]][:2] == [1, 2]
+    assert len(result[0]["match_sources"]) == 3
+    assert result[0]["match_sources"][0]["excerpt"] == value["evidence"]["1"]["text"]
+    assert result[0]["match_sources"][1]["excerpt"] == value["evidence"]["2"]["text"]

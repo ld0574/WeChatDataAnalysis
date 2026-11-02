@@ -276,8 +276,8 @@ class Library:
         chunks = re.findall(r"[\u3400-\u9fff]{2,}", chinese)
         grams = {s[i : i + 2] for s in chunks for i in range(len(s) - 1)}
 
-        def score(text):
-            if anchors and not all(a in text for a in anchors):
+        def score(text, *, require_all=True):
+            if require_all and anchors and not all(a in text for a in anchors):
                 return 0
             return 12 * (query in text) + 6 * sum(a in text for a in anchors) + sum(
                 g in text for g in grams
@@ -308,11 +308,20 @@ class Library:
                 combined = text + " " + " ".join(e["text"] for e in sources).casefold()
                 rank = score(combined)
                 if rank:
-                    matched_source = None
-                    if sources:
-                        best = max(sources, key=lambda e: score(e["text"].casefold()))
+                    matched_sources = []
+                    remaining = list(sources)
+                    uncovered = set(anchors) or set(grams)
+                    while remaining and len(matched_sources) < 3:
+                        best = max(
+                            remaining,
+                            key=lambda e: (
+                                sum(t in e["text"].casefold() for t in uncovered),
+                                score(e["text"].casefold(), require_all=False),
+                            ),
+                        )
+                        remaining.remove(best)
                         folded = best["text"].casefold()
-                        if score(folded):
+                        if score(folded, require_all=False):
                             position = folded.find(query)
                             if position < 0:
                                 position = min(
@@ -321,14 +330,17 @@ class Library:
                                 )
                             start = max(0, position - 60)
                             excerpt = best["text"][start : start + 240]
-                            matched_source = {
+                            matched_sources.append({
                                 "id": best["id"], "kind": best["kind"],
                                 "start": best["start"], "end": best["end"],
                                 "excerpt": (
                                     ("…" if start else "") + excerpt
                                     + ("…" if start + 240 < len(best["text"]) else "")
                                 ),
-                            }
+                            })
+                            uncovered = {t for t in uncovered if t not in folded}
+                        else:
+                            break
                     found.append(
                         {
                             "video": row["id"],
@@ -338,7 +350,8 @@ class Library:
                             "start": section["start"],
                             "summary": section["summary"],
                             "score": rank,
-                            "match_source": matched_source,
+                            "match_source": matched_sources[0] if matched_sources else None,
+                            "match_sources": matched_sources,
                         }
                     )
         return sorted(found, key=lambda x: -x["score"])[:limit]

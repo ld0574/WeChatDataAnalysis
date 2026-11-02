@@ -65,3 +65,20 @@ test('search result carries source destination and renders excerpt as text', asy
   assert.ok(nodes.some((node) => node.textContent === excerpt));
   assert.equal(nodes.filter((node) => node.tagName === 'img').length, 0);
 });
+
+test('each matching original has its own destination for a multiword query', async () => {
+  const originals = [
+    { id: 1, kind: 'speech', start: 10, end: 20, excerpt: 'AlphaIdentifier' },
+    { id: 2, kind: 'speech', start: 20, end: 30, excerpt: 'BetaIdentifier' },
+  ];
+  const ui = reader('#search=AlphaIdentifier%20BetaIdentifier', { total: 1, items: [{
+    video: 'course', section: 'section-0', title: 'Source', heading: 'Section', start: 0, summary: 'Summary',
+    match_source: originals[0], match_sources: originals,
+  }], next_offset: null });
+  await ui.context.route();
+  const nodes = ui.descendants(ui.main);
+  for (const original of originals) {
+    assert.ok(nodes.some((node) => node.href === '#lesson=course/section-0/' + original.id));
+    assert.ok(nodes.some((node) => node.textContent === original.excerpt));
+  }
+});

@@ -940,8 +940,8 @@ async function search(query, version) {
         el("h3", r.heading),
         el("p", r.summary),
       );
-      if (r.match_source) {
-        row.append(el("p", `${r.match_source.kind === "speech" ? "保留转写" : "画面描述"}命中 · ${time(r.match_source.start)}–${time(r.match_source.end)}`, "meta"), el("p", r.match_source.excerpt, "source-text"));
+      for (const source of r.match_sources || (r.match_source ? [r.match_source] : [])) {
+        row.append(link(`${source.kind === "speech" ? "保留转写" : "画面描述"}命中 · ${time(source.start)}–${time(source.end)}`, "#lesson=" + r.video + "/" + r.section + "/" + encodeURIComponent(String(source.id))), el("p", source.excerpt, "source-text"));
       }
       results.append(row);
     }
