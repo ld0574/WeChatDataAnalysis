@@ -192,3 +192,76 @@ def test_invalid_latest_repair_cannot_mask_an_earlier_reviewable_repair(
     )
     assert "section-0001-repair-02.json" in execution["invalid_candidate_attempts"]
     assert all(p.read_bytes() == value for p, value in before.items())
+
+
+def passing_write_manuscript(request, monkeypatch, *, passing=True):
+    root, key, parent, calls, folder = failed_review(request, monkeypatch)
+    original = schema_response(composition.AuthoringJob.generate_response)
+
+    def reply(self, messages, *, schema):
+        if messages[0]["content"] == composition.PROMPTS[author.REPAIR_PROMPT]:
+            return "{}", None
+        raw, metrics = original(self, messages, schema=schema)
+        value = json.loads(raw)
+        if messages[0]["content"] == composition.PROMPTS[author.WRITE_PROMPT]:
+            missing_primary(value, json.loads(messages[1]["content"]))
+        elif self.current == "section-0001-review" and not passing:
+            value["quiz"]["passed"] = False
+        return json.dumps(value), metrics
+
+    monkeypatch.setattr(composition.AuthoringJob, "generate_response", reply)
+    continuation.run(root, key, parent["job"], folder.name, "section-0000")
+    exited(folder)
+    return root, key, calls, folder, reply
+
+
+def test_passing_pre_reviewed_write_gets_only_citation_proposal_and_original_post_review(
+    request, monkeypatch
+):
+    root, key, calls, folder, reply = passing_write_manuscript(request, monkeypatch)
+    originals = {p: p.read_bytes() for p in (folder / "attempts").iterdir()}
+    private = repair.saved(folder / "private-article.json")["data"]
+    count = len(calls)
+    result = module.run(root, folder.name)
+    assert len(calls) == count + 1
+    assert result["adopted_sections"] == ["section-0001"]
+    execution = json.loads((folder / module.CONTRACT).read_bytes())
+    assert execution["eligible"]["section-0001"]["candidate_kind"] == "write"
+    updated = repair.saved(folder / module.OUTPUT)["data"]
+    before = next(
+        s
+        for c in private["chapters"]
+        for s in c["sections"]
+        if s["id"] == "section-0001"
+    )
+    after = next(
+        s
+        for c in updated["chapters"]
+        for s in c["sections"]
+        if s["id"] == "section-0001"
+    )
+    assert [p["text"] for p in before["paragraphs"]] == [
+        p["text"] for p in after["paragraphs"]
+    ]
+    assert before["coverage"] == after["coverage"]
+    assert before["diagrams"] == after["diagrams"]
+    assert before["quiz"] == after["quiz"]
+    assert before["paragraphs"] != after["paragraphs"]
+    assert not list((folder / "attempts").glob("section-0001-repair-0*.json"))
+    assert all(path.read_bytes() == raw for path, raw in originals.items())
+    assert module.run(root, folder.name) == result
+    assert len(calls) == count + 1
+
+
+def test_negative_pre_review_cannot_be_reasked_as_a_citation_only_write(
+    request, monkeypatch
+):
+    root, key, calls, folder, reply = passing_write_manuscript(
+        request, monkeypatch, passing=False
+    )
+    count = len(calls)
+    result = module.run(root, folder.name)
+    assert result["adopted_sections"] == []
+    assert result["eligible"] == 0
+    assert len(calls) == count
+    assert not list((folder / "attempts").glob("section-0001-repair-review-*.json"))

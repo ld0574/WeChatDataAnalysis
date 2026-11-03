@@ -39,6 +39,33 @@ def read_saved(path):
     return value["data"]
 
 
+def selected_private(root, folder, composition_job, original):
+    """Use an authenticated completed derivative before first coverage binding."""
+    from . import course_textbook_post_repair_review as post_review
+
+    contract = folder / CONTRACT
+    bound = json.loads(contract.read_bytes()) if contract.exists() else None
+    # A later derivative must never allocate a fresh coverage budget for a
+    # composition whose original article already has an execution binding.
+    if bound is not None and bound["article_sha256"] == sha(canonical(original)):
+        return original
+    post_paths = (
+        post_review.CONTRACT,
+        post_review.OUTPUT,
+        "post-repair-review-result.json",
+        "post-repair-review-progress.json",
+    )
+    if any((folder / name).exists() for name in post_paths):
+        private = post_review.verified_output(root, composition_job)
+        require(
+            bound is None or bound["article_sha256"] == sha(canonical(private)),
+            "preserve_bound_review_budget",
+        )
+        return private
+    require(bound is None, "existing_bound_article_available")
+    return original
+
+
 def inputs(root, composition_job):
     require(re.fullmatch(r"[a-f0-9]{32}", composition_job) is not None, "parent_job")
     folder = Path(root) / "wiki/textbook-composition-jobs" / composition_job
@@ -61,7 +88,7 @@ def inputs(root, composition_job):
         and result["reader_article_published"] is False,
         "matching_unpublished_parent",
     )
-    return inventory, private
+    return inventory, selected_private(root, folder, composition_job, private)
 
 
 def paragraphs(private, inventory):
@@ -256,6 +283,8 @@ class ReviewJob(DraftJob):
                     name: sha(Path(__file__).with_name(name + ".py").read_bytes())
                     for name in (
                         "course_textbook_manuscript_review",
+                        "course_textbook_post_repair_review",
+                        "course_textbook_reviewable_write",
                         "course_textbook_source_coverage",
                         "course_textbook_article",
                         "course_wiki_text_inference",
