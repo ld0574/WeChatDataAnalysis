@@ -69,7 +69,7 @@ def test_non_order_errors_are_not_recovered(change):
         module.normalize(value, cards, final=False)
 
 
-def stopped_fixture(request, monkeypatch):
+def stopped_fixture(request, monkeypatch, *, one_based=False):
     root, key, inventory, parent, _, _ = request.getfixturevalue("disputed_archive")
     _, working = composition.load_inputs(root, key, parent["job"])
     calls = inference(monkeypatch, working)
@@ -89,6 +89,12 @@ def stopped_fixture(request, monkeypatch):
         if messages[0]["content"] == composition.PROMPTS[author.GROUP_PROMPT]:
             for row in value["assignments"].values():
                 row["order"] = 0
+                if one_based:
+                    row["group"] += 1
+            if one_based and len(calls) == 1:
+                value["groups"].append(
+                    {"heading": "Unassigned fixture group", "purpose": "Ambiguous."}
+                )
         return json.dumps(value), {
             "model_digest": "e" * 64,
             "done_reason": "stop",
@@ -149,3 +155,70 @@ def test_inexact_or_incomplete_failed_inputs_are_rejected(request, monkeypatch, 
         module.recover(root, key, parent["job"], folder.name, "concepts-00-0000")
     assert len(calls) == count
     assert not (folder / "concepts-00-0000.json").exists()
+
+
+@pytest.mark.parametrize("collisions", [False, True])
+def test_complete_one_based_groups_preserve_ordinal_membership(collisions):
+    cards = {str(i): {} for i in range(8)}
+    value = group_value(cards, 3)
+    for row in value["assignments"].values():
+        row["group"] += 1
+        if collisions:
+            row["order"] = 4
+    original = copy.deepcopy(value)
+    result = module.normalize_one_based(value, cards, final=True)
+    assert value == original
+    assert result["title"] == value["title"]
+    assert result["groups"] == value["groups"]
+    for key, row in result["assignments"].items():
+        assert row["group"] == original["assignments"][key]["group"] - 1
+        if not collisions:
+            assert row["order"] == original["assignments"][key]["order"]
+    author.grouped(result, cards, final=True)
+
+
+@pytest.mark.parametrize(
+    "change", ["zero-based", "missing-group", "foreign-group", "duplicate-heading"]
+)
+def test_one_based_recovery_rejects_ambiguous_or_semantic_errors(change):
+    cards = {str(i): {} for i in range(8)}
+    value = group_value(cards, 3)
+    if change != "zero-based":
+        for row in value["assignments"].values():
+            row["group"] += 1
+    if change == "missing-group":
+        value["groups"].append({"heading": "Empty", "purpose": "Unassigned."})
+    elif change == "foreign-group":
+        value["assignments"]["0"]["group"] = 99
+    elif change == "duplicate-heading":
+        value["groups"][1]["heading"] = value["groups"][0]["heading"]
+    with pytest.raises((ValueError, jsonschema.ValidationError)):
+        module.normalize_one_based(value, cards, final=True)
+
+
+def test_earliest_unambiguous_index_candidate_resumes_without_new_attempts(
+    request, monkeypatch
+):
+    root, key, parent, folder, calls, original = stopped_fixture(
+        request, monkeypatch, one_based=True
+    )
+    attempts = {p: p.read_bytes() for p in (folder / "attempts").iterdir()}
+    count = len(calls)
+    result = module.recover(
+        root, key, parent["job"], folder.name, "concepts-00-0000", one_based=True
+    )
+    assert result["model_calls"] == 0 and result["selected_attempt"] == 2
+    assert result["changed_group_numbers"] == 4
+    assert len(calls) == count
+    receipt = json.loads((folder / "concepts-00-0000-index-recovery.json").read_bytes())
+    assert receipt["original_group_index_base"] == 1
+    assert [r["attempt"] for r in receipt["rejected_structural_candidates"]] == [1]
+    assert not receipt["semantic_acceptance"]
+    assert not receipt["reader_publication_allowed"]
+    monkeypatch.setattr(composition.AuthoringJob, "generate_response", original)
+    result = author.run(root, key, parent["job"], protocol=composition)
+    assert result["job"] == folder.name
+    assert (folder / "private-article.json").is_file()
+    assert not (folder / "reading.json").exists()
+    assert all(p.read_bytes() == raw for p, raw in attempts.items())
+    assert sum(p == composition.PROMPTS[author.GROUP_PROMPT] for p, _ in calls) == 2

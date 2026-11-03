@@ -22,6 +22,7 @@ from .course_wiki_text_inference import validate_metrics
 
 ERROR = "missing_textbook_nonempty_ordered_concept_group"
 POLICY = "concept-order-collision-stable-input-tie-break-v1"
+INDEX_POLICY = "complete-one-based-concept-groups-stable-input-tie-break-v1"
 
 
 def require(ok, reason):
@@ -64,6 +65,35 @@ def normalize(value, cards, *, final):
         for rank, key in enumerate(ranked):
             result["assignments"][key]["order"] = rank
     require(collisions > 0, "actual_order_collision")
+    author.grouped(result, cards, final=final)
+    return result
+
+
+def normalize_one_based(value, cards, *, final):
+    """Translate only a complete 1..N group index; never infer missing groups."""
+    jsonschema.validate(value, author.grouping_schema(cards, final=final))
+    require(set(value["assignments"]) == set(cards), "exact_input_assignment")
+    require(
+        {row["group"] for row in value["assignments"].values()}
+        == set(range(1, len(value["groups"]) + 1)),
+        "complete_unambiguous_one_based_groups",
+    )
+    result = copy.deepcopy(value)
+    for row in result["assignments"].values():
+        row["group"] -= 1
+    collisions = any(
+        len(ranks) != len(set(ranks))
+        for number in range(len(result["groups"]))
+        for ranks in [
+            [
+                row["order"]
+                for row in result["assignments"].values()
+                if row["group"] == number
+            ]
+        ]
+    )
+    if collisions:
+        result = normalize(result, cards, final=final)
     author.grouped(result, cards, final=final)
     return result
 
@@ -115,7 +145,7 @@ def planning_context(job, working, stage):
     raise AssertionError("unreachable planning context")
 
 
-def recover(root, inventory_key, ledger_job, job_key, stage):
+def recover(root, inventory_key, ledger_job, job_key, stage, *, one_based=False):
     root = Path(root).resolve()
     require(re.fullmatch(r"[a-f0-9]{32}", job_key) is not None, "valid_job_identity")
     require(
@@ -161,7 +191,9 @@ def recover(root, inventory_key, ledger_job, job_key, stage):
             "unchanged_execution_contract",
         )
         cache = folder / (stage + ".json")
-        receipt = folder / (stage + "-order-recovery.json")
+        receipt = folder / (
+            stage + ("-index-recovery.json" if one_based else "-order-recovery.json")
+        )
         require(not cache.exists() and not receipt.exists(), "new_cache_only")
         cards, final, context = planning_context(job, working, stage)
         prompt = composition.PROMPTS[author.GROUP_PROMPT]
@@ -174,6 +206,7 @@ def recover(root, inventory_key, ledger_job, job_key, stage):
             "original_exhausted_two_attempt_budget",
         )
         raw_files, candidates, originals, prior_failure = {}, [], [], ""
+        rejected = []
         for number, path in enumerate(attempts):
             raw = path.read_bytes()
             record = json.loads(raw)
@@ -204,18 +237,30 @@ def recover(root, inventory_key, ledger_job, job_key, stage):
             prior_failure = record["validation_error"]
             value = json.loads(record["raw_response"])
             originals.append(value)
-            candidates.append(normalize(value, cards, final=final))
             raw_files[path.name] = sha(raw)
+            if one_based:
+                try:
+                    candidate = normalize_one_based(value, cards, final=final)
+                except (ValueError, jsonschema.ValidationError) as exc:
+                    rejected.append(
+                        {"attempt": number + 1, "error_sha256": sha(str(exc).encode())}
+                    )
+                    continue
+            else:
+                candidate = normalize(value, cards, final=final)
+            candidates.append((number, candidate))
         # No comparison selects a preferred meaning: always preserve the first
         # complete candidate, including all its original group memberships.
-        value = candidates[0]
+        require(bool(candidates), "complete_structural_candidate")
+        selected, value = candidates[0]
+        original = originals[selected]
         changes = {
-            key: {"old": originals[0]["assignments"][key]["order"], "new": row["order"]}
+            key: {"old": original["assignments"][key]["order"], "new": row["order"]}
             for key, row in value["assignments"].items()
-            if row["order"] != originals[0]["assignments"][key]["order"]
+            if row["order"] != original["assignments"][key]["order"]
         }
         proof = {
-            "policy": POLICY,
+            "policy": INDEX_POLICY if one_based else POLICY,
             "job": job_key,
             "stage": stage,
             "input_sha256": binding,
@@ -223,6 +268,10 @@ def recover(root, inventory_key, ledger_job, job_key, stage):
             "model_calls": 0,
             "original_attempts": raw_files,
             "candidate_selection": "earliest_complete_original_response",
+            "selected_attempt": selected + 1,
+            "rejected_structural_candidates": rejected,
+            "original_group_index_base": 1 if one_based else 0,
+            "group_numbers_changed": len(cards) if one_based else 0,
             "tie_break": "original_input_key_order",
             "order_changes": changes,
             "group_memberships_changed": False,
@@ -248,11 +297,17 @@ def recover(root, inventory_key, ledger_job, job_key, stage):
             "preserved_original_attempts",
         )
         return {
-            "state": "concept_order_cache_recovered",
+            "state": (
+                "concept_index_cache_recovered"
+                if one_based
+                else "concept_order_cache_recovered"
+            ),
             "job": job_key,
             "stage": stage,
             "model_calls": 0,
             "changed_order_numbers": len(changes),
+            "changed_group_numbers": len(cards) if one_based else 0,
+            "selected_attempt": selected + 1,
             "receipt_sha256": sha(receipt.read_bytes()),
             "reader_publication_allowed": False,
         }
@@ -263,12 +318,18 @@ def main(argv=None):
     for flag in ("inventory", "ledger-job", "job", "stage"):
         parser.add_argument("--" + flag, required=True)
     parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--one-based-groups", action="store_true")
     args = parser.parse_args(argv)
     try:
         print(
             json.dumps(
                 recover(
-                    args.root, args.inventory, args.ledger_job, args.job, args.stage
+                    args.root,
+                    args.inventory,
+                    args.ledger_job,
+                    args.job,
+                    args.stage,
+                    one_based=args.one_based_groups,
                 )
             )
         )
