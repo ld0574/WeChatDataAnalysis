@@ -1,4 +1,4 @@
-"""Zero-inference recovery of uniquely aligned whitespace-only quotations."""
+"""Preserve failed facts while binding quotations to their exact original evidence."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 import psutil
+import jsonschema
 
 from .course_knowledge import atomic_json, schema_lease
 from .course_library import canonical
@@ -24,6 +25,7 @@ from .course_textbook_resolution import (
 from .course_wiki_text_inference import validate_metrics
 
 POLICY = "unique-original-whitespace-span-recovery-v1"
+SOURCE_BINDING = "earliest-unchanged-candidate-complete-short-source-binding-v1"
 
 
 def literal_quotations(value, source):
@@ -72,7 +74,51 @@ def literal_quotations(value, source):
     return result, restored
 
 
+def complete_source_quotations(value, source):
+    """Bind unchanged candidate facts to a whole short original for the normal audit.
+
+    This does not claim that the model's proposed quotations were literal or that
+    its facts are supported. The existing independent semantic audit decides that.
+    """
+    jsonschema.validate(value, DECISION)
+    text = source["text"]
+    if not 8 <= len(text.strip()) <= 2048:
+        raise ValueError("requires_short_complete_original_source")
+    if value["kind"] != "teaching" or all(
+        quotation in text
+        for point in value["points"]
+        for quotation in point["quotations"]
+    ):
+        raise ValueError("requires_actual_nonliteral_candidate_quotations")
+    result = copy.deepcopy(value)
+    spans = []
+    for number, point in enumerate(result["points"]):
+        spans.append(
+            {
+                "point": number,
+                "start": 0,
+                "end": len(text),
+                "proposed_quotation_sha256": [
+                    sha(quote.encode()) for quote in point["quotations"]
+                ],
+                "original_span_sha256": sha(text.encode()),
+            }
+        )
+        point["quotations"] = [text]
+    validate_decision(result, source)
+    return result, spans
+
+
 def recover(root, job_key):
+    return _recover(root, job_key, complete_source=False)
+
+
+def bind_complete_source(root, job_key):
+    """Use exact full-source citations without changing facts or spending retries."""
+    return _recover(root, job_key, complete_source=True)
+
+
+def _recover(root, job_key, *, complete_source):
     root = Path(root).resolve()
     if not re.fullmatch(r"[a-f0-9]{32}", job_key):
         raise ValueError("requires_literal_cache_job_id")
@@ -143,7 +189,7 @@ def recover(root, job_key):
         attempts = sorted((folder / "attempts").glob(progress["stage"] + "-*.json"))
         if len(attempts) != 2:
             raise ValueError("requires_preserved_two_failed_resolution_attempts")
-        candidates, originals = [], {}
+        candidates, originals, proposed = [], {}, []
         for path in attempts:
             raw = path.read_bytes()
             row = json.loads(raw)
@@ -155,16 +201,21 @@ def recover(root, job_key):
             ):
                 raise ValueError("requires_exact_literal_only_failed_attempt")
             validate_metrics(row["model_metrics"], job.model_digest)
-            candidate, spans = literal_quotations(
-                json.loads(row["raw_response"]), source
+            raw_candidate = json.loads(row["raw_response"])
+            proposed.append(sha(canonical(raw_candidate)))
+            align = (
+                complete_source_quotations if complete_source else literal_quotations
             )
+            candidate, spans = align(raw_candidate, source)
             candidates.append((candidate, spans))
             originals[path.name] = sha(raw)
-        if canonical(candidates[0][0]) != canonical(candidates[1][0]):
+        if not complete_source and canonical(candidates[0][0]) != canonical(
+            candidates[1][0]
+        ):
             raise ValueError("requires_agreement_of_whitespace_restored_candidates")
         candidate, spans = candidates[0]
         receipt = {
-            "policy": POLICY,
+            "policy": SOURCE_BINDING if complete_source else POLICY,
             "job": job_key,
             "stage": progress["stage"],
             "input_sha256": binding,
@@ -179,7 +230,24 @@ def recover(root, job_key):
             "model_attempt_budget_reset": False,
             "independent_source_audit_still_required": True,
         }
-        receipt_path = folder / (progress["stage"] + "-whitespace-recovery.json")
+        if complete_source:
+            receipt.update(
+                original_candidate_sha256=proposed[0],
+                other_original_candidate_sha256=proposed[1:],
+                selection_rule="earliest_original_failed_attempt_no_fact_edits",
+                original_candidates_differ=len(set(proposed)) != 1,
+                candidate_fact_fields_changed=False,
+                model_quotations_claimed_literal=False,
+                complete_original_used_as_citation=True,
+                semantic_support_claimed=False,
+                existing_audit_budget_preserved=True,
+            )
+        suffix = (
+            "-complete-source-binding.json"
+            if complete_source
+            else "-whitespace-recovery.json"
+        )
+        receipt_path = folder / (progress["stage"] + suffix)
         if receipt_path.exists() and json.loads(receipt_path.read_bytes()) != receipt:
             raise ValueError("requires_unchanged_literal_recovery_receipt")
         atomic_json(receipt_path, receipt)
@@ -198,6 +266,7 @@ def recover(root, job_key):
         ):
             raise ValueError("requires_preserved_original_literal_failures")
         return {
+            "policy": receipt["policy"],
             "job": job_key,
             "stage": progress["stage"],
             "source_reference": ref,
@@ -205,4 +274,5 @@ def recover(root, job_key):
             "receipt_sha256": sha(canonical(receipt)),
             "model_calls": 0,
             "model_attempt_budget_reset": False,
+            "independent_source_audit_still_required": True,
         }

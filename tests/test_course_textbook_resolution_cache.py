@@ -113,3 +113,90 @@ def test_real_checkpoint_recovery_spends_no_model_calls_and_keeps_failed_attempt
     assert completed["state"] == "ledger_ready_for_conceptual_reorganization"
     assert len(calls) == 2 + 1 + (len(resolution.affected_sources(parent)) - 1) * 2
     assert all(p.read_bytes() == value for p, value in before.items())
+
+
+def test_complete_source_binding_never_edits_candidate_facts_or_claims_support():
+    source = {"text": "The original fixture condition controls the operation."}
+    raw = point("This proposed quotation was paraphrased.")
+    before = copy.deepcopy(raw)
+    bound, spans = recovery.complete_source_quotations(raw, source)
+    assert raw == before
+    assert len(spans) == 1
+    assert bound["points"][0]["quotations"] == [source["text"]]
+    assert {
+        key: value for key, value in bound["points"][0].items() if key != "quotations"
+    } == {key: value for key, value in raw["points"][0].items() if key != "quotations"}
+    with pytest.raises(ValueError, match="short_complete_original"):
+        recovery.complete_source_quotations(raw, {"text": "x" * 2049})
+    with pytest.raises(ValueError, match="actual_nonliteral"):
+        recovery.complete_source_quotations(point(source["text"]), source)
+
+
+def test_full_source_binding_preserves_failures_and_negative_independent_audit(
+    request, monkeypatch
+):
+    root, _, parent, _ = request.getfixturevalue("archive")
+    calls = inference(monkeypatch, unsupported=True)
+    base = resolution.ResolutionJob.generate_response
+
+    @contextmanager
+    def observed_slot(self, stage):
+        self.progress("generating", stage)
+        yield
+
+    monkeypatch.setattr(resolution.ResolutionJob, "slot", observed_slot)
+
+    def paraphrased_quote(self, messages, *, schema):
+        raw, _ = base(self, messages, schema=schema)
+        value = json.loads(raw)
+        if len(calls) <= 2:
+            value["points"][0]["quotations"] = ["A nonliteral proposed quotation."]
+            if len(calls) == 2:
+                value["points"][0]["teaching"] = (
+                    "A different second original candidate."
+                )
+        return json.dumps(value), {
+            "model_digest": self.model_digest,
+            "done_reason": "stop",
+            "prompt_eval_count": 500,
+            "eval_count": 100,
+            "context_length": 16384,
+            "size_vram": 6000000000,
+        }
+
+    monkeypatch.setattr(
+        resolution.ResolutionJob, "generate_response", paraphrased_quote
+    )
+    with pytest.raises(ValueError, match="attempt_budget_exhausted"):
+        resolution.run(root, parent["job"])
+    progress = json.loads(
+        (root / "wiki/textbook-resolution-last-build.json").read_bytes()
+    )
+    folder = root / "wiki/textbook-keyed-jobs" / progress["job"]
+    before = {path: path.read_bytes() for path in (folder / "attempts").glob("*.json")}
+    progress["created"] = 0
+    atomic_json(folder / "progress.json", progress)
+    recovered = recovery.bind_complete_source(root, progress["job"])
+    assert recovered["model_calls"] == 0 and len(calls) == 2
+    assert recovered["independent_source_audit_still_required"]
+    receipt = json.loads(
+        (folder / (progress["stage"] + "-complete-source-binding.json")).read_bytes()
+    )
+    assert receipt["original_candidate_sha256"]
+    assert receipt["original_candidates_differ"]
+    assert receipt["selection_rule"] == "earliest_original_failed_attempt_no_fact_edits"
+    selected = json.loads((folder / (progress["stage"] + ".json")).read_bytes())["data"]
+    first = json.loads(json.loads(next(iter(before.values())))["raw_response"])
+    assert selected["points"][0]["teaching"] == first["points"][0]["teaching"]
+    assert not receipt["candidate_fact_fields_changed"]
+    assert not receipt["model_quotations_claimed_literal"]
+    assert not receipt["semantic_support_claimed"]
+    finished = resolution.run(root, parent["job"])
+    assert finished["state"] == "ledger_requires_semantic_repair"
+    assert finished["unresolved_sources"] == len(resolution.affected_sources(parent))
+    assert len(calls) == 3 + (len(resolution.affected_sources(parent)) - 1) * 2
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+    completed = resolution.run(root, parent["job"])
+    assert completed == finished
+    assert len(calls) == 2 + 1 + (len(resolution.affected_sources(parent)) - 1) * 2
+    assert all(p.read_bytes() == value for p, value in before.items())
