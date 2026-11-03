@@ -1,4 +1,5 @@
 import copy
+from html.parser import HTMLParser
 
 from fastapi.testclient import TestClient
 
@@ -61,3 +62,37 @@ def test_partial_projection_preserves_unwritten_units_and_checks_cache(tmp_path,
     proof["candidate"] = changed
     save(folder / (unit["unit"] + "-private-result.json"), proof)
     assert TestClient(preview.create_app(tmp_path, parent)).get("/").status_code == 503
+
+
+def test_authored_markdown_keeps_code_indentation_and_renders_emphasis():
+    book = inputs()["book"]
+    book["chapters"][0]["sections"][0]["paragraphs"] = [
+        '**Explain first.**\n\n```python\nif ready:\n    run("<value>")\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |']
+    output = preview.reading_html(book)
+    assert '<strong>Explain first.</strong>' in output
+    assert '<pre><code class="language-python">' in output
+    assert '    run(&quot;&lt;value&gt;&quot;)' in output or '    run("&lt;value&gt;")' in output
+    assert '<table>' in output
+    assert 'white-space:pre-wrap' in output
+    assert '```' not in output
+
+
+def test_markdown_never_loads_images_or_executes_active_html():
+    book = inputs()["book"]
+    book["chapters"][0]["sections"][0]["paragraphs"] = [
+        '![Source image](https://external.invalid/private.png)\n\n<script>run()</script>\n\n'
+        '[bad](javascript:run) [relative](private-evidence.json) [valid](https://example.invalid)']
+    class Tags(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.tags, self.links = [], []
+        def handle_starttag(self, tag, attrs):
+            self.tags.append(tag)
+            if tag == 'a':
+                self.links.extend(v for k, v in attrs if k == 'href')
+    parser = Tags()
+    parser.feed(preview.reading_html(book))
+    assert not {'img', 'script', 'iframe'} & set(parser.tags)
+    assert 'javascript:run' not in parser.links
+    assert 'private-evidence.json' not in parser.links
+    assert 'https://example.invalid' in parser.links

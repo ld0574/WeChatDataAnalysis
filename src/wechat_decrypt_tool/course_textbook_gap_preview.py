@@ -2,17 +2,52 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from markdown_it import MarkdownIt
 
 from . import course_textbook_gap_write as writer
 from .course_textbook_article import standalone_html, validate_book
 from .course_library import canonical
 from .course_textbook_evidence import sha
+
+
+def reading_html(book):
+    """Render authored Markdown without loading source images or active HTML."""
+    markdown = MarkdownIt("commonmark", {"html": False, "linkify": False}).enable("table")
+    markdown.renderer.rules["image"] = lambda tokens, index, options, env: html.escape(tokens[index].content)
+
+    def link_open(tokens, index, options, env):
+        url = tokens[index].attrGet("href") or ""
+        if not (url.startswith("#") or urlsplit(url).scheme.lower() in {"http", "https"}):
+            return '<a aria-disabled="true">'
+        return '<a rel="noreferrer" href="' + html.escape(url, quote=True) + '">'
+
+    markdown.renderer.rules["link_open"] = link_open
+    content = standalone_html(book)
+    paragraphs = [*book["introduction"], *book["prerequisites"]]
+    for chapter in book["chapters"]:
+        for section in chapter["sections"]:
+            paragraphs.extend(section["paragraphs"])
+    for question in book["quiz"]:
+        paragraphs.extend([question["answer"], question["explanation"]])
+    for text in set(paragraphs):
+        content = content.replace("<p>" + html.escape(text) + "</p>", markdown.render(text))
+    bullets = [*book["objectives"], *book["takeaways"], *[
+        text for question in book["quiz"] for text in question["criteria"]]]
+    for text in set(bullets):
+        content = content.replace("<li>" + html.escape(text) + "</li>", "<li>" + markdown.renderInline(text) + "</li>")
+    style = """pre{padding:1rem;background:#eef0eb;border:1px solid #d9dfd8;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4}
+code{font-family:Consolas,'Cascadia Code',monospace;font-size:.88em}p,li{overflow-wrap:anywhere}
+table{display:block;max-width:100%;overflow:auto;border-collapse:collapse}th,td{padding:.4rem .65rem;border:1px solid #d9dfd8}
+"""
+    return content.replace("</style>", style + "</style>", 1)
 
 
 def cached(path):
@@ -83,7 +118,7 @@ def create_app(root, parent):
         count = state["units_written"]
         progress = f'已补写 {count}/{state["total_units"]} 个知识单元。' if state["total_units"] is not None else "正在核查原稿的遗漏。"
         notice = '首课整理中 · 尚未验收。' + progress + '正文、图示和自测仍可能存在遗漏或错误；原始资料继续保留。'
-        content = standalone_html(book).replace("<body><main>",
+        content = reading_html(book).replace("<body><main>",
             '<body><main><aside role="status" style="padding:1rem 1.2rem;background:#fff0d4;border-left:3px solid #ad843c;margin-bottom:2rem">'
             + notice + '</aside>', 1)
         return HTMLResponse(content, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",

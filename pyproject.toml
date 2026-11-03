@@ -52,6 +52,7 @@ voice-transcription-gpu = [
 ]
 course-knowledge = [
     "jsonschema>=4.23.0",
+    "markdown-it-py==4.0.0",
     "openpyxl==3.1.5",
     "av>=16.0.1",
     "fonttools>=4.68.0",
