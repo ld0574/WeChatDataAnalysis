@@ -57,6 +57,44 @@ def test_partial_projection_preserves_unwritten_units_and_checks_cache(tmp_path,
     assert len(book["chapters"][0]["sections"][0]["paragraphs"]) == 2
     assert book["quiz"][0] == value["book"]["quiz"][0]
     assert "source_keys" not in str(book)
+
+    # Finishing prose must switch to the real review phase, not stay "writing".
+    second = plan["units"][1]
+    second_value = candidate(second)
+    second_review = review(second_value, second)
+    save(folder / (second["unit"] + "-private-result.json"), {
+        "unit": second["unit"], "candidate": second_value, "review": second_review,
+        "checks_passed": True, "reader_publication_allowed": False})
+    for suffix, data in [("-write", second_value), ("-review-0", second_review)]:
+        save(folder / (second["unit"] + suffix + ".json"), {
+            "data": data, "data_sha256": preview.sha(canonical(data))})
+    client = TestClient(preview.create_app(tmp_path, parent))
+    state = client.get("/status").json()
+    assert state["state"] == "checking_sources"
+    assert state["source_inputs_checked"] == 0
+    assert state["source_inputs_total"] == len(value["sources"])
+    coverage = {"sources": {k: {"kind": "non_teaching", "reason": "Private review text"}
+                            for k in value["sources"]}}
+    coverage["sources"]["gap1"]["kind"] = "missing"
+    cache = {"data": coverage, "data_sha256": preview.sha(canonical(coverage))}
+    save(folder / "whole-sources-000.json", cache)
+    state = client.get("/status").json()
+    assert state["state"] == "checking_article"
+    assert state["source_inputs_checked"] == len(value["sources"])
+    assert state["source_coverage_issues"] == 1
+    assert state["quality_complete"] is False
+    assert "Private review text" not in client.get("/").text
+    assert "Private review text" not in str(state)
+    save(tmp_path / "wiki/textbook-gap-write-current.json", {
+        "parent": parent, "job": key, "stage": "whole-reading", "state": "stopped"})
+    assert client.get("/status").json()["state"] == "stopped"
+    assert "当前核查任务已停止" in client.get("/").text
+    cache["data"]["sources"]["gap1"]["kind"] = "non_teaching"
+    save(folder / "whole-sources-000.json", cache)
+    assert client.get("/status").status_code == 503
+    save(folder / "whole-sources-000.json", {
+        "data": coverage, "data_sha256": preview.sha(canonical(coverage))})
+
     changed = copy.deepcopy(generated)
     changed["paragraphs"][0]["text"] += "Changed"
     proof["candidate"] = changed

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -56,6 +55,23 @@ def cached(path):
     return value["data"]
 
 
+def source_progress(folder, sources, book):
+    """Count only complete, source-bound reviews; never expose their text."""
+    refs, checked, missing = list(sources), 0, 0
+    body = writer.planmod.body_index(book)[0]
+    for number, start in enumerate(range(0, len(refs), 24)):
+        path = folder / f"whole-sources-{number:03d}.json"
+        if not path.is_file():
+            break
+        selected = refs[start:start + 24]
+        value = cached(path)
+        writer.jsonschema.validate(value, writer.source_schema(selected, body))
+        checked += len(selected)
+        missing += sum(row["kind"] == "missing" for row in value["sources"].values())
+    return {"source_inputs_checked": checked, "source_inputs_total": len(refs),
+            "source_coverage_issues": missing}
+
+
 def projection(root, parent):
     root = Path(root).resolve()
     writer.require(re.fullmatch(r"[a-f0-9]{32}", parent), "preview_parent_id")
@@ -98,8 +114,18 @@ def projection(root, parent):
         issues += not proof["checks_passed"]
     if selected:
         book = writer.assemble(inputs, {**plan, "units": selected}, candidates)
-    status.update(state="focused_writing" if current["stage"] != "complete" else "draft_checks_finished",
-                  units_written=len(selected), total_units=len(plan["units"]), units_with_issues=issues)
+    state = "focused_writing"
+    if len(selected) == len(plan["units"]):
+        status.update(source_progress(folder, inputs["sources"], book))
+        state = ("checking_sources" if status["source_inputs_checked"] < status["source_inputs_total"]
+                 else "checking_article")
+    if current["stage"] == "complete":
+        state = "draft_checks_finished"
+    if current.get("state") in {"paused", "stopped"}:
+        state = current["state"]
+    status.update(state=state, units_written=len(selected), total_units=len(plan["units"]),
+                  units_with_issues=issues, waiting_for_gpu=current.get("state") == "waiting_gpu",
+                  updated=current.get("updated"))
     return book, status
 
 
@@ -117,6 +143,15 @@ def create_app(root, parent):
         book, state = current()
         count = state["units_written"]
         progress = f'已补写 {count}/{state["total_units"]} 个知识单元。' if state["total_units"] is not None else "正在核查原稿的遗漏。"
+        if "source_inputs_checked" in state:
+            progress = (f'完整正文已写出；来源覆盖核查 {state["source_inputs_checked"]}/{state["source_inputs_total"]} 条，'
+                        f'目前有 {state["source_coverage_issues"]} 条覆盖疑点待处理。')
+        if state["state"] == "paused":
+            progress += "处理已暂停，已保存进度。"
+        elif state["state"] == "stopped":
+            progress += "当前核查任务已停止，需处理失败原因。"
+        elif state.get("waiting_for_gpu"):
+            progress += "正在等待显卡。"
         notice = '首课整理中 · 尚未验收。' + progress + '正文、图示和自测仍可能存在遗漏或错误；原始资料继续保留。'
         content = reading_html(book).replace("<body><main>",
             '<body><main><aside role="status" style="padding:1rem 1.2rem;background:#fff0d4;border-left:3px solid #ad843c;margin-bottom:2rem">'
