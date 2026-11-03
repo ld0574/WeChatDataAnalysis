@@ -221,6 +221,19 @@ HTTP 只读取已有快照与这些输入的指纹，不打开数据库统计，
 
 ## 验证
 
+PDF 缺页可使用冻结计划的 `pdf_sources_selected_pages`，每项提供 `path`、
+`source_key`、`parent_raw_digest`、原 PDF 的完整 `pages` 和非空整数列表
+`selected_pages`。`summary.page_occurrences` 只统计本次选定页的出现次数；
+例如完整 PDF 有 500 页，本次选择 `[101, 102]`，这两个数分别为 500 和 2。
+重复页、越界页、重叠范围、矛盾来源及与旧式警告请求混用会被拒绝。
+
+生产器只处理指定页，独立校验器要求完成页与错误页恰好构成指定范围，并继续校验
+完整原件的页数、摘要、原页像素、缓存、全文索引和实际 HTTP 引用。报告以
+`page_scope=selected_pages` 标明范围，不能据此宣称整个 PDF 已完成。旧式
+`pdf_sources_all_pages` 仍表示全页范围，提取器版本、缓存及历史证据身份不变。
+补处理时使用独立报告前缀，保留原有失败、暂停、预算与历史报告；显式指定页不代表
+允许重跑此前失败或暂停的任务。
+
 ```powershell
 .venv\Scripts\python.exe -m pytest tests/test_course_wiki_writer.py tests/test_course_wiki.py tests/test_course_lesson_exports.py -q
 ruff check src/wechat_decrypt_tool/course_library.py src/wechat_decrypt_tool/course_wiki.py src/wechat_decrypt_tool/course_wiki_writer.py tests/test_course_wiki.py tests/test_course_wiki_writer.py

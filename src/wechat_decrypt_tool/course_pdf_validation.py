@@ -208,6 +208,7 @@ def verify_pdf_archive(
     from fastapi.testclient import TestClient
     from .course_attachments import resolve_reference, retained_reference
     from .course_knowledge import create_app, tokens
+    from .course_pdf_plan import frozen_pdf_scope
 
     require(
         mode in {"final", "committed"} and type(limit) is int and limit >= 0,
@@ -221,25 +222,11 @@ def verify_pdf_archive(
         "Explicit PDF reports require final validation mode",
     )
     plan = json.loads(Path(plan_path).read_text("utf-8"))
-    expected = {}
-    for target in plan["pdf_sources_all_pages"]:
-        require(
-            type(target["pages"]) is int
-            and 0 < target["pages"] <= 2000
-            and re.fullmatch("[a-f0-9]{64}", target["parent_raw_digest"]),
-            "Invalid PDF frozen source plan",
-        )
-        for page in range(1, target["pages"] + 1):
-            identity = (target["path"], target["source_key"], page)
-            require(
-                identity not in expected,
-                "PDF frozen plan has duplicate page occurrences",
-            )
-            expected[identity] = target
-    require(
-        len(expected) == plan["summary"]["page_occurrences"],
-        "PDF frozen plan page count differs",
-    )
+    try:
+        expected = frozen_pdf_scope(plan)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    selected_scope = "pdf_sources_selected_pages" in plan
     errors = []
     if mode == "final":
         report_file = (
@@ -253,10 +240,21 @@ def verify_pdf_archive(
         )
         report = json.loads(report_file.read_text("utf-8"))
         require(
-            report.get("limit") == 0
+            type(report.get("limit")) is int
+            and report["limit"] == 0
             and report.get("full_requested_scope_attempted")
             and not report.get("deferred_gpu"),
             "PDF full attempted batch has not finished",
+        )
+        require(
+            all(
+                isinstance(x.get("path"), str)
+                and isinstance(x.get("source_key"), str)
+                and type(x.get("page")) is int
+                and x["page"] > 0
+                for x in report["completed"] + report["errors"]
+            ),
+            "PDF complete/error partition differs from frozen full scope",
         )
         completed = [
             (x["path"], x["source_key"], x["page"]) for x in report["completed"]
@@ -270,7 +268,9 @@ def verify_pdf_archive(
             "PDF complete/error partition differs from frozen full scope",
         )
         require(
-            report.get("processed") == len(completed)
+            type(report.get("processed")) is int
+            and report["processed"] == len(completed)
+            and type(report.get("attempted_page_occurrences")) is int
             and report.get("attempted_page_occurrences") == len(expected),
             "PDF attempted/completed counters differ",
         )
@@ -500,6 +500,8 @@ def verify_pdf_archive(
         "full_requested_scope_attempted_verified": mode == "final",
         "mode": mode,
         "requested_page_occurrences": len(expected),
+        "page_scope": "selected_pages" if selected_scope else "all_pages",
+        "entire_pdf_scope_verified": accepted and not selected_scope,
         "verified_completed_page_occurrences": len(completed),
         "failed_page_occurrences": len(errors),
         "unique_original_pdf_sources_verified": len(originals),

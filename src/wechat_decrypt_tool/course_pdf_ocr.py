@@ -16,6 +16,10 @@ from pathlib import Path
 
 
 def pdf_targets(reports):
+    if any("pdf_sources_selected_pages" in report for report in reports):
+        from .course_pdf_plan import selected_pdf_targets
+
+        return selected_pdf_targets(reports)
     found = {}
 
     def add(row, key, page):
@@ -186,6 +190,9 @@ def page_gpu_lease(store, lease, progress, wait):
 def run_pdf_ocr(
     store, reports, source, model, chat, lease, *, limit=0, poppler=None, wait=False
 ):
+    plans = [json.loads(Path(p).read_text(encoding="utf-8")) for p in reports]
+    targets = pdf_targets(plans)
+    selected_scope = any("pdf_sources_selected_pages" in plan for plan in plans)
     poppler = Path(poppler or shutil.which("pdftoppm") or "")
     if not poppler.is_file():
         raise RuntimeError("Local pdftoppm is required")
@@ -195,9 +202,6 @@ def run_pdf_ocr(
     model_digest = local_model_digest(model)
     legacy_extractor = "pdf-vision-v2/" + renderer + "/" + model + "@" + model_digest
     extractor = "pdf-vision-v3-tiled-v1/" + renderer + "/" + model + "@" + model_digest
-    targets = pdf_targets(
-        [json.loads(Path(p).read_text(encoding="utf-8")) for p in reports]
-    )
     completed = []
     errors = []
     processed = 0
@@ -248,7 +252,11 @@ def run_pdf_ocr(
                             count = len(PdfReader(f).pages)
                         if count > 2000:
                             raise ValueError("PDF page count exceeds OCR bound")
-                        pages = range(1, count + 1)
+                        if target.get("expected_pages", count) != count:
+                            raise ValueError(
+                                "PDF native page count differs from frozen source"
+                            )
+                        pages = target.get("selected_pages", range(1, count + 1))
                     else:
                         pages = [target["page"]]
                     for page in pages:
@@ -465,6 +473,8 @@ def run_pdf_ocr(
         and not deferred
         and not any(error.get("page") is None for error in errors),
         "attempted_page_occurrences": len(seen),
+        "page_scope": "selected_pages" if selected_scope else "legacy_requests",
+        "entire_pdf_scope_claimed": False if selected_scope else None,
     }
     store.write_json("pdf-ocr-report.json", value)
     progress("deferred_gpu" if deferred else "batch_finished", limit=limit)
