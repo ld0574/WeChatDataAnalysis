@@ -296,8 +296,10 @@ class Library:
         def score(text, *, require_all=True):
             if require_all and anchors and not all(a in text for a in anchors):
                 return 0
-            return 12 * (query in text) + 6 * sum(a in text for a in anchors) + sum(
-                g in text for g in grams
+            return (
+                12 * (query in text)
+                + 6 * sum(a in text for a in anchors)
+                + sum(g in text for g in grams)
             )
 
         found = []
@@ -319,8 +321,11 @@ class Library:
                 ).casefold()
                 sources = [evidence[str(ref)] for ref in section.get("context", [])]
                 sources += [
-                    e for e in frames
-                    if section["start"] <= e["start"] <= section.get("end", section["start"])
+                    e
+                    for e in frames
+                    if section["start"]
+                    <= e["start"]
+                    <= section.get("end", section["start"])
                 ]
                 combined = text + " " + " ".join(e["text"] for e in sources).casefold()
                 rank = score(combined)
@@ -342,19 +347,32 @@ class Library:
                             position = folded.find(query)
                             if position < 0:
                                 position = min(
-                                    (folded.find(t) for t in [*anchors, *sorted(grams)] if t in folded),
+                                    (
+                                        folded.find(t)
+                                        for t in [*anchors, *sorted(grams)]
+                                        if t in folded
+                                    ),
                                     default=0,
                                 )
                             start = max(0, position - 60)
                             excerpt = best["text"][start : start + 240]
-                            matched_sources.append({
-                                "id": best["id"], "kind": best["kind"],
-                                "start": best["start"], "end": best["end"],
-                                "excerpt": (
-                                    ("…" if start else "") + excerpt
-                                    + ("…" if start + 240 < len(best["text"]) else "")
-                                ),
-                            })
+                            matched_sources.append(
+                                {
+                                    "id": best["id"],
+                                    "kind": best["kind"],
+                                    "start": best["start"],
+                                    "end": best["end"],
+                                    "excerpt": (
+                                        ("…" if start else "")
+                                        + excerpt
+                                        + (
+                                            "…"
+                                            if start + 240 < len(best["text"])
+                                            else ""
+                                        )
+                                    ),
+                                }
+                            )
                             uncovered = {t for t in uncovered if t not in folded}
                         else:
                             break
@@ -367,7 +385,9 @@ class Library:
                             "start": section["start"],
                             "summary": section["summary"],
                             "score": rank,
-                            "match_source": matched_sources[0] if matched_sources else None,
+                            "match_source": matched_sources[0]
+                            if matched_sources
+                            else None,
                             "match_sources": matched_sources,
                         }
                     )
@@ -388,6 +408,11 @@ def create_app(store, model="qwen3.5:9b"):
 
     def archive_read(operation, *args, **kwargs):
         from .course_wiki_archive_search import ArchiveSearchUnavailable, SourceChanged
+        from .course_wiki_archive_assets import (
+            AssetUnavailable,
+            AssetLimitError,
+            AssetCapacityError,
+        )
 
         if not archive_slots.acquire(blocking=False):
             raise HTTPException(429, "课件检索正在处理，请稍后重试。")
@@ -397,6 +422,12 @@ def create_app(store, model="qwen3.5:9b"):
             raise HTTPException(503, str(exc)) from None
         except SourceChanged as exc:
             raise HTTPException(409, str(exc)) from None
+        except AssetUnavailable as exc:
+            raise HTTPException(404, str(exc)) from None
+        except AssetLimitError as exc:
+            raise HTTPException(413, str(exc)) from None
+        except AssetCapacityError as exc:
+            raise HTTPException(503, str(exc)) from None
         except KeyError:
             raise HTTPException(404, "未找到保留的课件片段。") from None
         except ValueError as exc:
@@ -415,6 +446,37 @@ def create_app(store, model="qwen3.5:9b"):
         from .course_wiki_archive_search import document
 
         return archive_read(document, key, revision, text_sha256, offset=offset)
+
+    @app.get("/wiki/api/courseware/document/{key}/visual")
+    def courseware_document_visual(key: int, revision: str, text_sha256: str):
+        from .course_wiki_archive_assets import visual
+
+        data, mime = archive_read(visual, key, revision, text_sha256)
+        return Response(
+            data,
+            media_type=mime,
+            headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"},
+        )
+
+    @app.get("/wiki/api/courseware/document/{key}/source")
+    def courseware_document_source(key: int, revision: str, text_sha256: str):
+        from urllib.parse import quote
+        from .course_wiki_archive_assets import source
+
+        data, filename = archive_read(source, key, revision, text_sha256)
+        pdf = filename.lower().endswith(".pdf") and data.startswith(b"%PDF-")
+        disposition = "inline" if pdf else "attachment"
+        return Response(
+            data,
+            media_type="application/pdf" if pdf else "application/octet-stream",
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "no-store",
+                "Content-Disposition": disposition
+                + "; filename*=UTF-8''"
+                + quote(filename, safe=""),
+            },
+        )
 
     @app.get("/wiki/image/{sha}.{extension}")
     def courseware_image(sha: str, extension: str):

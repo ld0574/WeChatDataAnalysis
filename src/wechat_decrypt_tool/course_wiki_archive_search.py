@@ -275,42 +275,51 @@ def search(store, query, *, after=0, limit=20):
     return page
 
 
-def document(store, key, revision, text_sha256, *, offset=0):
+def pinned_row(db, key, revision, text_sha256):
     if key < 1 or not all(
         re.fullmatch(r"[a-f0-9]{64}", x) for x in (revision, text_sha256)
     ):
         raise ValueError("无效的课件来源标识。")
+    row = db.execute(
+        "SELECT * FROM documents WHERE id=? AND length(text)<=?", (key, MAX_TEXT)
+    ).fetchone()
+    if row is None:
+        raise KeyError(key)
+    if (
+        not row["active"]
+        or row["digest"] != revision
+        or hashlib.sha256(row["text"].encode()).hexdigest() != text_sha256
+    ):
+        raise SourceChanged("课件片段已更新，请重新搜索后打开当前版本。")
+    return row
+
+
+def document(store, key, revision, text_sha256, *, offset=0):
     if offset < 0:
         raise ValueError("无效的正文位置。")
     with connection(store) as db:
-        row = db.execute(
-            "SELECT * FROM documents WHERE id=? AND length(text)<=?", (key, MAX_TEXT)
-        ).fetchone()
-        if row is None:
-            raise KeyError(key)
+        row = pinned_row(db, key, revision, text_sha256)
         value = identity(row)
-        if (
-            not row["active"]
-            or value["revision"] != revision
-            or value["text_sha256"] != text_sha256
-        ):
-            raise SourceChanged("课件片段已更新，请重新搜索后打开当前版本。")
         from .course_wiki_documents import revision_chain
+        from .course_wiki_archive_assets import asset_links
 
         try:
-            chain, _, _ = revision_chain(db, row)
+            chain, parent_key, parent_digest = revision_chain(db, row)
             provenance = {
                 "revision_chain_verified": True,
                 "metadata_basis": chain[0]["metadata_basis"],
                 "ancestor_count": len(chain),
             }
+            assets = asset_links(store, row, chain, parent_key, parent_digest)
         except (ValueError, KeyError, TypeError):
             provenance = {"revision_chain_verified": False}
+            assets = {"visual": None, "source": None}
         text = row["text"]
         end = min(len(text), offset + TEXT_PAGE)
         return {
             **value,
             **provenance,
+            "assets": assets,
             "text": text[offset:end],
             "offset": offset,
             "total_characters": len(text),

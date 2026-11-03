@@ -1159,6 +1159,32 @@ async function coursewareDocument(reference, version) {
   main.append(el("p", data.path, "lead"));
   main.append(el("p", `来源位置：${data.source_key || "独立文件"} · 提取器：${data.extractor}`));
   main.append(notice(data.revision_chain_verified ? "已核对片段版本与来源修订链。本次阅读未重新校验原文件，也不代表整份课件完整。" : "此片段的来源修订链尚未核验，文字按所选版本展示，请结合原始资料复核。"));
+  if (data.assets?.source) {
+    const original = link(data.assets.source_is_pdf ? "打开 PDF 原文件" : "下载原文件", data.assets.source);
+    original.target = "_blank";
+    original.rel = "noopener";
+    main.append(original);
+  }
+  if (data.assets?.visual) {
+    const figure = el("figure");
+    const open = link("", data.assets.visual);
+    open.target = "_blank";
+    open.rel = "noopener";
+    const image = document.createElement("img");
+    image.src = data.assets.visual;
+    image.alt = data.assets.page ? `课件第 ${data.assets.page} 页原图` : "课件原页图片";
+    image.loading = "lazy";
+    image.decoding = "async";
+    const caption = el("figcaption", "保留的原页图片，点击可在新窗口查看。");
+    image.addEventListener("error", () => {
+      image.hidden = true;
+      caption.className = "error";
+      caption.textContent = "原页图片当前不可读或版本已变化，请重新搜索后再打开。";
+    });
+    open.append(image);
+    figure.append(open, caption);
+    main.append(figure);
+  }
   const text = el("pre", data.text, "source-text");
   text.style.whiteSpace = "pre-wrap";
   text.style.overflowWrap = "anywhere";
