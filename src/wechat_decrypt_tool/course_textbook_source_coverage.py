@@ -114,27 +114,36 @@ def review_schema(unit_ids, paragraph_ids):
         bool(unit_ids) and len(unit_ids) == len(set(unit_ids)), "unique_target_units"
     )
     require(len(paragraph_ids) == len(set(paragraph_ids)), "unique_paragraphs")
-    item = {"type": "string", "enum": list(paragraph_ids)} if paragraph_ids else False
+    # Keep item schemas object-shaped for local grammar converters; maxItems=0
+    # preserves the empty-only contract without a boolean schema.
+    mapped = {
+        "type": "array",
+        "uniqueItems": True,
+        "items": {"type": "string"},
+    }
+    if paragraph_ids:
+        mapped["items"]["enum"] = list(paragraph_ids)
+    else:
+        mapped["maxItems"] = 0
+    empty = {"type": "array", "items": {"type": "string"}, "maxItems": 0}
+
+    def outcome(teaching, covered):
+        return object_schema(
+            {
+                "teaching": {"const": teaching},
+                "covered": {"const": covered},
+                "paragraph_ids": {**mapped, "minItems": 1} if covered else empty,
+                "reason": TEXT,
+            }
+        )
+
+    # Encode these implications in the decoding grammar as well as validating
+    # them afterwards. A non-teaching clause cannot simultaneously be covered.
+    outcomes = [outcome(False, False), outcome(True, False)]
+    if paragraph_ids:
+        outcomes.append(outcome(True, True))
     return object_schema(
-        {
-            "clauses": object_schema(
-                {
-                    key: object_schema(
-                        {
-                            "teaching": {"type": "boolean"},
-                            "covered": {"type": "boolean"},
-                            "paragraph_ids": {
-                                "type": "array",
-                                "uniqueItems": True,
-                                "items": item,
-                            },
-                            "reason": TEXT,
-                        }
-                    )
-                    for key in unit_ids
-                }
-            ),
-        }
+        {"clauses": object_schema({key: {"oneOf": outcomes} for key in unit_ids})}
     )
 
 

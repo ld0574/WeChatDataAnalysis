@@ -97,6 +97,11 @@ def test_missing_condition_cannot_hide_behind_a_covered_example():
 
 
 def test_no_article_paragraph_can_still_reveal_missing_teaching():
+    mapped = module.review_schema(["C0"], [])["properties"]["clauses"]["properties"][
+        "C0"
+    ]["oneOf"][0]["properties"]["paragraph_ids"]
+    assert isinstance(mapped["items"], dict)
+    assert mapped["maxItems"] == 0
     value = {
         "clauses": {
             "C0": {
