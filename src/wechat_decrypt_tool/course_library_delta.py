@@ -69,6 +69,26 @@ def available(catalog):
     return rows
 
 
+def section_search_query(note, section):
+    """Probe a section's actual indexed content, including concept-free windows."""
+    candidates = [c.get("name", "") for c in section.get("concepts", [])]
+    candidates.extend(
+        note.get("evidence", {}).get(str(ref), {}).get("text", "")
+        for ref in section.get("context", [])
+    )
+    candidates.extend(
+        source.get("text", "")
+        for source in note.get("evidence", {}).values()
+        if source.get("kind") == "frame"
+        and section["start"] <= source["start"] <= section["end"]
+    )
+    candidates.append(section.get("summary", ""))
+    for value in candidates:
+        if isinstance(value, str) and len(value.strip()) >= 2:
+            return value.strip()[:300]
+    raise ValueError("library_delta_section_without_searchable_text")
+
+
 def verify_notes(root, client, catalog, changed):
     """Check frozen HTTP objects, every new section search and every new image."""
     library, checks = Library(root), []
@@ -80,8 +100,7 @@ def verify_notes(root, client, catalog, changed):
         if response.json() != note:
             raise ValueError("library_delta_http_note_changed")
         for section in note["sections"]:
-            if not section.get("concepts"):
-                raise ValueError("library_delta_section_without_search_concept")
+            query = section_search_query(note, section)
             offset, seen = 0, set()
             while True:
                 if offset in seen:
@@ -89,7 +108,7 @@ def verify_notes(root, client, catalog, changed):
                 seen.add(offset)
                 response = client.get(
                     "/library/api/search",
-                    params={"q": section["concepts"][0]["name"], "video": key,
+                    params={"q": query, "video": key,
                             "limit": 100, "offset": offset},
                 )
                 response.raise_for_status()
@@ -106,6 +125,7 @@ def verify_notes(root, client, catalog, changed):
             if digest(response.content) != sha:
                 raise ValueError("library_delta_http_image_changed")
         checks.append({"source": key, "sections_search_verified": len(note["sections"]),
+                       "concept_free_sections_search_verified": sum(not x.get("concepts") for x in note["sections"]),
                        "images_verified": len(images), "http_note_exact": True})
     return checks
 

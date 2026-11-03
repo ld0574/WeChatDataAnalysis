@@ -186,3 +186,70 @@ def test_pointer_can_advance_without_changing_captured_backup(changed, monkeypat
     result = save(changed, client=object())
     assert (Path(result['backup']) / 'files/library/catalog.json').read_bytes() == frozen
     assert (store.root / 'library/catalog.json').read_bytes() != frozen
+
+
+def concept_free_note(case, *, empty=False):
+    store, _, key, _, _ = case
+    catalog = Library(store.root).catalog()
+    row = next(x for x in catalog['lessons'] if x['id'] == key)
+    note = Library(store.root).object(row['artifact'])
+    note['sections'][0]['concepts'] = []
+    note['sections'][0]['summary'] = ''
+    if empty:
+        note['sections'][0]['context'] = []
+        for source in note['evidence'].values():
+            if source.get('kind') == 'frame':
+                source['text'] = ''
+    raw = __import__('json').dumps(note).encode()
+    row['artifact'] = delta.digest(raw)
+    (store.root / 'library/objects' / (row['artifact'] + '.json')).write_bytes(raw)
+    atomic_json(store.root / 'library/catalog.json', catalog)
+    return note
+
+
+def test_concept_free_section_is_actually_searchable_after_delta_restore(changed):
+    store, _, key, base, parent = changed
+    note = concept_free_note(changed)
+    query = delta.section_search_query(note, note['sections'][0])
+    assert any(query in note['evidence'][str(ref)]['text'] for ref in note['sections'][0]['context'])
+    with TestClient(create_app(ReadOnlyArchive(store.root))) as client:
+        result = save(changed, client=client)
+    assert result['http_checks'][0]['concept_free_sections_search_verified'] == 1
+    assert result['http_checks'][0]['sections_search_verified'] == len(note['sections'])
+    backup = Path(result['backup'])
+    restored = parent.parent / 'concept-free-restored'
+    shutil.copytree(base, restored)
+    shutil.copytree(backup / 'files', restored, dirs_exist_ok=True)
+    shutil.copyfile(backup / 'combined-wiki-snapshot.json', restored / 'wiki-snapshot.json')
+    with TestClient(create_app(PublishedStore(restored))) as client:
+        assert client.get('/library/api/lesson/' + key).json() == note
+        page = client.get('/library/api/search', params={'q': query, 'video': key}).json()
+        assert any(row['section'] == note['sections'][0]['id'] for row in page['items'])
+        checked = delta.verify_notes(restored, client, Library(restored).catalog(), [key])
+    assert checked[0]['concept_free_sections_search_verified'] == 1
+
+
+def test_concept_free_section_does_not_bypass_actual_http_search(changed):
+    import httpx
+
+    concept_free_note(changed)
+    class MissingSearch:
+        def __init__(self, actual):
+            self.actual = actual
+        def get(self, route, **kwargs):
+            if route == '/library/api/search':
+                return httpx.Response(200, json={'items': [], 'next_offset': None},
+                                      request=httpx.Request('GET', 'http://testserver' + route))
+            return self.actual.get(route, **kwargs)
+    with TestClient(create_app(ReadOnlyArchive(changed[0].root))) as client:
+        with pytest.raises(ValueError, match='section_not_searchable'):
+            save(changed, client=MissingSearch(client))
+    assert not list(changed[-1].iterdir())
+
+
+def test_empty_section_is_rejected_without_inventing_a_search_concept(changed):
+    concept_free_note(changed, empty=True)
+    with TestClient(create_app(ReadOnlyArchive(changed[0].root))) as client:
+        with pytest.raises(ValueError, match='section_without_searchable_text'):
+            save(changed, client=client)
+    assert not list(changed[-1].iterdir())
