@@ -10,7 +10,9 @@ from wechat_decrypt_tool import course_pdf_validation as module
 from wechat_decrypt_tool.course_knowledge import KnowledgeStore
 
 
-def fixture_archive(tmp_path, *, tiled=False, legacy=False):
+def fixture_archive(
+    tmp_path, *, tiled=False, legacy=False, content="pdf_validation_fixture_text"
+):
     store = KnowledgeStore(tmp_path / "kb")
     writer = PdfWriter()
     writer.add_blank_page(width=64, height=32)
@@ -54,7 +56,6 @@ def fixture_archive(tmp_path, *, tiled=False, legacy=False):
     Image.new("RGB", (64, 32), (250, 251, 252)).save(image)
     image_digest = module.sha(image.read_bytes())
     cache = image.with_name("00001-" + module.sha(extractor.encode())[:20] + ".json")
-    content = "pdf_validation_fixture_text"
     tile_coverage = None
     if tiled:
         box = [0, 0, 64, 32]
@@ -206,6 +207,31 @@ def test_all_source_aliases_native_pixels_cache_fts_citations_and_restored_origi
         restored, restored.root / "plan.json", poppler, rerender=render
     )
     assert result["all_requested_pdf_page_occurrences_verified"]
+
+
+@pytest.mark.parametrize("remove_posting", [False, True])
+def test_underscore_rule_is_not_an_fts_token_but_real_postings_remain_required(
+    tmp_path, remove_posting
+):
+    store, poppler, render, _, _, _ = fixture_archive(
+        tmp_path, content="_" * 64 + " searchable_fixture_word"
+    )
+    if remove_posting:
+        with store.write() as db:
+            row = db.execute("SELECT id,search_text FROM documents LIMIT 1").fetchone()
+            db.execute(
+                "INSERT INTO document_fts(document_fts,rowid,search_text) VALUES('delete',?,?)",
+                (row["id"], row["search_text"]),
+            )
+        with pytest.raises(RuntimeError, match="PDF FTS posting is missing"):
+            module.verify_pdf_archive(
+                store, store.root / "plan.json", poppler, rerender=render
+            )
+    else:
+        result = module.verify_pdf_archive(
+            store, store.root / "plan.json", poppler, rerender=render
+        )
+        assert result["all_requested_pdf_page_occurrences_verified"]
 
 
 def test_partial_mode_and_explicit_failures_never_claim_full_acceptance(tmp_path):

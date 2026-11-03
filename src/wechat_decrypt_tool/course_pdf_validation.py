@@ -463,7 +463,11 @@ def verify_pdf_archive(
                         == " ".join(tokens(Path(path).name + " " + row["text"])),
                         "PDF searchable text differs",
                     )
-                    term = max(tokens(row["text"]), key=len)
+                    # unicode61 ignores standalone underscores, although the
+                    # archive tokenizer preserves them in searchable text.
+                    candidates = [t for t in tokens(row["text"]) if t.strip("_")]
+                    require(candidates, "PDF text has no searchable token")
+                    term = max(candidates, key=len)
                     require(
                         db.execute(
                             "SELECT rowid FROM document_fts WHERE document_fts MATCH ? AND rowid=?",
