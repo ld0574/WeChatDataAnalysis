@@ -280,7 +280,8 @@ def writing_context(ids, ledger, inventory):
     }
 
 
-def writing_units(plan, ledger, inventory):
+def writing_units(plan, ledger, inventory, *, context_fn=None):
+    context_fn = context_fn or writing_context
     chapter_points = plan_points(plan, ledger["points"])
     units = []
 
@@ -308,7 +309,7 @@ def writing_units(plan, ledger, inventory):
     ):
         current = []
         for key in ids:
-            context = writing_context([*current, key], ledger, inventory)
+            context = context_fn([*current, key], ledger, inventory)
             if len(canonical(context).decode("utf-8")) > WRITE_CHARACTERS:
                 if not current:
                     raise ValueError(
@@ -318,7 +319,7 @@ def writing_units(plan, ledger, inventory):
                 current = [key]
                 if (
                     len(
-                        canonical(writing_context(current, ledger, inventory)).decode(
+                        canonical(context_fn(current, ledger, inventory)).decode(
                             "utf-8"
                         )
                     )
@@ -336,7 +337,7 @@ def writing_units(plan, ledger, inventory):
     return units
 
 
-def section_schema(ids):
+def section_schema(ids, ledger=None):
     return object_schema(
         {
             "heading": TEXT,
@@ -608,13 +609,14 @@ def save(root, name, value):
     )
 
 
-def run(root, inventory_key, ledger_job, *, wait_seconds=3600):
+def run(root, inventory_key, ledger_job, *, wait_seconds=3600, protocol=None):
     from .course_pdf_ocr import local_model_digest
 
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 3600:
         raise ValueError("requires_textbook_finite_gpu_wait_budget")
+    protocol = protocol or sys.modules[__name__]
     root = Path(root).resolve()
-    inventory, ledger = load_inputs(root, inventory_key, ledger_job)
+    inventory, ledger = protocol.load_inputs(root, inventory_key, ledger_job)
     store = TextbookStore(root)
     store.checkpoint()
     with schema_lease(
@@ -624,11 +626,14 @@ def run(root, inventory_key, ledger_job, *, wait_seconds=3600):
         / "authoring-worker.lock",
         timeout=0,
     ):
-        job = AuthoringJob(
+        job = protocol.AuthoringJob(
             store, inventory, ledger, local_model_digest("qwen3.5:9b"), wait_seconds
         )
         contract = (
-            root / "wiki/textbook-keyed-jobs" / ledger_job / "authoring-execution.json"
+            root
+            / "wiki/textbook-keyed-jobs"
+            / ledger_job
+            / getattr(protocol, "CONTRACT", "authoring-execution.json")
         )
         binding = {
             "inventory_sha256": inventory_key,
@@ -642,17 +647,17 @@ def run(root, inventory_key, ledger_job, *, wait_seconds=3600):
             atomic_json(contract, binding)
         try:
             job.progress("planning_conceptual_article", "concept_plan")
-            plan = organize(job, ledger)
+            plan = protocol.organize(job, ledger)
             save(job.root, "concept-plan", plan)
-            units = writing_units(plan, ledger, inventory)
+            units = protocol.writing_units(plan, ledger, inventory)
             save(job.root, "writing-allocation", units)
             job.section_count = len(units)
             sections, issues = {}, []
             for number, unit in enumerate(units):
                 ids = unit["point_ids"]
-                packet = original_packet(ids, ledger, inventory)
+                packet = protocol.original_packet(ids, ledger, inventory)
                 context = {
-                    **writing_context(ids, ledger, inventory),
+                    **protocol.writing_context(ids, ledger, inventory),
                     "chapter": unit["chapter"],
                     "concept": unit["concept"],
                     "article_outline": [
@@ -688,9 +693,11 @@ def run(root, inventory_key, ledger_job, *, wait_seconds=3600):
                     return job.stage(
                         name,
                         prompt,
-                        section_schema(ids),
+                        protocol.section_schema(ids, ledger),
                         {**context, **(extra or {})},
-                        lambda value: validate_section(value, ids, ledger, inventory),
+                        lambda value: protocol.validate_section(
+                            value, ids, ledger, inventory
+                        ),
                         evidence_packet=packet,
                     )
 
@@ -745,7 +752,9 @@ def run(root, inventory_key, ledger_job, *, wait_seconds=3600):
                             "review": audit,
                         }
                     )
-            private = assemble(inventory, ledger, plan, units, sections)
+            private = protocol.assemble(inventory, ledger, plan, units, sections)
+            if hasattr(protocol, "final_issues"):
+                issues.extend(protocol.final_issues(inventory, ledger, private))
             book = reading_book(private)
             if not any(
                 section["diagrams"]
@@ -766,7 +775,7 @@ def run(root, inventory_key, ledger_job, *, wait_seconds=3600):
                     standalone_html(book), encoding="utf-8"
                 )
             result = {
-                "policy": POLICY,
+                "policy": protocol.POLICY,
                 "state": state,
                 "job": job.key,
                 "ledger_job": ledger_job,
