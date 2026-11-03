@@ -57,9 +57,9 @@ def test_changes_to_real_text_or_ambiguous_normalized_passages_are_rejected():
 
 
 def test_real_checkpoint_recovery_spends_no_model_calls_and_keeps_failed_attempts(
-    archive, monkeypatch
+    request, monkeypatch
 ):
-    root, _, parent, _ = archive
+    root, _, parent, _ = request.getfixturevalue("archive")
     calls = inference(monkeypatch)
     base = resolution.ResolutionJob.generate_response
 
