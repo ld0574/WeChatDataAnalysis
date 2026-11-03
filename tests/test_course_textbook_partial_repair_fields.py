@@ -95,3 +95,25 @@ def test_partial_string_is_never_completed_or_published():
         ValueError, match="all_semantic_fields_complete_before_metadata"
     ):
         module.complete_fields(raw)
+
+
+def test_unresolved_metadata_survives_post_review_and_actual_body_coverage_selection(
+    request, monkeypatch
+):
+    from wechat_decrypt_tool import course_textbook_manuscript_review as coverage
+    from test_course_textbook_post_review_selection import post_exited
+
+    root, key, parent, calls, folder = truncated_manuscript(request, monkeypatch)
+    module.run(root, key, parent["job"], folder.name, "section-0000")
+    exited(folder)
+    before = (folder / "private-article.json").read_bytes()
+    result = module.post.run(root, folder.name)
+    assert result["unaccepted_sections_remaining"] == 2
+    assert result["adopted_sections"] == []
+    post_exited(folder)
+    inventory, private = coverage.inputs(root, folder.name)
+    assert private["unaccepted_sections"]["section-0001"]["unresolved_point_ids"]
+    assert coverage.paragraphs(private, inventory)
+    assert (folder / "private-article.json").read_bytes() == before
+    assert not private["reader_publication_allowed"]
+    assert not (folder / "reading.json").exists()
