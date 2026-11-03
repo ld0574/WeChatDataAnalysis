@@ -54,7 +54,11 @@ def checked_cache(folder, name):
                 if read(p).get("accepted_structure")]
     require(len(accepted) == 1 and accepted[0]["input_sha256"] == value["input_sha256"]
             and json.loads(accepted[0]["raw_response"]) == value["data"], "actual_accepted_response")
-    record = accepted[0]
+    verify_response(folder, name, accepted[0])
+    return value["data"], value["input_sha256"]
+
+
+def verify_response(folder, name, record):
     metrics = record["model_metrics"]
     responses = [read(p) for p in folder.glob("response-*.json")]
     require(any(r["stage"] == name and r["request_sha256"] == record["request_sha256"]
@@ -66,7 +70,39 @@ def checked_cache(folder, name):
             <= metrics["expected_content_tokens"] + 256
             and metrics["prompt_eval_count"] + metrics["reserved_output"] < metrics["measured_context"],
             "complete_local_gpu_input_and_output")
-    return value["data"], value["input_sha256"]
+
+
+def conservative_review(folder, candidate, context, schema, expected_binding):
+    """Keep valid paragraph judgments, but make contradictory targets unknown.
+
+    No positive judgment is added. In particular, false/true teaching/coverage
+    cannot be converted into a successful exclusion of original teaching.
+    """
+    files = sorted((folder / "attempts").glob("additions-review-1-*.json"))
+    require(len(files) == 2, "failed_final_review_budget_exhausted")
+    records = [read(p) for p in files]
+    for record in records:
+        require(not record.get("accepted_structure") and record.get("validation_error") ==
+                "requires_gap_additions_consistent_teaching_coverage"
+                and record["input_sha256"] == expected_binding, "only_known_failed_final_review")
+        verify_response(folder, "additions-review-1", record)
+        jsonschema.validate(json.loads(record["raw_response"]), schema)
+    original_review = json.loads(records[0]["raw_response"])
+    review = copy.deepcopy(original_review)
+    unknown = []
+    for ref, row in review["targets"].items():
+        if row["covered"] and not row["teaching"]:
+            require(not row["addition_ids"], "no_ambiguous_target_mapping")
+            # Treat possible teaching as unresolved, never as an exclusion.
+            row.update(teaching=True, covered=False, addition_ids=[])
+            unknown.append(ref)
+    require(bool(unknown), "actual_contradictory_targets")
+    additions.check_review(review, candidate, context["targets"], context["complete_sources_for_this_check"])
+    require(not set(unknown) & additions.resolved(candidate, review), "no_contradiction_becomes_positive")
+    return review, {"selection": "earliest_complete_failed_review", "unknown_target_ids": unknown,
+                    "original_review_sha256": sha(canonical(original_review)),
+                    "failed_files": {str(p.relative_to(folder)): sha(p.read_bytes()) for p in files},
+                    "additional_model_calls": 0}
 
 
 def paragraph_positions(book):
@@ -124,7 +160,9 @@ def inputs_for(root, addition_job, precision_job, tokenizer):
     is_unmapped = (af / "unmapped-review-binding.json").exists()
     ap = read(af / ("unmapped-review-progress.json" if is_unmapped else "continuation-progress.json"))
     pp = read(pf / "progress.json")
-    require(ap["stage"] == pp["stage"] == "complete"
+    failed_review = is_unmapped and ap["state"] == "stopped" and ap["stage"] == "additions-review-1" \
+        and ap.get("reason_code") == "wiki_stage_attempt_budget_exhausted_additions-review-1"
+    require((ap["stage"] == "complete" or failed_review) and pp["stage"] == "complete"
             and not additions.final.writing.planmod.identity_live(ap)
             and not additions.final.writing.planmod.identity_live(pp), "both_parent_workers_finished")
     inputs, book, audit, targets, context, schema, binding = continuation.prepare(root, addition_job, tokenizer)
@@ -134,20 +172,26 @@ def inputs_for(root, addition_job, precision_job, tokenizer):
     if is_unmapped:
         ui, candidate, review_schema, review_context, ub = unmapped.prepare(root, addition_job, tokenizer)
         require(ui == inputs and read(af / "unmapped-review-binding.json") == ub, "same_unmapped_review_inputs")
-        review, rb = checked_cache(af, "additions-review-1")
-        require(original_job.stage_input(additions.REVIEW + unmapped.NOTICE, review_schema, review_context,
-            evidence_packet={"sources": review_context["complete_sources_for_this_check"]})[1] == rb,
-            "actual_scoped_final_review_binding")
+        rb = original_job.stage_input(additions.REVIEW + unmapped.NOTICE, review_schema, review_context,
+            evidence_packet={"sources": review_context["complete_sources_for_this_check"]})[1]
+        if failed_review:
+            review, conservative = conservative_review(af, candidate, review_context, review_schema, rb)
+            addition_files = ["manifest.json", "continuation-binding.json", "unmapped-review-binding.json",
+                             "unmapped-review-progress.json", *conservative["failed_files"]]
+        else:
+            review, cached_binding = checked_cache(af, "additions-review-1")
+            require(rb == cached_binding, "actual_scoped_final_review_binding")
         additions.check_review(review, candidate, targets, review_context["complete_sources_for_this_check"])
-        require(read(af / "private-unmapped-additions.json") == {"candidate": candidate, "review": review,
-            "unassigned_addition_ids": ub["unassigned_addition_ids"], "original_mapping_failure_retained": True},
-            "unmapped_candidate_and_failure_unchanged")
-        ar = read(af / "unmapped-review-result.json")
-        require(ar["job"] == addition_job and ar["state"] == "unmapped_prose_reviewed_internally"
-                and ar["original_mapping_failure_retained"] is True and ar["reader_publication_allowed"] is False,
-                "internal_unmapped_review_only")
-        addition_files = ["manifest.json", "continuation-binding.json", "unmapped-review-binding.json",
-                          "unmapped-review-result.json", "private-unmapped-additions.json"]
+        if not failed_review:
+            require(read(af / "private-unmapped-additions.json") == {"candidate": candidate, "review": review,
+                "unassigned_addition_ids": ub["unassigned_addition_ids"], "original_mapping_failure_retained": True},
+                "unmapped_candidate_and_failure_unchanged")
+            ar = read(af / "unmapped-review-result.json")
+            require(ar["job"] == addition_job and ar["state"] == "unmapped_prose_reviewed_internally"
+                    and ar["original_mapping_failure_retained"] is True and ar["reader_publication_allowed"] is False,
+                    "internal_unmapped_review_only")
+            addition_files = ["manifest.json", "continuation-binding.json", "unmapped-review-binding.json",
+                              "unmapped-review-result.json", "private-unmapped-additions.json"]
     else:
         candidate, cb = checked_cache(af, "additions-repair")
         additions.check_candidate(candidate, book, targets, inputs["sources"])
@@ -201,6 +245,7 @@ def inputs_for(root, addition_job, precision_job, tokenizer):
     return inputs, merged, coverage, pending, actual, {"parents": parent_files, "article_sha256": sha(canonical(merged)),
         "accepted_additions": len(selected), "accepted_factual_operations": len(operations), "precision_unresolved": pr["items_still_unresolved"],
         "original_mapping_failure_retained": is_unmapped,
+        "conservative_review": conservative if failed_review else None,
         "all_prior_reading_checks": audit["reading"], "all_prior_integrated_checks": prior["all_integrated_reviews"]}
 
 
@@ -312,7 +357,9 @@ def dispatch(root, addition_job, precision_job, tokenizer):
                 store.checkpoint()
                 parent = read(store.root / "wiki/textbook-gap-addition-jobs" / addition_job / "unmapped-review-progress.json")
                 live = additions.final.writing.planmod.identity_live(parent)
-                if parent["stage"] == "complete" and not live:
+                salvageable = parent["state"] == "stopped" and parent["stage"] == "additions-review-1" \
+                    and parent.get("reason_code") == "wiki_stage_attempt_budget_exhausted_additions-review-1"
+                if not live and (parent["stage"] == "complete" or salvageable):
                     break
                 require(parent["state"] not in {"paused", "stopped"} and live, "parent_review_stopped_no_restart")
                 require(time.monotonic() < deadline, "parent_review_wait_timeout")

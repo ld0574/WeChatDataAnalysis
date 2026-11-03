@@ -82,3 +82,28 @@ def test_dispatch_never_restarts_a_failed_parent_or_launches_a_review(tmp_path, 
         module.dispatch(tmp_path, key, "b" * 32, tmp_path / "tokenizer")
     state = json.loads((tmp_path / "wiki/textbook-edition-dispatch.json").read_bytes())
     assert state["state"] == "stopped" and state["reason_code"].endswith("parent_review_stopped_no_restart")
+
+
+def test_contradictory_targets_remain_unknown_and_paragraph_verdicts_do_not_change(tmp_path, monkeypatch):
+    value, targets, candidate, review = packet()
+    for ref in targets:
+        candidate["targets"][ref].update(kind="non_teaching", addition_ids=[])
+        review["targets"][ref].update(teaching=False, covered=True, addition_ids=[])
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    for number in [1, 2]:
+        module.atomic_json(attempts / f"additions-review-1-{number:02}.json", {
+            "input_sha256": "frozen", "validation_error": "requires_gap_additions_consistent_teaching_coverage",
+            "raw_response": json.dumps(review)})
+    before = {p.name: p.read_bytes() for p in attempts.iterdir()}
+    monkeypatch.setattr(module, "verify_response", lambda *args: None)
+    schema = module.additions.review_schema(candidate, targets, value["sources"])
+    context = {"targets": targets, "complete_sources_for_this_check": value["sources"]}
+    result, receipt = module.conservative_review(tmp_path, candidate, context, schema, "frozen")
+    assert result["paragraphs"] == review["paragraphs"]
+    assert all(r["teaching"] and not r["covered"] for r in result["targets"].values())
+    assert module.additions.resolved(candidate, result) == set()
+    assert receipt["additional_model_calls"] == 0 and set(receipt["unknown_target_ids"]) == set(targets)
+    assert {p.name: p.read_bytes() for p in attempts.iterdir()} == before
+    with pytest.raises(ValueError, match="only_known_failed_final_review"):
+        module.conservative_review(tmp_path, candidate, context, schema, "different-input")
