@@ -20,9 +20,10 @@ from test_course_textbook_manuscript_continue import (
 from test_course_textbook_provisional_continue import failed_review
 
 
-def failed_manuscript(request, monkeypatch):
+def failed_manuscript(request, monkeypatch, *, broken_latest=False):
     root, key, parent, calls, folder = failed_review(request, monkeypatch)
     original = schema_response(composition.AuthoringJob.generate_response)
+    repair_calls = []
 
     def reply(self, messages, *, schema):
         raw, metrics = original(self, messages, schema=schema)
@@ -32,6 +33,10 @@ def failed_manuscript(request, monkeypatch):
             composition.PROMPTS[author.REPAIR_PROMPT],
         }:
             missing_primary(value, json.loads(messages[1]["content"]))
+            if messages[0]["content"] == composition.PROMPTS[author.REPAIR_PROMPT]:
+                repair_calls.append(1)
+                if broken_latest and len(repair_calls) == 2:
+                    value["diagrams"][0]["edges"][0]["to"] = "unknown"
         elif self.current == "section-0001-review":
             value["quiz"]["passed"] = False
         return json.dumps(value), metrics
@@ -169,3 +174,21 @@ def test_changed_repair_attempt_is_rejected_instead_of_rebinding_a_review(
     with pytest.raises(ValueError, match="unchanged_repair_attempt"):
         module.run(root, folder.name)
     assert len(calls) == count
+
+
+def test_invalid_latest_repair_cannot_mask_an_earlier_reviewable_repair(
+    request, monkeypatch
+):
+    root, key, calls, folder, reply = failed_manuscript(
+        request, monkeypatch, broken_latest=True
+    )
+    before = {p: p.read_bytes() for p in (folder / "attempts").iterdir()}
+    result = module.run(root, folder.name)
+    assert result["adopted_sections"] == ["section-0001"]
+    execution = json.loads((folder / module.CONTRACT).read_bytes())
+    assert (
+        execution["eligible"]["section-0001"]["attempt"]
+        == "section-0001-repair-01.json"
+    )
+    assert "section-0001-repair-02.json" in execution["invalid_candidate_attempts"]
+    assert all(p.read_bytes() == value for p, value in before.items())

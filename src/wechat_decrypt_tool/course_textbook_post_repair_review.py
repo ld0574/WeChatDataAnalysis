@@ -231,7 +231,7 @@ def prepare(job, private, units, plan, sections, working, inventory):
                 "unchanged_repair_attempt",
             )
         return execution
-    eligible, skipped = {}, {}
+    eligible, skipped, invalid_attempts = {}, {}, {}
     numbers = {unit["id"]: number for number, unit in enumerate(units)}
     for section in sorted(private.get("unaccepted_sections", {})):
         require(section in numbers, "known_unaccepted_section")
@@ -250,9 +250,18 @@ def prepare(job, private, units, plan, sections, working, inventory):
             record = json.loads(attempt.read_bytes())
             if record.get("validation_error") != reviewable.repair.ERROR:
                 continue
-            candidate, changes = candidate_from_attempt(
-                attempt, section + "-repair", job.model_digest, ids, working, inventory
-            )
+            try:
+                candidate, changes = candidate_from_attempt(
+                    attempt,
+                    section + "-repair",
+                    job.model_digest,
+                    ids,
+                    working,
+                    inventory,
+                )
+            except ValueError as exc:
+                invalid_attempts[attempt.name] = sha(str(exc).encode())
+                continue
             break
         if candidate is None:
             skipped[section] = "no_complete_primary_citation_only_repair_candidate"
@@ -275,7 +284,12 @@ def prepare(job, private, units, plan, sections, working, inventory):
             "request_characters": request["characters"],
             "citation_paragraphs_proposed": len(changes),
         }
-    execution = {**original, "eligible": eligible, "skipped": skipped}
+    execution = {
+        **original,
+        "eligible": eligible,
+        "skipped": skipped,
+        "invalid_candidate_attempts": invalid_attempts,
+    }
     atomic_json(path, execution)
     return execution
 
