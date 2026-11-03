@@ -249,6 +249,18 @@ def test_all_frame_ocr_shares_inference_keeps_positions_and_restores_without_ori
     assert verified["verified_tile_occurrences"] == 4
     assert verified["unique_crops_every_pixel_verified"] == 2
     report = json.loads((store.root / "animation-ocr-report.json").read_text("utf-8"))
+    primary_names = ["audit.json", "animation-ocr-report.json", "animation-ocr-validation.json"]
+    original = {name: (store.root / name).read_bytes() for name in primary_names}
+    store.write_json("selected-animation-audit.json", {"image_occurrences": targets[:1]})
+    store.write_json("selected-animation-report.json", {
+        **report, "requested": 1, "completed": report["completed"][:1]})
+    selected = verify_animations(
+        store, store.root / "selected-animation-audit.json",
+        report_name="selected-animation-report.json", output_name="selected-animation-validation.json")
+    assert selected["full_requested_ocr_scope_verified"]
+    assert selected["verified_source_occurrences"] == 1
+    assert selected["source_route_groups_verified"] == 1
+    assert all((store.root / name).read_bytes() == original[name] for name in primary_names)
     store.write_json(
         "animation-ocr-report.json", {**report, "completed": report["completed"][:1]}
     )

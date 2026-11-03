@@ -79,6 +79,29 @@ def load(store, name):
     return json.loads((store.root / name).read_text("utf-8"))
 
 
+def test_selected_images_validate_without_replacing_primary_reports(archive):
+    store, _, _, run = archive
+    run()
+    names = ["teaching-image-audit.json", "images-ocr-report.json"]
+    original = {name: (store.root / name).read_bytes() for name in names}
+    audit = load(store, names[0])
+    report = load(store, names[1])
+    audit["image_occurrences"] = audit["image_occurrences"][:1]
+    report["completed"] = report["completed"][:1]
+    report["requested"] = 1
+    store.write_json("selected-image-audit.json", audit)
+    store.write_json("selected-image-report.json", report)
+    result = module.validate_primary_images(
+        ReadOnlyArchive(store.root), audit_name="selected-image-audit.json",
+        report_name="selected-image-report.json")
+    assert result["primary_requested_occurrences"] == 1
+    assert result["primary_successful_occurrences_verified"] == 1
+    assert result["models_invoked"] is False
+    assert result["source_deletion_allowed"] is False
+    assert "selected-image-report.json" in result["evidence_sha256"]
+    assert all((store.root / name).read_bytes() == original[name] for name in names)
+
+
 def revise_metadata(store, change):
     with store.write() as db:
         rows = db.execute("SELECT * FROM resource_revisions").fetchall()

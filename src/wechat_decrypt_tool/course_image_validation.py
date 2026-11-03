@@ -104,7 +104,8 @@ def accepted_body(root, metadata, size):
 
 
 def validate_primary_images(
-    store, *, audit_name="teaching-image-audit.json", progress=lambda **_: None
+    store, *, audit_name="teaching-image-audit.json", report_name="images-ocr-report.json",
+    progress=lambda **_: None
 ):
     from PIL import Image, ImageChops, ImageOps
 
@@ -113,7 +114,7 @@ def validate_primary_images(
     from .course_knowledge import tokens
 
     started = time.monotonic()
-    names = [audit_name, "images-ocr-report.json", "resources-manifest.json"]
+    names = [audit_name, report_name, "resources-manifest.json"]
     frozen = {name: (store.root / name).read_bytes() for name in names}
     audit, report, manifest = [json.loads(frozen[name]) for name in names]
     rows = [

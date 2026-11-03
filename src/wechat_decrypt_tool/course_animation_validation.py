@@ -9,7 +9,10 @@ import time
 from pathlib import Path
 
 
-def verify_animations(store, audit_path):
+def verify_animations(
+    store, audit_path, *, report_name="animation-ocr-report.json",
+    output_name="animation-ocr-validation.json"
+):
     from PIL import Image, ImageChops
     from fastapi.testclient import TestClient
     from .course_animations import animation_evidence
@@ -50,7 +53,7 @@ def verify_animations(store, audit_path):
         for x in audit["image_occurrences"]
         if x["state"] == "animated_raw_retained_motion_audit_pending"
     }
-    report = json.loads((root / "animation-ocr-report.json").read_text("utf-8"))
+    report = json.loads((root / report_name).read_text("utf-8"))
     require(report["requested"] == len(targets), "Animation requested scope differs")
     seen, manifests, pixels = set(), {}, set()
     chunks = tiles_checked = partial = routes_checked = 0
@@ -332,7 +335,7 @@ def verify_animations(store, audit_path):
         "no_course_contents_emitted": True,
         "updated": time.time(),
     }
-    store.write_json("animation-ocr-validation.json", result)
+    store.write_json(output_name, result)
     return result
 
 
