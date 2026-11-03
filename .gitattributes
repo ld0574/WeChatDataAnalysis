@@ -1,2 +1,7 @@
 # This policy is hash-pinned at runtime and must remain byte-stable on Windows.
 desktop/scripts/windows-private-pki.ps1 text eol=lf
+
+# These modules are bound to retained local job manifests by their raw SHA-256.
+src/wechat_decrypt_tool/course_textbook_edition_sources.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_edition_editor.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_editor_validation.py text eol=lf
