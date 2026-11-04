@@ -26,6 +26,7 @@ DIGEST = re.compile(r"^[a-f0-9]{64}$")
 LEARNING_ASSETS = {
     "course-learning.js": "course_learning.js",
     "course-reading.js": "course_textbook_reading.js",
+    "course-practice.js": "course_textbook_practice.js",
 }
 LEARNING_SCRIPTS = (
     '<script defer src="/assets/course-learning.js"></script>'
@@ -369,7 +370,7 @@ footer{margin-top:4rem;border-top:1px solid #eaeaea;padding-top:1.5rem;font-size
 
 
 def reading_document(value, *, offline=False):
-    from .course_textbook_gap_preview import reading_html
+    from .course_textbook_reader_presentation import reading_html
 
     book = value["article"]
     course = book["course_id"]
@@ -383,7 +384,7 @@ def reading_document(value, *, offline=False):
     if value.get("state") == "reading_ready" and value.get("editorial_status"):
         notice = ('<aside role="status" class="draft-notice">全文已整理并通过本地内容核对，'
                   '待你阅读确认。</aside>')
-    content = reading_html(book).replace("<body><main>", "<body><main>" + links + notice, 1)
+    content = reading_html(book, value.get("practice"), offline=offline).replace("<body><main>", "<body><main>" + links + notice, 1)
     if not offline:
         revision = value["revision"]
         if not DIGEST.fullmatch(revision):
@@ -445,8 +446,9 @@ def home_html(catalog, query="", results=()):
 
 
 def create_app(root):
-    from fastapi import FastAPI, HTTPException
+    from fastapi import Body, FastAPI, HTTPException
     from fastapi.responses import HTMLResponse, Response
+    from . import course_textbook_practice as practice
 
     reader = Reader(root)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -457,7 +459,7 @@ def create_app(root):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+            "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
         )
         return response
 
@@ -488,6 +490,28 @@ def create_app(root):
     def search(q: str = ""):
         return {"results": safe(reader.search, q)}
 
+    def reading_value(course):
+        value = safe(reader.article, course)
+        pack = safe(practice.load, reader.archive, value["revision"], value["article"])
+        return {**value, "practice": pack}
+
+    @app.get("/api/practice/{course}")
+    def practice_questions(course: str):
+        pack = reading_value(course)["practice"]
+        if pack is None:
+            raise HTTPException(404, "选择题正在整理。")
+        return practice.public(pack)
+
+    @app.post("/api/practice/{course}/grade")
+    def practice_grade(course: str, request: dict = Body(...)):
+        pack = reading_value(course)["practice"]
+        if pack is None:
+            raise HTTPException(404, "选择题正在整理。")
+        try:
+            return practice.grade(pack, request)
+        except ValueError:
+            raise HTTPException(422, "请完成全部题目并核对当前测验版本后再提交。") from None
+
     @app.get("/assets/{name}")
     def learning_asset(name: str):
         if name not in LEARNING_ASSETS:
@@ -501,12 +525,12 @@ def create_app(root):
 
     @app.get("/read/{course}", response_class=HTMLResponse)
     def read_article(course: str):
-        return reading_document(safe(reader.article, course))
+        return reading_document(reading_value(course))
 
     @app.get("/export/{course}")
     def export(course: str):
         return Response(
-            reading_document(safe(reader.article, course), offline=True),
+            reading_document(reading_value(course), offline=True),
             media_type="text/html",
             headers={
                 "Content-Disposition": f'attachment; filename="course-{course}.html"'

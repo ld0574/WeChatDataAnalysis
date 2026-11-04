@@ -15,3 +15,5 @@ src/wechat_decrypt_tool/course_textbook_reference_scope.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_reader.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_whole_sources.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_whole_authoring.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_practice.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_practice_build.py text eol=lf

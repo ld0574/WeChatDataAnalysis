@@ -182,6 +182,7 @@
       plan = undefined;
       apply.disabled = true;
       hydrate();
+      window.dispatchEvent(new Event("course-wiki-learning-imported"));
       preview.textContent = `导入完成：${result.imported} 个版本，保留 ${result.skipped} 个已有记录。`;
     } catch (error) {
       plan = undefined;

@@ -309,7 +309,7 @@ def test_http_read_search_and_export_are_clean_and_unknown_paths_do_not_expose_s
         assert "private_coverage" not in response.text
         assert response.headers["cache-control"] == "no-store"
         assert "default-src 'none'" in response.headers["content-security-policy"]
-    assert "<details>" in client.get("/read/" + course).text
+    assert "选择题正在整理" in client.get("/read/" + course).text
     assert "<svg " in client.get("/read/" + course).text
     assert (
         'attachment; filename="course-'
@@ -367,7 +367,7 @@ def test_learning_is_bound_to_reading_revision_and_export_stays_standalone(publi
     assert 'id="learning-records"' in client.get("/").text
     offline = client.get("/export/" + course).text
     assert "<script" not in offline and "data-article-revision" not in offline
-    assert "<svg " in offline and "<details>" in offline
+    assert "<svg " in offline and "选择题正在整理" in offline
 
 
 def test_new_versions_keep_history_and_revision_identity(publication):
@@ -390,6 +390,50 @@ def test_new_versions_keep_history_and_revision_identity(publication):
     ) == reading_book(original)
     assert reader.publish(root, job) == current
     assert len(reader.Reader(root).index()["history"]) == 1
+
+
+def test_choice_practice_is_version_bound_and_answers_are_returned_only_after_complete_submission(publication):
+    from wechat_decrypt_tool import course_textbook_practice as practice
+
+    root, job, course, _, _ = publication
+    revision = reader.publish(root, job)["artifact"]
+    original = reader.Reader(root).article(course)["article"]
+    value = {"questions": [{"id": "Q1", "type": "single", "question": "Which synthetic choice applies?",
+        "options": {"A": "A first choice", "B": "The applicable choice", "C": "A third choice", "D": "A final choice"},
+        "correct": ["B"], "explanation": "EXPLANATION_ONLY_AFTER_COMPLETE_SUBMISSION",
+        "support": [{"section": "section-a", "quote": original["chapters"][0]["sections"][0]["paragraphs"][0]}]}]}
+    practice.validate(value, original)
+    folder = root / "wiki/textbook-choice-quiz-jobs" / ("1" * 32)
+    folder.mkdir(parents=True)
+    stages = {}
+    for name in ["choices-write", "choices-review"]:
+        path = folder / (name + ".json")
+        atomic_json(path, {"fixture": name})
+        stages[name] = sha(path.read_bytes())
+    proof = {"job": "1" * 32, "article_sha256": revision,
+        "questions_sha256": sha(canonical(value["questions"])), "independent_review_passed": True,
+        "models": {"qwen3.5:9b": "2" * 64, "course-defiant:q4": "3" * 64}, "stages": stages}
+    atomic_json(folder / "accepted-practice-proof.json", proof)
+    pack = practice.store(root, revision, value, {**proof, "proof_sha256": sha(canonical(proof))})
+    client = TestClient(reader.create_app(root))
+    document = client.get("/read/" + course)
+    assert document.status_code == 200
+    assert document.text.count("<fieldset ") == 1
+    assert "EXPLANATION_ONLY_AFTER_COMPLETE_SUBMISSION" not in document.text
+    public = client.get("/api/practice/" + course).json()
+    assert "correct" not in public["questions"][0] and "explanation" not in public["questions"][0]
+    endpoint = "/api/practice/" + course + "/grade"
+    incomplete = client.post(endpoint, json={"pack_sha256": pack, "answers": {}})
+    assert incomplete.status_code == 422 and "EXPLANATION_ONLY" not in incomplete.text
+    graded = client.post(endpoint, json={"pack_sha256": pack, "answers": {"Q1": ["B"]}})
+    assert graded.status_code == 200 and graded.json()["score"] == 1
+    assert graded.json()["results"][0]["explanation"] == "EXPLANATION_ONLY_AFTER_COMPLETE_SUBMISSION"
+    assert reader.Reader(root).article(course)["revision"] == revision
+    assert reader.Reader(root).index()["history"] == []
+    exported = client.get("/export/" + course).text
+    assert 'id="offline-practice-key"' in exported and '"support"' not in exported
+    (folder / "choices-review.json").write_text("changed", encoding="utf-8")
+    assert client.get("/api/practice/" + course).status_code == 503
 
 
 @pytest.fixture
