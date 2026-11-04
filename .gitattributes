@@ -6,3 +6,4 @@ src/wechat_decrypt_tool/course_textbook_edition_sources.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_edition_editor.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_editor_validation.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_edit_scope.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_affiliation.py text eol=lf

@@ -305,3 +305,140 @@ def test_new_versions_keep_history_and_revision_identity(publication):
     ) == reading_book(original)
     assert reader.publish(root, job) == current
     assert len(reader.Reader(root).index()["history"]) == 1
+
+
+@pytest.fixture
+def reviewed_revision(publication):
+    from wechat_decrypt_tool.course_textbook_edition_editor import (
+        apply,
+        labelled_article,
+        operations,
+    )
+    from wechat_decrypt_tool.course_textbook_reviewed_draft import ROLE, STAGE
+
+    root, _, course, _, private = publication
+    parent, writer = "1" * 32, "2" * 32
+    before = reading_book(private)
+    parent_path = root / "wiki/lesson-retained-addition-jobs" / parent / "reading.json"
+    parent_path.parent.mkdir(parents=True)
+    atomic_json(parent_path, before)
+    ref = next(iter(private["chapters"][0]["sections"][0]["paragraphs"][0]["citations"]))
+    candidate = {
+        "paragraph_changes": [{
+            "kind": "append", "section_id": "section-a",
+            "text": "An independently checked **additional explanation**.", "citations": [ref],
+        }],
+        "quiz_changes": [],
+    }
+    book = apply(before, candidate)
+    writer_folder = root / "wiki/lesson-contextual-repair-jobs" / writer
+    writer_folder.mkdir(parents=True)
+    atomic_json(writer_folder / "manifest.json", {"fixture": True})
+    binding = {
+        str(parent_path): sha(parent_path.read_bytes()),
+        "original_writer": writer,
+        "original_writer_files": {"manifest.json": sha((writer_folder / "manifest.json").read_bytes())},
+        "proposed_article_sha256": sha(canonical(book)),
+    }
+    recipe = {"extra": {"role": ROLE, "binding": binding}, "packet": {"sources": {ref: {}}}}
+    recipe_digest = sha(canonical(recipe))
+    job = recipe_digest[:32]
+    folder = root / "wiki/lesson-contextual-repair-jobs" / job
+    folder.mkdir(parents=True)
+    atomic_json(folder / "manifest.json", {"id": job, "recipe_sha256": recipe_digest, "recipe": recipe})
+    atomic_json(writer_folder / "retained-actual-unique-prose-position-mapped-review-binding.json", {
+        "reviewer": job, "new_writing_calls": 0,
+        "manifest_sha256": sha((folder / "manifest.json").read_bytes()),
+    })
+    editorial = {
+        "operations": {"edit000": {"verdict": "accepted"}},
+        "prior_issues": {"old": {"verdict": "resolved"}},
+        "reading": {"readability": {"verdict": "passed"}},
+    }
+    coverage = {ref: {"kind": "covered", "paragraph_ids": ["p000", "p001"]}}
+    review = {"editorial": editorial, "source_check": {"sources": coverage}}
+    atomic_json(folder / "private-inputs.json", {
+        "binding": binding, "schema": {"type": "object"},
+        "context": {"proposed_article": labelled_article(book), "operations": operations(candidate),
+                    "source_check_targets": [ref]},
+    })
+    atomic_json(folder / "private-final-checks.json", {"binding": binding, "review": editorial, "source_coverage": coverage})
+    atomic_json(folder / "private-reviewed-proposal.json", {
+        "selection_binding": binding, "candidate": candidate, "review": review, "proposed_article": book,
+    })
+    raw = json.dumps(review)
+    metrics = {"done_reason": "stop", "size_vram": 1024, "requested_context": 4096,
+               "measured_context": 4096, "expected_content_tokens": 100,
+               "prompt_eval_count": 100, "reserved_output": 100}
+    atomic_json(folder / (STAGE + ".json"), {
+        "data": review, "data_sha256": sha(canonical(review)), "input_sha256": "3" * 64,
+    })
+    (folder / "attempts").mkdir()
+    atomic_json(folder / "attempts" / (STAGE + "-01.json"), {
+        "accepted_structure": True, "input_sha256": "3" * 64,
+        "raw_response": raw, "request_sha256": "4" * 64, "model_metrics": metrics,
+    })
+    atomic_json(folder / "response-01.json", {
+        "stage": STAGE, "request_sha256": "4" * 64,
+        "response": {"message": {"content": raw}}, "metrics": metrics,
+    })
+    atomic_json(folder / "reading.json", book)
+    atomic_json(folder / "result.json", {
+        "job": job, "writer": writer, "parent": parent,
+        "state": "retained_visual_additions_independently_checked", "all_operations_accepted": True,
+        "new_writing_calls": 0, "source_deletion_allowed": False, "semantic_acceptance": False,
+        "scope_verified": False, "reader_publication_allowed": False,
+        "missing_source_inputs": 0, "remaining_prior_issues": 0, "reading_issues": 0,
+        "article_sha256": sha(canonical(book)), "audited_source_inputs": 1,
+        "body_characters": sum(map(len, book["chapters"][0]["sections"][0]["paragraphs"])),
+        "chapters": 1, "self_tests": 1, "actual_added_paragraphs": 1,
+        "actual_added_characters": len(candidate["paragraph_changes"][0]["text"]),
+    })
+    return root, job, course, folder, parent_path
+
+
+def test_reviewed_revision_reaches_directory_search_and_rich_reading(reviewed_revision):
+    root, job, course, _, _ = reviewed_revision
+    status = reader.publish_reviewed(root, job)
+    assert status["state"] == "review_draft" and not status["source_deletion_allowed"]
+    client = TestClient(reader.create_app(root))
+    assert client.get("/api/catalog").json()["reading_drafts"] == 1
+    assert client.get("/api/search", params={"q": "additional explanation"}).json()["results"]
+    page = client.get("/read/" + course)
+    assert page.status_code == 200
+    assert "<strong>additional explanation</strong>" in page.text
+    assert "待验收" in page.text and "课件归属仍在核对" in page.text
+    assert "PRIVATE_RAW_SOURCE" not in page.text
+    export = client.get("/export/" + course).text
+    assert "<strong>additional explanation</strong>" in export and 'src="' not in export
+    assert client.get("/wiki/textbook-reading/receipts/" + status["artifact"] + ".json").status_code == 404
+
+
+@pytest.mark.parametrize("mutation", ["source", "receipt", "cache", "rehash_book", "final_claim"])
+def test_reviewed_publication_rejects_changed_evidence_or_unverified_success(reviewed_revision, mutation):
+    from wechat_decrypt_tool.course_textbook_reviewed_draft import STAGE
+
+    root, job, _, folder, parent_path = reviewed_revision
+    if mutation == "source":
+        parent_path.write_bytes(parent_path.read_bytes() + b" ")
+    elif mutation == "receipt":
+        (folder / "response-01.json").unlink()
+    elif mutation == "cache":
+        path = folder / (STAGE + ".json")
+        value = json.loads(path.read_bytes())
+        value["data"]["editorial"]["reading"]["readability"]["verdict"] = "failed"
+        value["data_sha256"] = sha(canonical(value["data"]))
+        atomic_json(path, value)
+    else:
+        result = json.loads((folder / "result.json").read_bytes())
+        if mutation == "final_claim":
+            result["semantic_acceptance"] = True
+        else:
+            book = json.loads((folder / "reading.json").read_bytes())
+            book["chapters"][0]["sections"][0]["paragraphs"][-1] = "An unreviewed assertion."
+            result["article_sha256"] = sha(canonical(book))
+            atomic_json(folder / "reading.json", book)
+        atomic_json(folder / "result.json", result)
+    with pytest.raises(ValueError):
+        reader.publish_reviewed(root, job)
+    assert not reader.Reader(root).index()["lessons"]

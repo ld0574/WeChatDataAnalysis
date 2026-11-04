@@ -17,7 +17,7 @@ import jsonschema
 
 from .course_knowledge import atomic_json, schema_lease
 from .course_library import Library, canonical
-from .course_textbook_article import reading_book, standalone_html, validate_book
+from .course_textbook_article import reading_book, validate_book
 from .course_textbook_evidence import sha
 
 FORMAT = "course-textbook-reader-publication-v1"
@@ -68,6 +68,19 @@ def publish(root, job):
     book = reading_book(private)
     if json.loads((folder / "reading.json").read_bytes()) != book:
         raise ValueError("textbook_reader_reading_projection_changed")
+    return store_book(root, book)
+
+
+def publish_reviewed(root, job):
+    """Publish an independently checked revision with its unfinished status."""
+    from .course_textbook_reviewed_draft import load
+
+    book, receipt = load(root, job)
+    return store_book(root, book, receipt=receipt)
+
+
+def store_book(root, book, *, receipt=None):
+    validate_book(book)
     reader = Reader(root)
     reader.root.mkdir(parents=True, exist_ok=True)
     with schema_lease(reader.root / "publish.lock", timeout=0):
@@ -80,6 +93,13 @@ def publish(root, job):
                 raise ValueError("textbook_reader_object_changed")
         else:
             target.write_bytes(raw)
+        if receipt is not None:
+            proof = reader.root / "receipts" / (artifact + ".json")
+            proof.parent.mkdir(parents=True, exist_ok=True)
+            if proof.exists() and json.loads(proof.read_bytes()) != receipt:
+                raise ValueError("textbook_reader_publication_receipt_changed")
+            if not proof.exists():
+                atomic_json(proof, receipt)
         index = reader.index()
         old = index["lessons"].get(book["course_id"])
         if old and old["artifact"] != artifact:
@@ -279,6 +299,27 @@ footer{margin-top:4rem;border-top:1px solid #eaeaea;padding-top:1.5rem;font-size
 """
 
 
+def reading_document(value, *, offline=False):
+    from .course_textbook_gap_preview import reading_html
+
+    book = value["article"]
+    course = book["course_id"]
+    links = "" if offline else (
+        f'<p><a href="/">课程目录与搜索</a> · <a href="/export/{course}">保存离线文章</a></p>'
+    )
+    notice = (
+        '<aside role="status" class="draft-notice">整篇阅读草稿 · 待验收。'
+        '课件归属仍在核对，正文可先阅读和练习。</aside>'
+    )
+    content = reading_html(book).replace("<body><main>", "<body><main>" + links + notice, 1)
+    return content.replace(
+        "</style>",
+        "h1,h2,h3,summary,nav a,figcaption,aside{overflow-wrap:anywhere}"
+        ".draft-notice{padding:1rem;background:#fff0d4;margin:1rem 0 2rem}"
+        "</style>", 1,
+    )
+
+
 def home_html(catalog, query="", results=()):
     esc = html.escape
     parts = [
@@ -369,16 +410,12 @@ def create_app(root):
 
     @app.get("/read/{course}", response_class=HTMLResponse)
     def read_article(course: str):
-        book = safe(reader.article, course)["article"]
-        return standalone_html(book).replace(
-            "<body><main>", '<body><main><a href="/">返回课程目录</a>', 1
-        )
+        return reading_document(safe(reader.article, course))
 
     @app.get("/export/{course}")
     def export(course: str):
-        book = safe(reader.article, course)["article"]
         return Response(
-            standalone_html(book),
+            reading_document(safe(reader.article, course), offline=True),
             media_type="text/html",
             headers={
                 "Content-Disposition": f'attachment; filename="course-{course}.html"'
@@ -396,9 +433,13 @@ def main(argv=None):
     serve.add_argument("--port", type=int, default=3005)
     release = sub.add_parser("publish")
     release.add_argument("--job", required=True)
+    reviewed = sub.add_parser("publish-reviewed")
+    reviewed.add_argument("--job", required=True)
     args = parser.parse_args(argv)
     if args.command == "publish":
         print(json.dumps(publish(args.root, args.job)))
+    elif args.command == "publish-reviewed":
+        print(json.dumps(publish_reviewed(args.root, args.job)))
     else:
         import uvicorn
 
