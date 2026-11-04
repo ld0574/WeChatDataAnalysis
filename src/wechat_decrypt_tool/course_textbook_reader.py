@@ -60,6 +60,45 @@ def sealed(path):
     return saved["data"]
 
 
+def editorial_status(archive, revision):
+    """Read text-free readiness backed by a separate immutable review proof."""
+    if not DIGEST.fullmatch(revision):
+        raise ValueError("textbook_reader_invalid_editorial_revision")
+    wiki = Path(archive) / "wiki"
+    path = wiki / "textbook-reading/delivery-status" / (revision + ".json")
+    if not path.exists():
+        return None
+    try:
+        status = json.loads(path.read_bytes())
+        jsonschema.validate(status, {
+            "type": "object", "additionalProperties": False,
+            "required": ["format", "article_sha256", "automatic_editorial_review_passed",
+                "courseware_reference_scope_verified", "user_acceptance", "source_deletion_allowed", "proof_sha256"],
+            "properties": {
+                "format": {"const": "course-textbook-editorial-status-v1"},
+                "article_sha256": {"const": revision},
+                "automatic_editorial_review_passed": {"const": True},
+                "courseware_reference_scope_verified": {"const": True},
+                "user_acceptance": {"const": False},
+                "source_deletion_allowed": {"const": False},
+                "proof_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            },
+        })
+        proof = json.loads((wiki / "editorial-delivery-proofs" / (status["proof_sha256"] + ".json")).read_bytes())
+        public = {key: value for key, value in status.items() if key != "proof_sha256"}
+        if (sha(canonical(proof)) != status["proof_sha256"]
+                or proof["format"] != "course-textbook-editorial-delivery-v1"
+                or proof["public"] != public
+                or proof["first_lesson_editorial_work_complete"] is not True
+                or proof["reader_ready_for_user_acceptance"] is not True
+                or proof["source_deletion_allowed"] is not False
+                or proof["original_review_receipt"]["article_sha256"] != revision):
+            raise ValueError("editorial_proof_changed")
+    except (OSError, ValueError, KeyError, TypeError, jsonschema.ValidationError):
+        raise ValueError("textbook_reader_editorial_receipt_changed") from None
+    return public
+
+
 def publish(root, job):
     """Expose a clean review draft, without asserting final semantic acceptance."""
     from .course_textbook_authoring import load_inputs
@@ -185,7 +224,11 @@ class Reader:
         book = self.object(row["artifact"])
         if book["course_id"] != course:
             raise ValueError("textbook_reader_course_identity_changed")
-        return {"article": book, "revision": row["artifact"], "state": "review_draft"}
+        value = {"article": book, "revision": row["artifact"], "state": "review_draft"}
+        status = editorial_status(self.archive, row["artifact"])
+        if status is not None:
+            value.update(state="reading_ready", editorial_status=status)
+        return value
 
     def catalog(self):
         index = self.index()
@@ -200,13 +243,14 @@ class Reader:
                 raise ValueError("textbook_reader_invalid_course_directory")
             seen.add(key)
             ready = key in index["lessons"]
-            title = self.article(key)["article"]["title"] if ready else lesson["title"]
+            article = self.article(key) if ready else None
+            title = article["article"]["title"] if ready else lesson["title"]
             rows.append(
                 {
                     "id": key,
                     "title": title,
                     "collection": lesson.get("collection", "课程"),
-                    "state": "review_draft" if ready else "organizing",
+                    "state": article["state"] if ready else "organizing",
                 }
             )
         for key in index["lessons"]:
@@ -216,13 +260,14 @@ class Reader:
                         "id": key,
                         "title": self.article(key)["article"]["title"],
                         "collection": "课程",
-                        "state": "review_draft",
+                        "state": self.article(key)["state"],
                     }
                 )
         return {
             "lessons": rows,
             "requested": len(rows),
             "reading_drafts": len(index["lessons"]),
+            "checked_readings": sum(row["state"] == "reading_ready" for row in rows),
             "semantic_accuracy_verified": False,
             "source_deletion_allowed": False,
         }
@@ -335,6 +380,9 @@ def reading_document(value, *, offline=False):
         '<aside role="status" class="draft-notice">整篇阅读草稿 · 待验收。'
         '课件归属仍在核对，正文可先阅读和练习。</aside>'
     )
+    if value.get("state") == "reading_ready" and value.get("editorial_status"):
+        notice = ('<aside role="status" class="draft-notice">全文已整理并通过本地内容核对，'
+                  '待你阅读确认。</aside>')
     content = reading_html(book).replace("<body><main>", "<body><main>" + links + notice, 1)
     if not offline:
         revision = value["revision"]
@@ -353,9 +401,12 @@ def reading_document(value, *, offline=False):
 
 def home_html(catalog, query="", results=()):
     esc = html.escape
+    checked = catalog.get("checked_readings", 0)
+    available = (f'{checked} 篇已整理文章 · {catalog["reading_drafts"] - checked} 篇待核对'
+                 if checked else f'{catalog["reading_drafts"]} 篇阅读草稿')
     parts = [
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>课程知识库</title>',
-        f'<style>{INDEX_STYLE}{LEARNING_STYLE}</style>{LEARNING_SCRIPTS}</head><body><main><header><p class="meta">本地阅读 · 理解与练习</p><h1>课程知识库</h1><p>按知识逻辑读完整文章，用解释图理解关系，用自测检验掌握。</p><p class="status">{catalog["requested"]} 份课程来源 · {catalog["reading_drafts"]} 篇阅读草稿</p></header>',
+        f'<style>{INDEX_STYLE}{LEARNING_STYLE}</style>{LEARNING_SCRIPTS}</head><body><main><header><p class="meta">本地阅读 · 理解与练习</p><h1>课程知识库</h1><p>按知识逻辑读完整文章，用解释图理解关系，用自测检验掌握。</p><p class="status">{catalog["requested"]} 份课程来源 · {available}</p></header>',
         '<form method="get" action="/"><label for="q" class="meta">搜索文章</label>',
         f'<input id="q" name="q" type="search" maxlength="200" value="{esc(query, quote=True)}" placeholder="输入想理解的概念或问题"><button type="submit">搜索</button></form>',
     ]
@@ -374,7 +425,7 @@ def home_html(catalog, query="", results=()):
     for row in catalog["lessons"]:
         label = (
             f'<a href="/read/{row["id"]}">{esc(row["title"])}</a>'
-            if row["state"] == "review_draft"
+            if row["state"] in {"review_draft", "reading_ready"}
             else f"<span>{esc(row['title'])}</span>"
         )
         state = (
@@ -382,11 +433,13 @@ def home_html(catalog, query="", results=()):
             if row["state"] == "review_draft"
             else '<span class="pending">整理中</span>'
         )
+        if row["state"] == "reading_ready":
+            state = '<span class="badge">已整理 · 可阅读</span>'
         parts.append(
             f'<li class="course"><div>{label}<span class="collection">{esc(row["collection"])}</span></div>{state}</li>'
         )
     parts.append(
-        "</ul></section><footer>阅读草稿仍需内容复核。课程中的历史版本与工具信息以授课语境为准。</footer></main></body></html>"
+        "</ul></section><footer>课程中的历史版本与工具信息以授课语境为准。</footer></main></body></html>"
     )
     return "".join(parts)
 

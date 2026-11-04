@@ -156,6 +156,71 @@ def publication(tmp_path):
     return tmp_path, job, course, authoring, private
 
 
+def checked_delivery(root, revision, **changes):
+    public = {"format": "course-textbook-editorial-status-v1", "article_sha256": revision,
+        "automatic_editorial_review_passed": True, "courseware_reference_scope_verified": True,
+        "user_acceptance": False, "source_deletion_allowed": False}
+    proof = {"format": "course-textbook-editorial-delivery-v1", "public": public,
+        "first_lesson_editorial_work_complete": True, "reader_ready_for_user_acceptance": True,
+        "source_deletion_allowed": False, "original_review_receipt": {"article_sha256": revision},
+        "private_reason": "PRIVATE_STATUS_REASON", **changes}
+    digest = sha(canonical(proof))
+    proof_path = root / "wiki/editorial-delivery-proofs" / (digest + ".json")
+    proof_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(proof_path, proof)
+    path = root / "wiki/textbook-reading/delivery-status" / (revision + ".json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(path, {**public, "proof_sha256": digest})
+    return path, proof_path
+
+
+def test_checked_reading_requires_revision_bound_proof_and_exposes_no_private_status(publication):
+    root, job, course, _, _ = publication
+    revision = reader.publish(root, job)["artifact"]
+    checked_delivery(root, revision)
+    store = reader.Reader(root)
+    assert store.article(course)["state"] == "reading_ready"
+    assert store.article(course)["revision"] == revision
+    assert store.catalog()["checked_readings"] == 1
+    assert store.catalog()["lessons"][1]["state"] == "organizing"
+    client = TestClient(reader.create_app(root))
+    page = client.get("/read/" + course)
+    assert page.status_code == 200
+    assert "通过本地内容核对" in page.text and "课件归属仍在核对" not in page.text
+    assert "已整理 · 可阅读" in client.get("/").text
+    public = json.dumps([store.article(course), store.catalog()])
+    assert "PRIVATE_STATUS_REASON" not in public and "private_reason" not in public
+    assert "PRIVATE_STATUS_REASON" not in client.get("/export/" + course).text
+    assert store.article(course)["editorial_status"]["source_deletion_allowed"] is False
+    assert store.article(course)["editorial_status"]["user_acceptance"] is False
+
+
+@pytest.mark.parametrize("mutation", ["revision", "private_field", "proof_bytes"])
+def test_changed_editorial_receipt_cannot_grant_readiness(publication, mutation):
+    root, job, course, _, _ = publication
+    revision = reader.publish(root, job)["artifact"]
+    path, proof_path = checked_delivery(root, revision)
+    if mutation == "proof_bytes":
+        value = json.loads(proof_path.read_bytes())
+        value["private_reason"] = "Changed local proof"
+        atomic_json(proof_path, value)
+    else:
+        value = json.loads(path.read_bytes())
+        value.update({"article_sha256": "f" * 64} if mutation == "revision" else {"private_reason": "PRIVATE"})
+        atomic_json(path, value)
+    with pytest.raises(ValueError, match="editorial_receipt_changed"):
+        reader.Reader(root).article(course)
+
+
+@pytest.mark.parametrize("changes", [{"reader_ready_for_user_acceptance": False}, {"source_deletion_allowed": True}])
+def test_hash_valid_negative_proof_is_still_not_a_ready_reading(publication, changes):
+    root, job, course, _, _ = publication
+    revision = reader.publish(root, job)["artifact"]
+    checked_delivery(root, revision, **changes)
+    with pytest.raises(ValueError, match="editorial_receipt_changed"):
+        reader.Reader(root).article(course)
+
+
 def test_publish_exposes_only_projection_and_never_promotes_unfinished_notes(
     publication,
 ):
