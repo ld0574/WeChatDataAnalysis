@@ -285,6 +285,26 @@ def test_corrupt_objects_fail_closed_even_after_a_successful_cached_request(
     assert client.get("/api/article/" + course).status_code == 503
 
 
+def test_learning_is_bound_to_reading_revision_and_export_stays_standalone(publication):
+    root, job, course, _, _ = publication
+    status = reader.publish(root, job)
+    client = TestClient(reader.create_app(root))
+    document = client.get("/read/" + course)
+    assert f'data-article-revision="{status["artifact"]}"' in document.text
+    assert 'id="learning-records"' in document.text
+    assert "script-src 'self'" in document.headers["content-security-policy"]
+    for asset in ["course-learning.js", "course-reading.js"]:
+        response = client.get("/assets/" + asset)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/javascript")
+        assert f'src="/assets/{asset}"' in document.text
+    assert client.get("/assets/private-inputs.json").status_code == 404
+    assert 'id="learning-records"' in client.get("/").text
+    offline = client.get("/export/" + course).text
+    assert "<script" not in offline and "data-article-revision" not in offline
+    assert "<svg " in offline and "<details>" in offline
+
+
 def test_new_versions_keep_history_and_revision_identity(publication):
     root, job, course, folder, private = publication
     old = reader.publish(root, job)

@@ -31,6 +31,24 @@ test('existing single-article downloads remain importable', () => {
   assert.deepEqual(value.records[0].learning, state);
 });
 
+test('full reading revisions coexist with legacy IDs and keep separate answers', () => {
+  const oldRevision = 'c'.repeat(64), newRevision = 'd'.repeat(64);
+  const source = new Storage({
+    [key(first)]: JSON.stringify(state),
+    [key(oldRevision)]: JSON.stringify({answers: {'0': 'Earlier revision answer'}}),
+    [key(newRevision)]: JSON.stringify({answers: {'0': 'Current revision answer'}}),
+  });
+  const exported = learning.parse(learning.serialize(learning.collect(source)));
+  const target = new Storage();
+  assert.equal(learning.apply(learning.plan(exported, target), target).imported, 3);
+  assert.deepEqual(JSON.parse(target.getItem(key(first))), state);
+  assert.equal(JSON.parse(target.getItem(key(oldRevision))).answers['0'], 'Earlier revision answer');
+  assert.equal(JSON.parse(target.getItem(key(newRevision))).answers['0'], 'Current revision answer');
+  for (const bad of ['e'.repeat(24), 'f'.repeat(48), '0'.repeat(65)]) {
+    assert.throws(() => learning.plan(backup([{article: bad, learning: {}}]), target));
+  }
+});
+
 test('default keeps local answers and explicit replacement uses exact original version', () => {
   const storage = new Storage({[key(first)]: JSON.stringify({read: false})});
   const value = backup([{article: first, learning: state}, {article: second, learning: {review: true}}]);

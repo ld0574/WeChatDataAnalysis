@@ -93,6 +93,7 @@ include = [
     "src/wechat_decrypt_tool/resources/course_library.html",
     "src/wechat_decrypt_tool/resources/course_library.js",
     "src/wechat_decrypt_tool/resources/course_learning.js",
+    "src/wechat_decrypt_tool/resources/course_textbook_reading.js",
     "src/wechat_decrypt_tool/resources/course_library.css",
 ]
 

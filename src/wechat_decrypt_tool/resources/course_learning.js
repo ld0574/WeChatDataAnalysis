@@ -5,7 +5,8 @@ var CourseWikiLearning = (() => {
   const MAX_BYTES = 16 * 1024 * 1024;
   const fail = (message) => { throw new Error(message); };
   const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-  const articleId = (v) => typeof v === "string" && /^[a-f0-9]{32}$/.test(v);
+  // Older wiki exports use a 32-character ID; clean reading revisions use SHA-256.
+  const articleId = (v) => typeof v === "string" && /^(?:[a-f0-9]{32}|[a-f0-9]{64})$/.test(v);
   function learning(value) {
     if (!object(value)) fail("学习记录格式无效。");
     const result = {};

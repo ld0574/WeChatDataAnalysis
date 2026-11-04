@@ -23,6 +23,30 @@ from .course_textbook_evidence import sha
 FORMAT = "course-textbook-reader-publication-v1"
 ID = re.compile(r"^[a-f0-9]{24}$")
 DIGEST = re.compile(r"^[a-f0-9]{64}$")
+LEARNING_ASSETS = {
+    "course-learning.js": "course_learning.js",
+    "course-reading.js": "course_textbook_reading.js",
+}
+LEARNING_SCRIPTS = (
+    '<script defer src="/assets/course-learning.js"></script>'
+    '<script defer src="/assets/course-reading.js"></script>'
+)
+LEARNING_STYLE = """
+#learning-records{margin:1.5rem 0;padding:1rem 0;border-block:1px solid #d9dfd8}
+.learning-content{padding:1rem 0;font-size:.95rem}.learning-content p{margin:.8rem 0}
+.learning-content label{display:block;margin-top:.8rem}.learning-content input[type=file]{max-width:100%;font:inherit}
+.learning-actions{display:flex;flex-wrap:wrap;align-items:center;gap:1rem;margin:1rem 0}
+.learning-actions label,.assessment{display:flex;align-items:center;gap:.5rem}
+.learning-content button{font:inherit;padding:.6rem 1rem;border:1px solid #456251;background:#edf2ec;color:#253d30;border-radius:4px;cursor:pointer}
+.learning-content button:disabled{opacity:.55;cursor:default}.learning-content select{font:inherit;padding:.5rem;max-width:100%}
+.learning-status,.learning-preview{color:#526455}.practice{margin:1rem 0;padding:1rem;border:1px solid #d9dfd8;border-radius:4px}
+.practice textarea{display:block;width:100%;resize:vertical;margin:.5rem 0 1rem;padding:.8rem;font:inherit;background:#fffefa;color:inherit;border:1px solid #a8bcae}
+.practice label{font-size:.9rem}.practice input[type=checkbox]{flex:none}.learning-content,.practice{overflow-wrap:anywhere}
+"""
+
+
+def learning_shell():
+    return '<details id="learning-records"><summary>学习记录与备份</summary></details>'
 
 
 class ArticleNotReady(LookupError):
@@ -312,11 +336,18 @@ def reading_document(value, *, offline=False):
         '课件归属仍在核对，正文可先阅读和练习。</aside>'
     )
     content = reading_html(book).replace("<body><main>", "<body><main>" + links + notice, 1)
+    if not offline:
+        revision = value["revision"]
+        if not DIGEST.fullmatch(revision):
+            raise ValueError("textbook_reader_invalid_learning_revision")
+        content = content.replace("<body>", f'<body data-article-revision="{revision}">', 1)
+        content = content.replace("</head>", LEARNING_SCRIPTS + "</head>", 1)
+        content = content.replace(notice, notice + learning_shell(), 1)
     return content.replace(
         "</style>",
         "h1,h2,h3,summary,nav a,figcaption,aside{overflow-wrap:anywhere}"
         ".draft-notice{padding:1rem;background:#fff0d4;margin:1rem 0 2rem}"
-        "</style>", 1,
+        + (LEARNING_STYLE if not offline else "") + "</style>", 1,
     )
 
 
@@ -324,7 +355,7 @@ def home_html(catalog, query="", results=()):
     esc = html.escape
     parts = [
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>课程知识库</title>',
-        f'<style>{INDEX_STYLE}</style></head><body><main><header><p class="meta">本地阅读 · 理解与练习</p><h1>课程知识库</h1><p>按知识逻辑读完整文章，用解释图理解关系，用自测检验掌握。</p><p class="status">{catalog["requested"]} 份课程来源 · {catalog["reading_drafts"]} 篇阅读草稿</p></header>',
+        f'<style>{INDEX_STYLE}{LEARNING_STYLE}</style>{LEARNING_SCRIPTS}</head><body><main><header><p class="meta">本地阅读 · 理解与练习</p><h1>课程知识库</h1><p>按知识逻辑读完整文章，用解释图理解关系，用自测检验掌握。</p><p class="status">{catalog["requested"]} 份课程来源 · {catalog["reading_drafts"]} 篇阅读草稿</p></header>',
         '<form method="get" action="/"><label for="q" class="meta">搜索文章</label>',
         f'<input id="q" name="q" type="search" maxlength="200" value="{esc(query, quote=True)}" placeholder="输入想理解的概念或问题"><button type="submit">搜索</button></form>',
     ]
@@ -339,7 +370,7 @@ def home_html(catalog, query="", results=()):
                 f'<article class="result"><a href="{esc(row["url"], quote=True)}">{esc(row["heading"])}</a><p>{esc(row["excerpt"])}</p><span class="meta">{esc(row["title"])}</span></article>'
             )
         parts.append("</section>")
-    parts.append('<section class="directory"><h2>课程目录</h2><ul>')
+    parts.append(learning_shell() + '<section class="directory"><h2>课程目录</h2><ul>')
     for row in catalog["lessons"]:
         label = (
             f'<a href="/read/{row["id"]}">{esc(row["title"])}</a>'
@@ -373,7 +404,7 @@ def create_app(root):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+            "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
         )
         return response
 
@@ -403,6 +434,13 @@ def create_app(root):
     @app.get("/api/search")
     def search(q: str = ""):
         return {"results": safe(reader.search, q)}
+
+    @app.get("/assets/{name}")
+    def learning_asset(name: str):
+        if name not in LEARNING_ASSETS:
+            raise HTTPException(404, "资源不存在。")
+        asset = Path(__file__).parent / "resources" / LEARNING_ASSETS[name]
+        return Response(asset.read_bytes(), media_type="text/javascript")
 
     @app.get("/", response_class=HTMLResponse)
     def home(q: str = ""):
