@@ -13,3 +13,4 @@ src/wechat_decrypt_tool/course_textbook_contextual_affiliation.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_corpus_candidates.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_reference_scope.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_reader.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_whole_sources.py text eol=lf
