@@ -31,3 +31,4 @@ src/wechat_decrypt_tool/course_textbook_schema_scope.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_whole_unit_repair.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_whole_continuation.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_whole_repair_resume.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_whole_coverage.py text eol=lf
