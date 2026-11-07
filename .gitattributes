@@ -20,3 +20,6 @@ src/wechat_decrypt_tool/course_textbook_practice_build.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_whole_plan_resume.py text eol=lf
 src/wechat_decrypt_tool/course_pdf_renderer_resume.py text eol=lf
 src/wechat_decrypt_tool/course_pdf_tail_continue.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_whole_draft_resume.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_ledger_pilot.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_reference_sets.py text eol=lf
