@@ -257,3 +257,29 @@ PDF 第 23 批推进至 35 页、0 errors，来源 worker 和原接续控制器�
 失败状态位于 `wiki/source-batches/062c7f57009b52f7cc513d3fac248e7b/progress.json`，
 对应来源的数据库错误和 `thermal-worker.*.log` 继续保留；接下来按完整原图和既有缓存设计有限恢复。
 这不影响仍在运行的 PDF、覆盖和课件审核，也没有将未决来源计入可用文章。
+
+## 06:28 独立来源继续与原画面保留未决
+
+原覆盖已到 20/61 批、5,120/15,534 分句；课件文字到 14/25 批、38/67 单元、47/84 条文字。
+PDF 第 23 批为 45 页、0 errors。可阅读完整文章仍为 1 篇，以上仍为内部部分核验，不是课程交付数。
+原覆盖、课件、PDF、新课作者接续和七图接续均未重启。
+
+失败来源 `84ef110ea186f81ea9041ee0` 的原 ASR 保留，frame 6881 的三份新分块获得完整结果，
+最后一份及一次完整原图上下文检查仍为负面。两个实际失败作业和全部响应均保留，未写回成功状态。
+另用 Windows 已安装的中英文离线 OCR 在 CPU 上补充了四份草稿及实际词框，约 2.4 秒，
+不当作语义通过或等质量速度对照。本课仍有 177 张 pending 画面，原错误未清除。
+恢复入口、实际负面位置、精确副本和验证边界见 [原画面 OCR 有限恢复](course-frame-ocr-recovery.md)。
+
+下一节未处理来源 `427195b4c6efeb4e281ed5cd` 已开始 GPU ASR，guard/实际 worker 为
+`21020 / 1794090110.0985436`、`28172 / 1794090111.1339462`，准确身份和真实进程树已核对。
+后续三节批次 `d174d73105df5bae92521df78af26386` 已启动等待，controller 为
+`3520 / 1794090264.3215084`；仅前驱成功、完整导出与校验一致后继续，失败即停。
+原失败批次 `062c7f57009b52f7cc513d3fac248e7b` 仍保持 stopped，不重试或清除它的记录。
+
+独立来源的输入检查点和有限驱动 248 文件、5,074,351 字节已备份并再次复制核对，位于
+`C:/Users/Administrator/Documents/CourseKnowledgeBackups/source-independent-inputs-20261108/427195b4c6efeb4e281ed5cd`，
+清单 SHA 为 `975717b622e90e168f9263580adaa3f7396ff9aa8b075f260baa68d8af9ed957`。
+三节接续的六份代码/计划/音频检查点亦已备份及再次复制核对，位于
+`C:/Users/Administrator/Documents/CourseKnowledgeBackups/source-batch-activation-inputs-20261108/d174d73105df5bae92521df78af26386`，
+清单 SHA 为 `f05f24a7ae66fe16b9be3fef8d04e21912e1c8dd482f6fcbd90bd6ed17e3ea35`。
+这些为有限调度的输入与代码恢复检查，不含全部原视频或模型环境。
