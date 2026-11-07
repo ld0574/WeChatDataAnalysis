@@ -48,6 +48,25 @@
 不重启它们；仅在完整作者和原守护都真实成功退出后，认证完整稿件，再启动一次有温控的覆盖任务。
 原任务失败、进程身份改变、暂停标记或 supervisor-stop.flag 均停止接续，不自动热恢复。
 
+执行真正结束后，可用 `course_textbook_whole_coverage_snapshot` 只读重建整课覆盖：
+
+```powershell
+$env:PYTHONPATH = 'src'
+.venv\Scripts\python.exe -m wechat_decrypt_tool.course_textbook_whole_coverage_snapshot `
+  --root output/course-knowledge `
+  --parent <原文章作业ID> `
+  --tokenizer output/course-knowledge/wiki/whole-lesson-narrative-20261104/local-model-tokenizer.json `
+  --adapter continuation
+```
+
+原始作者使用 `--adapter original`；显式接续作者使用 `continuation`，并保留其准确的 `--section`。
+该入口要求覆盖 worker 已真实退出且保存完整终态，重新认证整篇作者、固定计划、实际缓存请求、模型身份、
+解码 schema 和 GPU 回执，从实际判断重算每批及整课结果；它不信任结果文件本身的“完成”标记。
+缺失缓存不会申请 GPU 或调用模型，输入、单批、总结果、计数变化均拒绝认证；原执行文件和预算不改。
+唯一的新写入是 `wiki/whole-coverage-snapshots/<SHA>.json` 中的数量、状态和文件哈希凭证。
+原稿负面意见仍计数保留，覆盖完成也不自动获得事实、编辑、课件关系、出题或发布验收。
+本轮只读入口与相邻执行器、整稿和接续的 87 项回归及 Ruff 检查通过；这不表示本次真实覆盖任务已完成。
+
 沿用共享 GPU 锁、200W 保护上限、70°C 暂停和两盘各 32 GiB 保留空间。输入、逐批与最终证据
 增量复制到 `Documents/CourseKnowledgeBackups/whole-manuscript-coverage/<作业ID>/`；它们不是完整
 模型环境备份。输出到终端的只有状态、数量、ID、SHA 和路径，不包含原文、正文或审核理由。
