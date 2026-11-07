@@ -25,3 +25,4 @@ src/wechat_decrypt_tool/course_textbook_ledger_pilot.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_reference_sets.py text eol=lf
 src/wechat_decrypt_tool/course_textbook_pilot_guard.py text eol=lf
 src/wechat_decrypt_tool/course_source_batch.py text eol=lf
+src/wechat_decrypt_tool/course_textbook_visible_context.py text eol=lf
