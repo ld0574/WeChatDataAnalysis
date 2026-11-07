@@ -13,14 +13,14 @@ GPU 当前功耗上限为 180W。所有新守护仍使用 200W 上限、70°C �
 | 阶段 | 本次真实状态 | 权威状态 |
 | --- | --- | --- |
 | 首课阅读 | 原 3005 地址 HTTP 200，3 张棋盘表格、5 道选择题 | 现有阅读器及已交付题包 |
-| 第二课 | 25/25 原始记录提取组保留；已越过概念规划失败点，16 个写作单元等待 GPU | `wiki/whole-source-authoring-current.json` |
-| 新课 | 仅启动一节此前未登记课程，GPU 转写持续推进 | `job-progress.json`、本轮 `next-course-selection.json` |
+| 第二课 | 25/25 原始记录提取组保留；已越过概念规划失败点，16 个写作单元中的首个已开始生成 | `wiki/whole-source-authoring-current.json` |
+| 新课 | 约 133 分钟转写完成，319 条片段；正在抽取画面，来源导出和发布尚未完成 | `job-progress.json`、本轮 `next-course-selection.json` |
 | PDF 第 20 批 | 63/64 页经真实独立重渲染与缓存检查，完成输入备份；最后一页续跑 | `pdf-queue-20261103-0020-resume-status.json`、`-resume-ocr-progress.json` |
 | PDF 第 21–27 批 | 有限接续队列已启动，等待第 20 批完成并独立验证备份 | `pdf-retained-tail-0021-0027-progress.json` |
 
 新课占用共享 GPU 期间，文章和 PDF 会等待；等待本身不是进程卡死的证据。
 核对 PID 时必须同时核对创建时间。不要重启健康任务，不根据旧 dispatch 的失败状态覆盖当前 worker 状态。
-当前数据库为 54 节 transcribed、1 节 transcribing、4 节 pending、2 节 visual_only；
+11 月 8 日零点更新：当前数据库为 55 节 transcribed、4 节 pending、2 节 visual_only；
 来源目录覆盖全部 340 节，但仅 51 节已有来源笔记。完整文章已交付 1 篇，不把来源目录条数当成完成数。
 
 ## 第二课的零模型结构恢复
@@ -71,5 +71,7 @@ GPU 当前功耗上限为 180W。所有新守护仍使用 200W 上限、70°C �
    当前只有容量测量，不能声称已有倍数提速；详见 `course-wiki-throughput-20261104.md`。
 6. 持续补全全量文章、跨课导航、检索与学习记录，以及最新代码/数据/证据的独立处理恢复。
 
-本轮代码、测试、控制凭证和断点应制作独立精确备份并验证，代码和公开状态文档提交到 `dale` 并推送；
+本轮 31 份代码、测试、控制凭证和断点已完成独立复制恢复与字节校验，备份位于
+`C:/Users/Administrator/Documents/CourseKnowledgeBackups/code-and-controls-resume-20261107`；
+这是约 0.93 MiB 的恢复增量，不是全量数据库或完整运行环境恢复。代码和公开状态文档提交到 `dale` 并推送；
 私有课程材料、原模型回复、内部审核与数据库不进入 Git。仅在全量范围及验收实际完成后结束 Goal。
