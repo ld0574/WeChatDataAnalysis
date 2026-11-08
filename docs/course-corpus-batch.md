@@ -64,3 +64,27 @@ $env:PYTHONUTF8='1'
 
 恢复时在 `restored/workspace` 中设置 PYTHONPATH 为其 src，使用主 venv 和上述 load 命令。
 输入载入通过并不代表模型作业已执行、文章完成或整课质量通过。
+
+## 10:05 首次作者的 guard 布置
+
+原两课控制器 `6336 / 1794102596.002112` 保持存活，仍等待原覆盖作业通过。
+原覆盖已到 55/61 批；没有重启控制器或提前执行两课。
+
+为避免后两课首次作者也将变化的 guard 状态纳入不可变材料备份，已启动独立 CPU watcher：
+`31884 / 1794103302.1521664`，私有驱动为
+`output/course-knowledge/wiki/full-course-guard-layout-20261108.py`。
+它只处理本批两个尚未开始的作者，在首次 manifest 出现后认证原库存、实际账本、模型、
+tokenizer 和代码哈希，取得原作者锁，确认尚无作者角色后才创建相对目录符号链接。
+实际 guard 目标为本批 `item-XX-authoring-guard`，位于作者不可变材料目录之外。
+原 guard 仍 resolve 到真实私有目录运行，温控与锁规则不变，不移动已运行的 guard。
+
+已在本机 Python 3.11 实际验证 `Path.rglob` 不遍历该目录符号链接。
+当前 watcher 真实状态为等待新作者，0/2、模型调用 0；尚未宣称两课布置完成。
+状态及独立失败记录位于批次内 `guard-layout-progress.json`、
+`guard-layout-failure-*.json`；每课布置成功另存 `item-XX-guard-layout.json`。
+
+四份布置输入已独立精确复制到
+`C:/Users/Administrator/Documents/CourseKnowledgeBackups/guard-layout-inputs-20261108-100256`，
+12,540 字节，manifest SHA256：
+`31716a1ffc7c25440b8353a53963813e1fbf25b478a98a732f16357b5a94df09`。
+这只是布置输入复制，不是运行进程恢复验证。
