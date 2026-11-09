@@ -97,3 +97,40 @@ GPU 保持 180W 设置、200W 保护上限、70°C 即暂停且不自动热恢�
 00:54 已完成 CPU 认证并进入原第一批候选角色。启动器、venv 转发进程和实际 worker
 分别保存身份，不能把启动成功或存活的转发进程算作模型阶段完成。
 后续须以真实阶段缓存、模型 wire 收据、成功退出及只读重建作为三批实测结果。
+
+## 01:04 实际三批完成
+
+原前三批已完成 768 分句，75 项未决；guard 成功退出，返回 0。
+真实共 8 次模型调用、7 个接受的结构阶段、1 次结构拒绝，原第二次尝试随后通过；拒绝记录保持。
+独立模型语义负面并未因此改成通过，三批完成也不能代表全部 56 批完成。
+
+真实 wire 响应合计服务 498.330 秒，其中加载 54.757 秒、prefill 191.161 秒、生成 250.567 秒，
+总输出 11,980 tokens；这些是实际模型指标，不含共享 GPU 等待、CPU 重建和备份。
+这是另一课的有限实测，不是同一材料对旧格式的受控速度对照，不能宣称整课加速多少倍。
+独立只读重建及完整结果副本验证完成后，再由原 `tail-guard` 接续第 4–56 批。
+
+指标文件 `wiki/performance-observations-20261110/1794243999067649900-actual-ordered-pilot-metrics.json`，
+SHA256 `5eaa4eb71e1aaa1f652e4691bbb344216997f94bed23ffff2b2187036d9e0b7f`；
+同名精确副本已保存在 `Documents/CourseKnowledgeBackups/performance-observations-20261110/`。
+
+实际结果副本 `C:/Users/Administrator/Documents/CourseKnowledgeBackups/ordered-pilot-results-20261110-010504`：
+manifest SHA256 `3e9030f3304d8520c6672b7680b94be4b007eb582d6391ad52310d004655edf0`。
+实际从独立源码、完整父稿材料、真实候选/审核请求和回执，零推理重建 3 批、768 分句、
+7 个实际阶段及原 5 项问题；13 份 legacy group proof 按原哈希一对一重定位。
+该 manifest 有 1,041 条目；路径键 Windows/POSIX 别名审计证实仅为 744 个不同文件、
+41,618,151 字节，297 个别名均指向相同真实字节。原 manifest 未修改，
+审计收据另存 `manifest-path-audit.json`，不能把别名条目数当作不同文件数。
+副本保留完整有限输入/结果和有限 SQLite，不含模型、视频、全量库或完整环境。
+
+结果副本 `restored/workspace` 内设置 PYTHONPATH 为其 src，可只读复现：
+
+```powershell
+& 'D:\Project\WeChatDataAnalysis\.venv\Scripts\python.exe' `
+  output/course-knowledge/wiki/ordered-pilot-result-restore-20261110.py `
+  output/course-knowledge 'D:\Project\WeChatDataAnalysis\output\course-knowledge' `
+  c2240cf9be918a77b74fb0a91f493568 `
+  output/course-knowledge/wiki/whole-lesson-narrative-20261104/local-model-tokenizer.json
+```
+
+01:09 已首次派发原 `tail-guard`，01:10:55 实际 guard 开始守护原尾队列。
+它仍须在真实 worker 内重建前三批，再使用原第 4–56 批角色，不重复前三批推理。
