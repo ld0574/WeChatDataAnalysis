@@ -48,3 +48,7 @@ python -m wechat_decrypt_tool.course_textbook_one_based_writer --root output/cou
 ```
 
 这仍是内部稿件步骤。全文覆盖、课件关联、编辑、图文、自测和实际阅读验收没有被省略。
+
+随后在第 9 个内部单元 `section-0008-write` 出现真实图端点故障，作者停在 8/16，
+原 guard 返回 1，依赖三课接续也停止。编号恢复本身仍已重放认证，不能宣称完整作者成功。
+另见 [仅用原未用审查与修复的明确接续](course-graph-write-continuation.md)。

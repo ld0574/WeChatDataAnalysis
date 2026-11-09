@@ -118,6 +118,13 @@ Ruff 通过；另有上述真实原文与复制源码的独立恢复，不以合
 
 `output/course-knowledge/wiki/ready-course-continuations/a4eb4f64f5606c90f80424ce29238406/`
 
+06:44 前驱作者在 `section-0008-write` 图端点校验失败并耗尽原写作额度，
+controller `25604` 随之真实停止于 0/3，原因
+`requires_ready_resume_predecessor_failed_or_paused_no_automatic_resume`。
+原 1,372 份材料、5/22/24 组及三课角色仍未使用。
+[原图故障接续](course-graph-write-continuation.md) 是另一次显式执行；
+不能重新启动这里的旧 run，也不能跳过完整前驱成功重建要求。
+
 67 项相关合成测试与 Ruff 通过，涵盖首次格式安装、旧失败与预留不变、前驱准确退出、
 未用角色和只读禁止推理。它们与独立恢复均不代表文章语义或整体质量验收。
 公开成品仍为 1 篇；340 节音频、2 份无声来源及全部可恢复课件的全量范围不变。
