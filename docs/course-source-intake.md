@@ -61,3 +61,36 @@ verify 只读取固定目录、完整原文、来源对象及原先保留文件�
 与原结果完全一致，新增推理为 0。它还保留旧输入哈希、完整当前来源对象、初次失败、原冻结驱动及新增七课的材料。
 此副本的 verify 使用 `restored/workspace/src` 作为 PYTHONPATH，root 指向
 `restored/workspace/output/course-knowledge`；Python 与已安装依赖仍使用主 `.venv/Scripts/python.exe`。
+
+## 2026-11-10 新完成的三份来源
+
+首次接入三个此前没有父输入的来源：`427195b4c6efeb4e281ed5cd`、
+`6b35a96a8ceb2a9f76e5cf00`、`9f50e2b95d006a7f4db47bb8`。
+新增整课输入批次 `3407e8dda9695eddfb24cf7031f7c3bcbda7e9fe503f0a77820be8a8146013bc`，
+1,463 条完整原记录、527,590 字符；保留原有 53 节整课输入和 1 篇已交付文章。
+当前可用来源 57/340，整课输入 56 节；这些输入不等于 56 篇文章。283 节尚无完成来源，
+2 份无声来源及全部可恢复课件继续属于全量目标。
+
+实际执行记录为 `wiki/new-source-intake-executions/20261110-three/`。
+所有旧输入逐文件 SHA 不变，未调用模型、未创建账本、未发布文章；课件关联和语义检查仍未完成。
+私有驱动 `wiki/continue_source_intake_20261110.py` 包含本次补齐和独立恢复方法，
+本次 `run` 已执行，不得重跑；只读恢复使用其 `verify` 命令。
+
+独立副本：
+`C:/Users/Administrator/Documents/CourseKnowledgeBackups/three-source-intake-20261110-062125`，
+438 文件、103,667,717 字节，manifest SHA256
+`9b0aba07852f9285b34ec0653761ade10dfef3eb89fee9c014b34df0339763e0`。
+`restored/workspace` 中的源码已实际核对同一三份结果；审计钩子禁止读取原归档、数据库、网络和推理，
+原归档读取与模型调用均为 0。恢复时进入该目录，以其中 `src` 为 PYTHONPATH，
+使用主虚拟环境 Python 执行：
+
+```powershell
+& 'D:/Project/WeChatDataAnalysis/.venv/Scripts/python.exe' -B `
+  output/course-knowledge/wiki/continue_source_intake_20261110.py verify `
+  output/course-knowledge D:/Project/WeChatDataAnalysis/output/course-knowledge `
+  3407e8dda9695eddfb24cf7031f7c3bcbda7e9fe503f0a77820be8a8146013bc `
+  C:/Users/Administrator/Documents/CourseKnowledgeBackups/three-source-intake-20261110-062125/manifest.json
+```
+
+副本仅证明有限完整文字输入、来源映射及代码可重建；没有复制音视频、全部画面、模型、
+数据库或 Python 环境，不能据此删除原视频。
