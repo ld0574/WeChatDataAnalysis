@@ -87,3 +87,18 @@ $env:PYTHONUNBUFFERED='1'
 这是原尚未使用的初审，原两次 write 没有重跑，不能计作修订已经完成。
 准备及启动后新模块 SHA256 均为
 `0c2c95040a443ca3d3ff68661f6b6c14a3404319aa6c5f66c03273b751edbc00`。
+
+## 00:44 实际修订失败，原额度已耗尽
+
+原 `section-0001-review-01` 已实际完成。原修订两次均正常 stop，输出 7 段不同、非空正文，
+但 coverage 中的段落编号超过实际 7 元素数组。实际校验均记录
+`requires_corpus_structural_mapping_indices_within_actual_array_length_7`。
+第一次修订输入/输出为 34,050/5,756 tokens，第二次为 34,062/5,756 tokens。
+这两次修订额度已消费，不得重复调用或刷新；最后响应仍为未信任候选，不创建修订接受缓存。
+
+00:44:36 入口保存 `wiki_stage_attempt_budget_exhausted_section-0001-repair`，
+实际作者与 guard 已退出，guard 返回 1。原 writer 的 generating 状态未及时更新，
+应以新 failure、guard 终态和真实 PID/创建时间共同判断，不能继续报告它健康运行。
+独立 `section-0001-repair-review` 仍未使用；若接续，仅能认证原真实初审和两份失败，
+保存原正文/映射及失败原因，让原未用审核角色核对显式未验证的映射提案，保留完整原文覆盖义务。
+尚未实施该接续，也没有启动第二份课程。
