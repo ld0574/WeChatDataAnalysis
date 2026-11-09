@@ -84,4 +84,42 @@ python -m wechat_decrypt_tool.course_textbook_ready_batch --root output/course-k
 实际解码的段数/索引约束、未用角色检查、准确进程退出、失败前驱阻断和只读推理禁用。
 Ruff 通过；另有上述真实原文与复制源码的独立恢复，不以合成测试代替语义结果。
 
+## 原三课队列的显式接续
+
+原作者的两次概念规划因 1..N 编号被用作数组下标而停止，原三课 controller
+`34920 / 1794256430.0473323` 随之停止于 0/3；原失败、plan、preflights 和全部预算保持。
+作者经 [原编号接续](course-writer-one-based-recovery.md) 重新认证旧完整响应后，
+`course_textbook_ready_resume` 为同一三课预留建立新的显式执行，禁止重启旧 controller。
+
+新执行绑定原失败、完整 1,372 份原文与 560,214 字符、原 5/22/24 组顺序，
+并核对作者接续的 guard 和真实 worker 的 PID 与创建时间。等待在全课程锁之外进行。
+只有两进程真实成功退出，且原编号接续专用 verifier 从原请求/响应重建完整稿，
+才会运行三课原来未用的账本和作者；前驱失败或新暂停会停止，不自动重试。
+
+`course_textbook_first_plan_format` 只在原规划角色首次使用之前安装实际组数语法：
+响应声明 group_count，再约束完全相同的分组数量和 0 起始引用索引。
+出现任何旧尝试或缓存后不能改用此格式，重放禁止推理；原语义分组、每阶段两次结构尝试、
+每单元一次语义修复和全部负面意见不变。代码在真实 prepare 后已冻结。
+
+新独立输入副本已由再次复制的源码实际恢复：
+
+`C:/Users/Administrator/Documents/CourseKnowledgeBackups/ready-continuation-inputs-20261110-053005`
+
+337 文件、34,477,546 字节，manifest SHA256：
+
+`6d488c8ce1cba33247b095002a7297c84ae2c227194d983a261044db38d5fe40`
+
+恢复仍为同一三课、1,372 份完整原文，原失败完全相同、原角色未用；原归档读取 0、推理 0。
+副本不包含前驱未来完整结果、媒体、模型或完整环境。恢复时在 `restored/workspace`
+把 PYTHONPATH 设为其中 src，使用原 Python 环境运行副本内备份脚本的 `verify` 命令。
+
+实际 controller `25604 / 1794259832.290943` 已首次启动；05:40 核对仍存活，
+状态 `waiting_for_exact_explicit_writer_continuation`，完成 0/3。新状态位于：
+
+`output/course-knowledge/wiki/ready-course-continuations/a4eb4f64f5606c90f80424ce29238406/`
+
+67 项相关合成测试与 Ruff 通过，涵盖首次格式安装、旧失败与预留不变、前驱准确退出、
+未用角色和只读禁止推理。它们与独立恢复均不代表文章语义或整体质量验收。
+公开成品仍为 1 篇；340 节音频、2 份无声来源及全部可恢复课件的全量范围不变。
+
 180W 设置、200W 保护上限、70°C 暂停且不自动热恢复、C/D 各 32 GiB 保留线不变。
