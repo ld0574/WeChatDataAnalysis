@@ -75,3 +75,23 @@ GPU 设置 180W，200W 保护上限、70°C 暂停且不自动热恢复，C/D �
 
 01:11 首次启动本入口 guard。启动器存活只证明已经派发，
 须继续核对实际 guard/worker、最终审核缓存及后续未用角色的真实结果。
+
+## 01:18 首个真实后续写作的校验
+
+原 `section-0001-repair-review` 已实际完成，所有该审核检查通过；作者推进到 2/14 单元。
+真实 guard `34112 / 1794244301.568302`，真实作者 `1604 / 1794244353.7139208`。
+原初审和两次修订没有重跑，整课原文覆盖、课件、图文及读者验收义务仍保留。
+
+随后原未用 `section-0002-write-01` 第一次即通过实际结构校验：
+计数标签为 7、真实正文 7 段、15 个覆盖任务的索引均落在真实数组内。
+实际 schema SHA、完整 raw 响应、请求哈希和 GPU wire 回执相符。
+输入 15,082 tokens、输出 3,363 tokens、纯生成 59.581 秒；不是整个单元或文章的交付时间。
+该新写作仍在等待原独立审核，不能计作第 3 个完成单元或新读者成品。
+
+数值观察 `wiki/performance-observations-20261110/1794244759670288800-actual-count-bound-write.json`，
+SHA256 `c7c50b339d6aa9784ced72cc86f05acec61579fbcf71085f629a22d8b98a36f9`，
+同名副本保存在 `Documents/CourseKnowledgeBackups/performance-observations-20261110/`。
+原最终审核及其不可变依赖共 78 文件、1,889,114 字节，另加本次写作 6 份证据文件，
+已逐份精确复制到
+`Documents/CourseKnowledgeBackups/corpus-index-review-results/1dde57c07edb707b95bc3b9ad30e5939/immutable-evidence/`。
+这是有限增量证据副本；完成结果的独立重建和完整稿件恢复尚待后续实际执行，不能当作已验收文章备份。
