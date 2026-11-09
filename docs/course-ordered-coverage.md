@@ -157,4 +157,24 @@ SHA256 `f31139ef7e3c82f18441276c1c3c066fcf7c15b005cafda177c125512f5c639b`，
 并重新复现同一结构错误；原 stopped 状态、失败及两次额度均保持，没有生成接受缓存。
 只读适配仅将导入时模块键改为原 CLI 的 `__main__`，每个冻结源码哈希仍严格相同。
 证明为 `wiki/ordered-stopped-prefix-proof-20261110.json`；
-这尚不是新增完整结果副本的独立恢复，也不是全部覆盖或语义验收。
+这不是全部覆盖或语义验收。
+
+01:46 已完成新增完整有限结果副本的实际独立恢复：
+`C:/Users/Administrator/Documents/CourseKnowledgeBackups/ordered-stopped-results-20261110-014349`。
+规范化路径清单为 776 个不同文件、42,072,517 字节，manifest SHA256：
+`afdac4e2d4d5716b4c6af62923899d1074cc74b20ed468d65125a538fb52fd42`。
+从再次复制的独立代码、完整父稿有限材料和真实请求/响应重建同一前五批及两次失败；
+13 份 legacy group proof 只按原哈希一对一重定位，禁止原根目录回退，新增推理 0。
+不含模型、视频、全量库或完整环境；旧副本、原失败和未决保持。
+
+副本 `restored/workspace` 内将 PYTHONPATH 指向该副本的 src，可只读复现：
+
+```powershell
+& 'D:\Project\WeChatDataAnalysis\.venv\Scripts\python.exe' `
+  output/course-knowledge/wiki/ordered-stopped-result-restore-20261110.py `
+  output/course-knowledge 'D:\Project\WeChatDataAnalysis\output\course-knowledge'
+```
+
+原尚未调用的第六批独立审核及第 7–56 批，已准备为
+[未用审核与边界尾部](course-ordered-boundary-tail.md)，通过实际独立输入恢复后首次派发。
+原两次失败、254 个无效映射的待核义务和全部原预算保持，不生成接受的失败提案缓存。
