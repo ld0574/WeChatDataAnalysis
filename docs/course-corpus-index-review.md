@@ -95,3 +95,15 @@ SHA256 `c7c50b339d6aa9784ced72cc86f05acec61579fbcf71085f629a22d8b98a36f9`，
 已逐份精确复制到
 `Documents/CourseKnowledgeBackups/corpus-index-review-results/1dde57c07edb707b95bc3b9ad30e5939/immutable-evidence/`。
 这是有限增量证据副本；完成结果的独立重建和完整稿件恢复尚待后续实际执行，不能当作已验收文章备份。
+
+## 02:21 完整稿实际完成及结果独立恢复
+
+原作者现已完成 14/14 单元和整篇阅读审核，实际作者与 guard 均已成功退出。
+原下一课控制器已实际只读重建同一首稿，并开始原第二账本；首稿没有重新推理。
+新完整有限副本已从独立代码、原材料、真实请求/响应和有限 registry 实际恢复同一 14/14、
+完整 private article 及 4 项问题；20 份旧 group proof 按原字节哈希严格重定位，模型调用 0。
+副本为 `C:/Users/Administrator/Documents/CourseKnowledgeBackups/corpus-complete-results-20261110-021838`，
+773 文件、43,843,058 字节，manifest SHA256：
+`f0d4d24f8f08acfaac57879e818ca2c7349a1758d62b7cf40fa37a946be7d87e`。
+范围、命令和剩余义务见 [实际进度记录](course-wiki-progress-20261110.md)。
+这是完整内部稿的结果恢复，仍没有通过全文覆盖、课件图文和原失败覆盖义务，不计成新读者成品。

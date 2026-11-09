@@ -235,3 +235,34 @@ GPU 约 61°C、180W 设置；C 56.22 GiB、D 41.69 GiB。3003、3005 HTTP 均�
 3003、3005 及首课 HTTP 均为 200。首课实际 3 个 HTML 表格、5 题 single/multiple，
 题目接口和提交前 HTML 无答案解析，未修改学习记录。
 读者成品仍为 1 篇；全量 340/2/全部可恢复课件与原视频保持，Goal 继续 active。
+
+## 02:21 完整恢复稿的真实结果副本与独立重建
+
+原恢复作者 `1dde57c07edb707b95bc3b9ad30e5939` 已真实完成 14/14，
+实际作者和 guard 均成功退出；原下一课控制器已重建完整首稿并开始第二账本
+`50c05f8919768b2f2ea9afccbbaf8fa3`，未重跑原首稿。
+完整稿保留 4 项问题：全文覆盖、课件图文范围、原填充 write 的覆盖义务、原越界映射的覆盖义务。
+没有隐藏问题或把内部稿计为第二篇完整读者文章。
+
+新完整有限结果副本已实际独立恢复成功：
+`C:/Users/Administrator/Documents/CourseKnowledgeBackups/corpus-complete-results-20261110-021838`。
+773 文件、43,843,058 字节，manifest SHA256：
+`f0d4d24f8f08acfaac57879e818ca2c7349a1758d62b7cf40fa37a946be7d87e`。
+从再次复制的独立源码、完整有限原材料、真实角色/模型回执和原有限 registry，
+实际只读重建 14/14、同一完整 private article 和原 4 项问题，新增推理 0。
+20 份旧 group proof 仅按原字节哈希一对一重定位，禁止原根目录 JSON 回退。
+private article SHA256 为 `27e19a0ec39d93747137ff36937ea29dbebb1da649dfe19484a51d49aba2178f`。
+副本不含模型、视频、完整数据库、下一课结果或完整环境，仍不允许发布或删除原材料。
+
+在副本 `restored/workspace` 内将 PYTHONPATH 指向其 src，可只读复现：
+
+```powershell
+& 'D:\Project\WeChatDataAnalysis\.venv\Scripts\python.exe' `
+  output/course-knowledge/wiki/corpus-complete-result-restore-20261110.py `
+  output/course-knowledge 'D:\Project\WeChatDataAnalysis\output\course-knowledge'
+```
+
+原覆盖任务已实际到 11/56 批、2,816 分句，真实 worker 健康；
+未用下一课账本和 273 份新来源等待控制器均健康，当前来源 OCR 为 134/183 帧（73.2%），ASR 已结束。
+180W 设置，GPU 约 60°C；C 55.81 GiB、D 41.68 GiB。没有新控制标记被清除或健康进程被重启。
+代码已 push 到 dale；全量工作未完成，Goal 继续 active。
