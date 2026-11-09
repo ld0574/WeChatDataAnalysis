@@ -3,8 +3,9 @@
 2026-11-08 10:45 核对：第二课完整覆盖原作业
 `4c7009067249cc972b363551ea0244c8` 在 58/61 批后因共享 GPU 等待到期退出。
 原 guard `15712`、worker `7628` 已退出，旧失败、响应和每角色预算全部保留。
-`DraftJob.slot` 的单次执行等待期限为 21,600 秒，实际退出时 worker 已运行
-21,768.633 秒；这不是模型响应失败，也不能算该批语义审核通过。
+`DraftJob.slot` 的锁等待截止点固定在执行初始化后的 21,600 秒，实际退出时
+worker 已运行 21,768.633 秒。这不是累计纯排队时长或模型响应失败，
+也不能算该批语义审核通过。
 
 ## 覆盖的实际接续
 
@@ -84,3 +85,49 @@ $env:PYTHONUNBUFFERED='1'
 课件文字仍有 41 项关系未决，第二课原末节 43/47 的拒绝保留。
 全量 340 节音频、2 份无声来源及可恢复课件的 Goal 继续 active。
 180W 当前设置、200W 保护上限、70°C 暂停且不自动热恢复、两盘各 32 GiB 保留线不变。
+
+## 11:04 实际完成、依赖接续与独立恢复
+
+原覆盖已完成 61/61 批、15,534 分句，替换 guard 与实际 worker 均成功退出。
+两课控制器实际调用原 assignments 入口完成全文重建，认证 129 个模型阶段；
+实际证明 SHA256 为 `432e776aedfc31fadb038cd3e1490b88a6d2688f52254b5b9110aafe082d2929`。
+10,686 分句得到正文覆盖支持，2,736 分句为经核验非教学，2,112 分句仍未决，
+另有 68 份来源分类冲突；0 个确认缺失不等于没有遗漏，未决仍须处理。
+原稿 9 项问题继续保留，全文审核执行完成不能作为语义验收或发布凭证。
+
+两课控制器已进入原第一课账本 `5eab10f12c4940c996f952ee2ff0ee2c`，
+原实际 worker `7296 / 1794106062.0951996` 正常使用原 group 角色，未重启。
+七图实际 worker `9788 / 1794106064.684986` 已完成 2/7，继续原图片审核。
+
+完成结果副本为
+`C:/Users/Administrator/Documents/CourseKnowledgeBackups/finished-coverage-20261108-105930`，
+1,401 文件、70,929,639 字节，manifest SHA256：
+`f0f9feb4f7f36de5c3d22fd222132ef6473e0d006fb6790c888b9ce5d9d284ef`。
+从再次复制的独立源码、父稿、原文、原模型请求/响应和有限 registry 实际重建出完全相同证明，
+新增模型调用 0。有限 SQLite 为 1/311/192 行，quick_check 通过。
+25 份 legacy group proof 的路径与 2 份绝对快照依赖按 manifest 原字节哈希严格一对一重定位，
+未修改原契约、模型缓存、正文、审核或旧绝对路径字符串；没有回读工作目录中的旧快照。
+
+最初两个独立目录恢复分别因原快照绝对依赖进入路径集合、映射适配器另行加入绝对快照而失败，
+原副本 `finished-coverage-20261108-105048`、`finished-coverage-20261108-105401`
+和诊断继续保留，不把它们计为成功恢复。
+私有恢复脚本仅在独立进程中转录运行时依赖位置，不改运行中的冻结模块。
+本副本不含模型、媒体、全量数据库或完整处理环境。
+
+在成功副本 `restored/workspace` 内设置 PYTHONPATH 为其 `src`，使用主 venv 执行：
+
+```powershell
+& 'D:\Project\WeChatDataAnalysis\.venv\Scripts\python.exe' `
+  output/course-knowledge/wiki/finished-coverage-restore-20261108.py `
+  output/course-knowledge 'D:\Project\WeChatDataAnalysis\output\course-knowledge' `
+  c7258efff888d77a26e1234dd153ef7a `
+  output/course-knowledge/wiki/whole-lesson-narrative-20261104/local-model-tokenizer.json `
+  wiki/full-course-batches/60ee5378015a2d2f2a221548ba19df87/wait-deadline-continuation/predecessor-proof.json
+```
+
+这是只读全文重建，不获取 GPU，不恢复或重跑任何模型角色。
+
+11 月 10 日实际终态已另行核对：首份账本 20/20 组结束，首个作者在 1/14 单元后因
+`section-0001-write` 的两次原结构失败而停止；第二份课程尚未开始。
+不能继续将此前 11:04 的健康状态用于当前进度。详见
+[11 月 10 日续跑记录](course-wiki-progress-20261110.md)。
