@@ -124,3 +124,9 @@ $env:PYTHONUNBUFFERED = '1'
   output/course-knowledge/wiki/resume_first_boundary_result_restore_20261110.py verify `
   output/course-knowledge D:\Project\WeChatDataAnalysis\output\course-knowledge ..\..\manifest.json
 ```
+
+只读编辑路由另确认 128 份不同的受影响来源：43 份含未决子句、93 份有分类冲突，重叠 8 份。
+599 条未决子句的 reference 不在现有单元的主要 point citations 并集中，
+其中 444 条 teaching_detected=true 仅表示原提议曾判断教学，不能代表复核通过或已确认遗漏。
+这不证明原材料未被读取；它说明后续编辑不能只凭旧章节主来源映射遗漏全课待判证据。
+路由不调用模型、不登记新角色、不重新运行原接受批次，也不更改任何覆盖状态。
