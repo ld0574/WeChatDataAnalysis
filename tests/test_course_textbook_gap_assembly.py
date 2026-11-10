@@ -98,3 +98,28 @@ def test_reviewed_batch_count_and_changed_audit_cannot_be_made_complete(sample):
     sample[2][0]["audit"]["additions"]["N000"]["passed"] = False
     with pytest.raises(ValueError, match="same_independently_checked_batch_disposition"):
         m.compose(*sample)
+
+
+def test_missing_actual_independent_result_restore_prevents_any_assembly(tmp_path, monkeypatch):
+    monkeypatch.setattr(m.remaining, "verify", lambda *args: {"verified": True})
+    monkeypatch.setattr(m.remaining, "load", lambda *args: (tmp_path, tmp_path, None, None, None, None, None))
+    monkeypatch.setattr(m.remaining.whole, "read", lambda *args: {"state": "inputs_only_not_actual_result_restore"})
+    with pytest.raises(ValueError, match="actual_independent_complete_gap_result_restore_before_assembly"):
+        m.run(tmp_path, "synthetic")
+    assert not (tmp_path / "wiki/corpus-gap-assemblies").exists()
+
+
+def test_saved_assembly_is_immutable_and_verify_cannot_write(tmp_path, monkeypatch, sample):
+    value = compose(sample)
+    monkeypatch.setattr(m, "reconstruct", lambda *args: copy.deepcopy(value))
+    monkeypatch.setattr(m.remaining.guard, "checkpoint", lambda *args: None)
+    with pytest.raises(ValueError, match="required_existing_derivation"):
+        m.run(tmp_path, "synthetic", read_only=True)
+    assert not (tmp_path / "wiki").exists()
+    first = m.run(tmp_path, "synthetic")
+    assert m.run(tmp_path, "synthetic", read_only=True) == first
+    with pytest.raises(ValueError, match="single_immutable_private_assembly"):
+        m.run(tmp_path, "synthetic")
+    value["parent_private"]["introduction"][0]["text"] = "Changed synthetic saved draft"
+    with pytest.raises(ValueError, match="immutable_derivation"):
+        m.run(tmp_path, "synthetic", read_only=True)
