@@ -84,3 +84,9 @@ python output/course-knowledge/wiki/backup_graph_ready_inputs_20261110.py verify
 准确前驱退出、失败/暂停/部分稿阻断及原角色保留。真实 prepare 后生产模块已冻结。
 测试和输入恢复不代表文章验收；完整结果还需另做独立备份恢复。
 180W 设置、200W/70°C 保护、不自动热恢复及 C/D 各 32 GiB 预留保持，历史暂停记录保留。
+
+07:58 前驱在 `section-0012-write` 两次图错误后真实失败退出，完成 12/16。
+本 controller 已按约束停止 0/3，原因
+`requires_graph_ready_resume_predecessor_failed_or_paused_no_automatic_resume`；不能重启本 run。
+三课原角色仍未使用。后续为前驱建立了 [原四单元角色接续](course-graph-tail-original-roles.md)，
+并不自动恢复这里的停止执行；三课仍需正确的完整前驱认证和另行显式接续。
