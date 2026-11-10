@@ -100,3 +100,42 @@ $env:PYTHONUNBUFFERED = '1'
 事实审核、课件、解释图、最多 5 道选择自测及实际阅读验收。公开文章仍为 1 篇，
 原视频保留，全量 340 节音频、2 份无声来源及可恢复课件的 Goal 继续 active。
 共享 GPU 锁、180W 设置、200W/70°C 保护、不自动热恢复及 C/D 各 32 GiB 保留线保持。
+
+## 实际终态与完整结果恢复
+
+11:22 原 worker `8304` 和实际 guard `17412` 均已退出，guard 返回 0。
+全部 24 个原批次的处理结果是 **23 个已审核、1 个保留未决**，不能写成 24 批通过。
+0010 批 15 个目标整批未决、审核始终未调用。原角色合计实际调用并认证 47 次，没有重试。
+
+原候选的 1,043 项未决现在剩 545 项，93 份来源冲突剩 53 份；
+74 个新增解释中有 41 个未映射，58 项负面检查及 4 项父稿问题继续保留。
+这不是全课缺口清零、最终语义验收或新整合稿的覆盖结果。
+
+完整只读 verify 和实际独立结果恢复均通过。成功副本：
+
+`C:\Users\Administrator\Documents\CourseKnowledgeBackups\corpus-gap-remaining-results-20261110-112442`
+
+1,485 文件、73,494,170 字节，manifest SHA256：
+
+`76f2036c57a1b27c918ffd6b1bf894d0f857e6578c5d36244a2dd6ee85c4792f`
+
+复制源码重放全部 23 个审核结果及 1 个保留未决批次，认证 47 个原实际角色；
+无效编辑批次的审核仍未使用，原归档回读 0、新推理 0。
+含已独立恢复的父稿与 55 批覆盖原字节及回执，未在本副本再次重放它们，
+也没有恢复模型、媒体、全量数据库或完整环境。
+结果 SHA256：`4ed6b17c75c866d772c31a0522aa3d5e5edb4428be12920c6eb16d309ce55acb`。
+
+在该副本 `restored/workspace` 内设置 PYTHONPATH 为 src，运行：
+
+```powershell
+$env:PYTHONPATH = 'src'
+$env:PYTHONUTF8 = '1'
+$env:PYTHONUNBUFFERED = '1'
+& 'D:\Project\WeChatDataAnalysis\.venv\Scripts\python.exe' `
+  output/course-knowledge/wiki/backup_corpus_gap_remaining_results_20261110.py verify `
+  output/course-knowledge D:\Project\WeChatDataAnalysis\output\course-knowledge `
+  87e51e9142e9ab14315873679be8dd58 ..\..\manifest.json
+```
+
+随后已真实生成并独立恢复[私有整合稿](course-gap-assembly.md)。原候选覆盖不能直接继承：
+另有 7 个候选已解决组依赖整合稿中未放入的正文项，共 85 个目标，须保留新的覆盖义务。
