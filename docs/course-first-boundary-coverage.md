@@ -81,3 +81,46 @@
 180W 设置、200W 保护上限、70°C 即暂停且不自动热恢复、C/D 各 32 GiB 保留线保持。
 不重启健康来源抽取、当前覆盖或下一课作者，不清除旧暂停、失败或已消费预算。
 全量范围继续为 340 节音频、2 份无声来源、全部可恢复课件；读者成品仍为 1 篇。
+
+## 08:55 已完成的真实结果与独立恢复
+
+原 worker `12596 / 1794258530.1522605` 和 guard `7136 / 1794249549.7674613`
+均已退出，guard 返回 0。55/55 批、13,853/13,853 子句已完成，但覆盖验收没有通过：
+
+- 已覆盖 7,867，复核通过的非教学 4,943。
+- 未决 1,043，分属 43 份来源；其中原提议为 covered 的 650、non_teaching 的 393，
+  独立审核均为 false。不能把它们写成已确认遗漏或直接排除。
+- 当前计数中的 confirmed missing 为 0；93 份来源存在原教学账本与覆盖分类冲突。
+- 原 4 项父稿问题保留，语义准确性、发布和来源删除均未通过。
+
+所有 55 批实际都含完整正文的单一块，不是因为正文分块尚未搜索到尾部。
+不重复原已接受批次，也不把这次统计完成解释成新覆盖预算。
+后续必须在原负面意见保留的前提下，处理未决分类及尚未使用的实际编辑任务。
+
+完整有限结果副本已从再次复制的源码实际只读重建成功：
+
+`C:\Users\Administrator\Documents\CourseKnowledgeBackups\first-boundary-results-offline-20261110-085120`
+
+1,281 文件、67,706,939 字节，manifest SHA256：
+
+`182b753265ca68b2f0bf6078b38d0be716af5d3767affbb8e7eab68128d3735d`
+
+实际认证 119 个原模型阶段、全部 55 批和同一 1,043 未决项，20 份旧 group proof
+只按精确原字节重定位。原归档读取 0、新模型调用 0，不允许网络、推理或原根回退。
+副本中的模型身份从已认证 manifest 读取，不声称本次验证了运行时模型环境。
+它不是媒体、模型、全量数据库或完整环境恢复，也不是文章语义验收。
+
+首次结果副本 `first-boundary-results-20261110-084618` 因 CoverageJob 构造时另行导入的
+模型元数据函数仍尝试查询服务而被离线审计拦下。该副本、原脚本和失败日志保留。
+新独立恢复驱动仅在复制 runtime 中将该元数据函数绑定到原记录身份，
+重新验证同一结果，没有重跑覆盖或更改冻结代码。
+
+在成功副本的 `restored/workspace` 设置 PYTHONPATH 为 src，并执行：
+
+```powershell
+$env:PYTHONUTF8 = '1'
+$env:PYTHONUNBUFFERED = '1'
+& 'D:\Project\WeChatDataAnalysis\.venv\Scripts\python.exe' `
+  output/course-knowledge/wiki/resume_first_boundary_result_restore_20261110.py verify `
+  output/course-knowledge D:\Project\WeChatDataAnalysis\output\course-knowledge ..\..\manifest.json
+```
