@@ -74,3 +74,11 @@ $env:PYTHONUNBUFFERED = '1'
 正在 CPU 完整认证原终态；账本和作者尚未计为完成，不能只依据旧前驱的 stopped 状态误报新故障。
 完整稿还需全文覆盖、编辑、课件图文、自测及实际阅读验收，派发不计为公开成品。
 180W 设置、200W/70°C 硬保护、不自动热恢复、双盘各留 32 GiB 保持。
+
+## 第一稿完成后的实际控制器停止
+
+第一门原作者已实际完成 4/4，guard 返回 0，退出后独立原 verify-writer 重建通过，
+仍保留 3 项未决意见。原 controller 因自身同时是 guard，在内部校验时触发
+`requires_tail_ready_resume_actual_original_course_writer_guard_success`，真实停止并保持原 0/3。
+不能重启本控制器，也不能重新执行第一稿。
+[独立 guard 退出接续](course-ready-guard-exit.md)仅处理后两课原未用角色，并保留此处全部原记录。
