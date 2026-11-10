@@ -101,3 +101,44 @@ $env:PYTHONUTF8 = '1'
 它绑定上述两个准确身份、代码及输入，等待成功退出后才重放新两角色并独立恢复实际结果；
 任何暂停、失败或输入变化都保留并停止，不启动模型或自动重试，不把派发计为结果通过。
 此刻尚未产生新布局结果，公开文章仍为 1 篇。
+
+## 真实布局失败和独立故障恢复
+
+12:18:28 实际布局完整 stop 返回后未通过结构检查。
+实际 server 输入 51,168 tokens、输出 359 tokens、实测 context 65,536、GPU 显存分配正常，
+不是截断、网络失败或 GPU 等待。原 worker 退出，实际 guard 返回 1；CPU 收尾按原约束停止，
+没有尝试把失败当作成功结果恢复，也没有自动重启。
+
+原响应虽符合 JSON schema，但违反完整分区约束：四个段落在位置列表/保留列表中重复，
+其中一个还指向两个不同小节；第五个段落完全缺失。无法仅通过精确去重修好，
+不能程序猜选位置或补上遗漏成员。机器原因是
+`requires_gap_placement_every_theme_exactly_once`。
+原唯一布局额度已使用，原不同权重审核尚未调用；不切换原契约、刷新额度或生成接受的失败缓存。
+五段原文和全部 85 条位置依赖继续保持未解决，其余 545 未决与 53 份矛盾不变。
+
+真实失败响应 SHA256：
+`62d779241e1559f9151de18d80499a4a52d4c02e7a3ac125c0513689a6e6cbd1`。
+故障已从复制代码、完整有限输入、实际请求/schema/GPU wire/响应再次独立复现：
+
+`C:\Users\Administrator\Documents\CourseKnowledgeBackups\gap-theme-failure-20261110-122257`
+
+344 文件、28,572,084 字节，manifest SHA256：
+`78b162d69ddd15bdacc38b1e772cdd28da84ea7d81d796c06f736c42565c0a9a`。
+原归档读取 0、新模型调用 0；这次重建的是实际失败，不是两个新角色的成功结果，
+也没有再次重放旧角色或恢复媒体、模型、全量数据库与完整环境。
+私有故障驱动：
+
+`D:\Project\WeChatDataAnalysis\output\course-knowledge\wiki\backup_gap_theme_placement_failure_20261110.py`
+
+在上述副本 `restored/workspace` 内用同样的 PYTHONPATH 和主 venv 执行：
+
+```powershell
+& 'D:\Project\WeChatDataAnalysis\.venv\Scripts\python.exe' `
+  output/course-knowledge/wiki/backup_gap_theme_placement_failure_20261110.py verify `
+  output/course-knowledge D:\Project\WeChatDataAnalysis\output\course-knowledge `
+  0004742fe367e2a1228454ed270b2361 ..\..\manifest.json
+```
+
+后续仍须完成真实全文编辑。未来未登记的工作应以必填段落 ID 键约束唯一去向，
+而非依靠两个自由数组枚举完整分区；这是由真实失败得出的设计要求，不是已运行的修复或提速。
+原健康来源抽取和作者继续运行，公开读者成品仍为 1 篇。
